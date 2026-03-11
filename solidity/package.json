@@ -12,7 +12,7 @@
   "devDependencies": {
     "@iden3/contracts": "^2.3.0",
     "@nomicfoundation/hardhat-network-helpers": "^1.0.10",
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
     "@openzeppelin/contracts": "^5.1.0",
     "@openzeppelin/contracts-upgradeable": "^5.1.0",
     "@openzeppelin/hardhat-upgrades": "^3.2.1",
