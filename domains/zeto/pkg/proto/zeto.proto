@@ -75,6 +75,15 @@ message ProvingRequestExtras_NullifiersKyc {
   string delegate = 3;
 }
 
+message ProvingRequestExtras_NonRepudiationEnforced {
+  MerkleProofObject smtUtxoProof = 1;
+  MerkleProofObject smtKycProof = 2;
+  MerkleProofObject smtComplianceProof = 3;
+  repeated string arbiterPublicKey = 4;
+  repeated string enforcerPublicKey = 5;
+  string encryptionNonce = 6;
+}
+
 message MerkleProofObject {
   string root = 1;
   repeated MerkleProof merkleProofs = 2;
