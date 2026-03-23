@@ -37,6 +37,7 @@ const (
 	Withdraw       CircuitType = "withdraw"
 	Transfer       CircuitType = "transfer"
 	TransferLocked CircuitType = "transferLocked"
+	ForcedTransfer CircuitType = "forcedTransfer"
 )
 
 type Circuit struct {
@@ -45,6 +46,8 @@ type Circuit struct {
 	UsesNullifiers bool        `yaml:"usesNullifiers" json:"usesNullifiers"`
 	UsesEncryption bool        `yaml:"usesEncryption" json:"usesEncryption"`
 	UsesKyc        bool        `yaml:"usesKyc" json:"usesKyc"`
+	UsesNonRepudiation bool        `yaml:"usesNonRepudiation" json:"usesNonRepudiation"`
+	UsesEnforcement    bool        `yaml:"usesEnforcement" json:"usesEnforcement"`
 }
 
 func (c *Circuit) ToProto() *proto.Circuit {
@@ -54,6 +57,8 @@ func (c *Circuit) ToProto() *proto.Circuit {
 		UsesNullifiers: c.UsesNullifiers,
 		UsesEncryption: c.UsesEncryption,
 		UsesKyc:        c.UsesKyc,
+		UsesNonRepudiation: c.UsesNonRepudiation,
+		UsesEnforcement:    c.UsesEnforcement,
 	}
 }
 
@@ -72,6 +77,8 @@ func NewCircuitFromProto(pb *proto.Circuit) *Circuit {
 		UsesNullifiers: pb.UsesNullifiers,
 		UsesEncryption: pb.UsesEncryption,
 		UsesKyc:        pb.UsesKyc,
+		UsesNonRepudiation: pb.UsesNonRepudiation,
+		UsesEnforcement:    pb.UsesEnforcement,
 	}
 }
 

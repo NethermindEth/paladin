@@ -24,6 +24,8 @@ message Circuit {
   bool usesNullifiers = 3;
   bool usesEncryption = 4;
   bool usesKyc = 5;
+  bool usesNonRepudiation = 6;
+  bool usesEnforcement = 7;
 }
 
 message ProvingRequest {
