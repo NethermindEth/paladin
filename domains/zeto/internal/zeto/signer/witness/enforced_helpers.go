@@ -7,6 +7,7 @@ import (
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/msgs"
+	pb "github.com/LFDT-Paladin/paladin/domains/zeto/pkg/proto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/key-manager/key"
 )
@@ -24,6 +25,13 @@ func decodeHexBigIntPair(ctx context.Context, values []string) ([]*big.Int, erro
 		result[i] = n
 	}
 	return result, nil
+}
+
+// decodeSmtProof delegates to FungibleNullifierKycWitnessInputs.decodeSmtProofObject
+// without requiring an initialized receiver (the method uses no receiver state).
+func decodeSmtProof(ctx context.Context, proofObj *pb.MerkleProofObject) (*big.Int, [][]*big.Int, []*big.Int, error) {
+	var decoder FungibleNullifierKycWitnessInputs
+	return decoder.decodeSmtProofObject(ctx, proofObj)
 }
 
 func assembleEncryptionInputs(ctx context.Context, nonceStr string, m map[string]interface{}) {
