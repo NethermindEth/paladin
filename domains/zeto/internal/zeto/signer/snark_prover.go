@@ -305,8 +305,22 @@ func calculateWitness(ctx context.Context, circuit *zetosignerapi.Circuit, commo
 func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, extras interface{}) (witnessInputs, error) {
 	switch circuit.Type {
 	case zetosignerapi.Deposit:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced deposit circuit")
+			}
+			return &wtns.DepositEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		return &wtns.DepositWitnessInputs{}, nil
 	case zetosignerapi.Withdraw:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced withdraw circuit")
+			}
+			return &wtns.WithdrawEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		if circuit.UsesNullifiers {
 			nullifierExtras, ok := extras.(*pb.ProvingRequestExtras_Nullifiers)
 			if !ok {
@@ -320,6 +334,13 @@ func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, ex
 		}
 		return &wtns.WithdrawWitnessInputs{}, nil
 	case zetosignerapi.Transfer:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced transfer circuit")
+			}
+			return &wtns.NonRepudiationEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		if tokenType == pb.TokenType_fungible {
 			if circuit.UsesEncryption {
 				encExtras, ok := extras.(*pb.ProvingRequestExtras_Encryption)
@@ -350,6 +371,12 @@ func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, ex
 		} else {
 			return &wtns.NonFungibleWitnessInputs{}, nil
 		}
+	case zetosignerapi.ForcedTransfer:
+		enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+		if !ok {
+			return nil, fmt.Errorf("unexpected extras type for forced transfer circuit")
+		}
+		return &wtns.ForcedTransferEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
 	case zetosignerapi.TransferLocked:
 		return &wtns.FungibleWitnessInputs{}, nil
 	}
