@@ -10,6 +10,8 @@ import (
 	pb "github.com/LFDT-Paladin/paladin/domains/zeto/pkg/proto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/key-manager/key"
+	"github.com/iden3/go-iden3-crypto/babyjub"
+	"github.com/iden3/go-iden3-crypto/poseidon"
 )
 
 func decodeHexBigIntPair(ctx context.Context, values []string) ([]*big.Int, error) {
@@ -33,6 +35,41 @@ func decodeSmtProof(ctx context.Context, proofObj *pb.MerkleProofObject) (*big.I
 	var decoder FungibleNullifierKycWitnessInputs
 	return decoder.decodeSmtProofObject(ctx, proofObj)
 }
+
+// ENF_DOMAIN_TAG = keccak256("zeto.enforcement.nullifier.v1") mod p
+// Must match the constant in zkp/circuits/lib/enforcement_nullifier.circom
+var enfDomainTag, _ = new(big.Int).SetString("21455947405572920533869930548514094044543253524099188107381343679564123236615", 10)
+
+// calculateEnforcementNullifiers computes enforcement nullifiers for each input commitment.
+// ecdhPrivKey is the caller's private key; counterpartyPub is the other party's public key.
+// For transfer/withdraw: ecdhPrivKey=ownerPrivKey, counterpartyPub=enforcerPubKey.
+// For forcedTransfer:    ecdhPrivKey=enforcerPrivKey, counterpartyPub=seizedOwnerPubKey.
+func calculateEnforcementNullifiers(inputCommitments []*big.Int, ecdhPrivKey *big.Int, counterpartyPub []*big.Int) ([]*big.Int, error) {
+	// ECDH: shared = scalar_mul(counterpartyPub, ecdhPrivKey)
+	counterpartyPoint := &babyjub.Point{X: counterpartyPub[0], Y: counterpartyPub[1]}
+	shared := babyjub.NewPoint().Mul(ecdhPrivKey, counterpartyPoint)
+
+	// k0 = Poseidon(2)([shared.X, shared.Y])
+	k0, err := poseidon.Hash([]*big.Int{shared.X, shared.Y})
+	if err != nil {
+		return nil, err
+	}
+
+	nullifiers := make([]*big.Int, len(inputCommitments))
+	for i, commitment := range inputCommitments {
+		if commitment.Cmp(big.NewInt(0)) == 0 {
+			nullifiers[i] = big.NewInt(0)
+			continue
+		}
+		// enfNull = Poseidon(3)([commitment, k0, ENF_DOMAIN_TAG])
+		nullifiers[i], err = poseidon.Hash([]*big.Int{commitment, k0, enfDomainTag})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nullifiers, nil
+}
+
 
 func assembleEncryptionInputs(ctx context.Context, nonceStr string, m map[string]interface{}) {
 	var nonce *big.Int
