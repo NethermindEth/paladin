@@ -98,11 +98,11 @@ func NewMerkleTreeSpec(ctx context.Context, name string, treeType MerkleTreeType
 const modulus = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
 
 func IsNullifiersToken(tokenName string) bool {
-	return tokenName == constants.TOKEN_ANON_NULLIFIER || tokenName == constants.TOKEN_NF_ANON_NULLIFIER || tokenName == constants.TOKEN_ANON_NULLIFIER_KYC
+	return tokenName == constants.TOKEN_ANON_NULLIFIER || tokenName == constants.TOKEN_NF_ANON_NULLIFIER || tokenName == constants.TOKEN_ANON_NULLIFIER_KYC || tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
 }
 
 func IsKycToken(tokenName string) bool {
-	return tokenName == constants.TOKEN_ANON_NULLIFIER_KYC
+	return tokenName == constants.TOKEN_ANON_NULLIFIER_KYC || tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
 }
 
 func IsNonFungibleToken(tokenName string) bool {
@@ -110,7 +110,15 @@ func IsNonFungibleToken(tokenName string) bool {
 }
 
 func IsEncryptionToken(tokenName string) bool {
-	return tokenName == constants.TOKEN_ANON_ENC
+	return tokenName == constants.TOKEN_ANON_ENC || tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
+}
+
+func IsNonRepudiationToken(tokenName string) bool {
+	return tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
+}
+
+func IsEnforcedToken(tokenName string) bool {
+	return tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
 }
 
 // the Zeto implementations support two input/output sizes for the circuits: 2 and 10,
