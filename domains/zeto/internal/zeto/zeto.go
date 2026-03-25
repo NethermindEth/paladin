@@ -120,6 +120,7 @@ var factoryDeployABI = &abi.Entry{
 		{Name: "initialOwner", Type: "address"},
 		{Name: "data", Type: "bytes"},
 		{Name: "isNonFungible", Type: "bool"},
+		{Name: "isEnforced", Type: "bool"},
 	},
 }
 
@@ -258,6 +259,7 @@ func (z *Zeto) PrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequ
 		Symbol:        initParams.TokenName,
 		InitialOwner:  req.ResolvedVerifiers[0].Verifier, // TODO: allow the initial owner to be specified by the deploy request
 		IsNonFungible: common.IsNonFungibleToken(initParams.TokenName),
+		IsEnforced:    common.IsEnforcedToken(initParams.TokenName),
 	}
 	paramsJSON, err := json.Marshal(deployParams)
 	if err != nil {

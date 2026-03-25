@@ -58,6 +58,7 @@ type DeployParams struct {
 	Symbol        string            `json:"symbol"`
 	InitialOwner  string            `json:"initialOwner"`
 	IsNonFungible bool              `json:"isNonFungible"`
+	IsEnforced    bool              `json:"isEnforced"`
 }
 
 type NonFungibleMintParams struct {
