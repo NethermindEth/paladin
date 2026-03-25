@@ -360,6 +360,8 @@ func (z *Zeto) GetHandler(method, tokenName string) types.DomainHandler {
 		return fungible.NewDepositHandler(z.name, z.coinSchema)
 	case types.METHOD_WITHDRAW:
 		return fungible.NewWithdrawHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema)
+	case types.METHOD_FORCED_TRANSFER:
+		return fungible.NewForcedTransferHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
 	default:
 		return nil
 	}
