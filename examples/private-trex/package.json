@@ -1,0 +1,23 @@
+{
+  "name": "paladin-example-private-trex",
+  "version": "0.0.1",
+  "description": "T-REX (ERC-3643) permissioned token example using Paladin",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node ./src/index.ts",
+    "start:prod": "node ./build/index.js"
+  },
+  "author": "",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@erc3643org/erc-3643": "^4.1.3",
+    "@lfdecentralizedtrust/paladin-sdk": "file:../../sdk/typescript",
+    "paladin-example-common": "file:../common"
+  }
+}
