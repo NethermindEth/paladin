@@ -12,20 +12,31 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
         string memory symbol,
         address initialOwner,
         bytes memory data,
-        bool isNonFungible
+        bool isNonFungible,
+        bool isEnforced
     ) external {
+        require(
+            !(isNonFungible && isEnforced),
+            "Factory: enforced non-fungible tokens are not supported"
+        );
+
         address instance;
 
         if (isNonFungible) {
-            // deploy non-fungible token
             instance = deployZetoNonFungibleToken(
                 name,
                 symbol,
                 tokenName,
                 initialOwner
             );
+        } else if (isEnforced) {
+            instance = deployZetoEnforcedFungibleToken(
+                name,
+                symbol,
+                tokenName,
+                initialOwner
+            );
         } else {
-            // deploy fungible token
             instance = deployZetoFungibleToken(
                 name,
                 symbol,
@@ -43,9 +54,9 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
         string memory name,
         string memory symbol,
         address initialOwner,
-        bytes memory data
+        bytes memory data,
+        bool isNonFungible
     ) external {
-        // default deploy is fungible token
         this.deploy(
             transactionId,
             tokenName,
@@ -53,6 +64,27 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
             symbol,
             initialOwner,
             data,
+            isNonFungible,
+            false
+        );
+    }
+
+    function deploy(
+        bytes32 transactionId,
+        string memory tokenName,
+        string memory name,
+        string memory symbol,
+        address initialOwner,
+        bytes memory data
+    ) external {
+        this.deploy(
+            transactionId,
+            tokenName,
+            name,
+            symbol,
+            initialOwner,
+            data,
+            false,
             false
         );
     }
