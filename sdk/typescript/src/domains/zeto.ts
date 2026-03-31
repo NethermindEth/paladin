@@ -57,6 +57,11 @@ export interface ZetoTransfer {
   data: string;
 }
 
+export interface ZetoForcedTransferParams {
+  seizedOwner: string;
+  transfers: ZetoTransfer[];
+}
+
 export interface ZetoDepositParams {
   amount: string | number;
 }
@@ -148,6 +153,23 @@ export class ZetoInstance {
         to: this.address,
         from: from.lookup,
         data: {
+          transfers: data.transfers.map((t) => ({ ...t, to: t.to.lookup })),
+        },
+      })
+    );
+  }
+
+  forcedTransfer(from: PaladinVerifier, data: ZetoForcedTransferParams) {
+    return new TransactionFuture(
+      this.paladin,
+      this.paladin.sendTransaction({
+        type: TransactionType.PRIVATE,
+        abi: zetoAbi,
+        function: "forcedTransfer",
+        to: this.address,
+        from: from.lookup,
+        data: {
+          seizedOwner: data.seizedOwner,
           transfers: data.transfers.map((t) => ({ ...t, to: t.to.lookup })),
         },
       })
