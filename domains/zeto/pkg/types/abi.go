@@ -40,6 +40,7 @@ const (
 	METHOD_DEPOSIT         = "deposit"
 	METHOD_WITHDRAW        = "withdraw"
 	METHOD_BALANCE_OF      = "balanceOf"
+	METHOD_FORCED_TRANSFER = "forcedTransfer"
 )
 
 type InitializerParams struct {
@@ -57,6 +58,7 @@ type DeployParams struct {
 	Symbol        string            `json:"symbol"`
 	InitialOwner  string            `json:"initialOwner"`
 	IsNonFungible bool              `json:"isNonFungible"`
+	IsEnforced    bool              `json:"isEnforced"`
 }
 
 type NonFungibleMintParams struct {
@@ -104,6 +106,11 @@ type DepositParams struct {
 
 type WithdrawParams struct {
 	Amount *pldtypes.HexUint256 `json:"amount"`
+}
+
+type ForcedTransferParams struct {
+	SeizedOwner string                        `json:"seizedOwner"` // identity of the frozen owner whose notes are seized
+	Transfers   []*FungibleTransferParamEntry `json:"transfers"`   // output recipients
 }
 
 type FungibleBalanceOfParam struct {

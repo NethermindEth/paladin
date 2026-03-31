@@ -181,4 +181,5 @@ var (
 	MsgUnknownSmtType                        = pde("PD210140", "Unknown states merkle tree type: %d")
 	MsgErrorDecodePublicKeyFromHex           = pde("PD210141", "Failed to decode public key from compressed hex. %s")
 	MsgErrorDecodePrivateKey                 = pde("PD210142", "Failed to decode private key. %s")
+	MsgErrorNoSeizedOwner                    = pde("PD210143", "Parameter 'seizedOwner' is required for forced transfer")
 )

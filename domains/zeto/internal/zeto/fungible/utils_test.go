@@ -370,6 +370,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacks,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoins,
@@ -389,6 +390,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacks,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoins,
@@ -428,6 +430,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacksNullifier,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoinsSize3,
@@ -461,6 +464,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacksNullifierKyc,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoinsSize3,

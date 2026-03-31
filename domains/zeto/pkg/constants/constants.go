@@ -27,6 +27,7 @@ const (
 	TOKEN_ANON_ENC           = "Zeto_AnonEnc"
 	TOKEN_ANON_NULLIFIER     = "Zeto_AnonNullifier"
 	TOKEN_ANON_NULLIFIER_KYC = "Zeto_AnonNullifierKyc"
+	TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED = "Zeto_AnonEncNullifierKycNonRepudiationEnforced"
 
 	TOKEN_NF_ANON           = "Zeto_NfAnon"
 	TOKEN_NF_ANON_NULLIFIER = "Zeto_NfAnonNullifier"

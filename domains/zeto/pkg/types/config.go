@@ -72,6 +72,16 @@ type DomainInstanceConfig struct {
 	Circuits  *zetosignerapi.Circuits `json:"circuits"`
 }
 
+var circuitABIComponents = []*abi.Parameter{
+	{Type: "string", Name: "name"},
+	{Type: "string", Name: "type"},
+	{Type: "bool", Name: "usesEncryption"},
+	{Type: "bool", Name: "usesNullifiers"},
+	{Type: "bool", Name: "usesKyc"},
+	{Type: "bool", Name: "usesNonRepudiation"},
+	{Type: "bool", Name: "usesEnforcement"},
+}
+
 // DomainInstanceConfigABI is the ABI for the DomainInstanceConfig,
 // used to encode and decode the on-chain data for the domain config
 var DomainInstanceConfigABI = &abi.ParameterArray{
@@ -83,10 +93,11 @@ var DomainInstanceConfigABI = &abi.ParameterArray{
 		Type: "tuple",
 		Name: "circuits",
 		Components: []*abi.Parameter{
-			{Type: "tuple", Name: "deposit", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "withdraw", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "transfer", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "transferLocked", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
+			{Type: "tuple", Name: "deposit", Components: circuitABIComponents},
+			{Type: "tuple", Name: "withdraw", Components: circuitABIComponents},
+			{Type: "tuple", Name: "transfer", Components: circuitABIComponents},
+			{Type: "tuple", Name: "transferLocked", Components: circuitABIComponents},
+			{Type: "tuple", Name: "forcedTransfer", Components: circuitABIComponents},
 		},
 	},
 }

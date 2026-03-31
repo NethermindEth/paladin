@@ -17,6 +17,7 @@ package fungible
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
@@ -28,6 +29,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner/zetosignerapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	pb "github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
@@ -38,16 +40,22 @@ var _ types.DomainHandler = &depositHandler{}
 
 type depositHandler struct {
 	baseHandler
+	callbacks   plugintk.DomainCallbacks
+	keyProvider common.AuthorityKeyProvider
 }
 
-func NewDepositHandler(name string, coinSchema *pb.StateSchema) *depositHandler {
+func NewDepositHandler(name string, callbacks plugintk.DomainCallbacks, keyProvider common.AuthorityKeyProvider, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema *pb.StateSchema) *depositHandler {
 	return &depositHandler{
 		baseHandler: baseHandler{
 			name: name,
 			stateSchemas: &common.StateSchemas{
-				CoinSchema: coinSchema,
+				CoinSchema:           coinSchema,
+				MerkleTreeRootSchema: merkleTreeRootSchema,
+				MerkleTreeNodeSchema: merkleTreeNodeSchema,
 			},
 		},
+		callbacks:   callbacks,
+		keyProvider: keyProvider,
 	}
 }
 
@@ -60,6 +68,27 @@ var depositABI = &abi.Entry{
 		{Name: "proof", Type: "tuple", InternalType: "struct Commonlib.Proof", Components: common.ProofComponents},
 		{Name: "data", Type: "bytes"},
 	},
+}
+
+var depositABI_enforced = &abi.Entry{
+	Type: abi.Function,
+	Name: types.METHOD_DEPOSIT,
+	Inputs: abi.ParameterArray{
+		{Name: "amount", Type: "uint256"},
+		{Name: "outputs", Type: "uint256[]"},
+		{Name: "proof", Type: "bytes"},
+		{Name: "data", Type: "bytes"},
+	},
+}
+
+// Must match AENKNRECodec._decodeDeposit
+var enforcedDepositProofABI = &abi.ParameterArray{
+	{Name: "encryptionNonce", Type: "uint256"},
+	{Name: "ecdhPublicKey", Type: "uint256[2]"},
+	{Name: "encryptedValuesForReceiver", Type: "uint256[]"},
+	{Name: "encryptedValuesForArbiter", Type: "uint256[]"},
+	{Name: "encryptedValuesForEnforcer", Type: "uint256[]"},
+	{Name: "proof", Type: "tuple", InternalType: "struct Commonlib.Proof", Components: common.ProofComponents},
 }
 
 func (h *depositHandler) ValidateParams(ctx context.Context, config *types.DomainInstanceConfig, params string) (interface{}, error) {
@@ -102,7 +131,11 @@ func (h *depositHandler) Assemble(ctx context.Context, tx *types.ParsedTransacti
 		return nil, i18n.NewError(ctx, msgs.MsgErrorPrepTxOutputs, err)
 	}
 
-	payloadBytes, err := h.formatProvingRequest(ctx, outputCoins, (*tx.DomainConfig.Circuits)[types.METHOD_DEPOSIT])
+	contractAddress, err := pldtypes.ParseEthAddress(req.Transaction.ContractInfo.ContractAddress)
+	if err != nil {
+		return nil, i18n.NewError(ctx, msgs.MsgErrorDecodeContractAddress, err)
+	}
+	payloadBytes, err := h.formatProvingRequest(ctx, outputCoins, (*tx.DomainConfig.Circuits)[types.METHOD_DEPOSIT], tx.DomainConfig.TokenName, req.StateQueryContext, contractAddress)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorFormatProvingReq, err)
 	}
@@ -205,10 +238,19 @@ func (h *depositHandler) Prepare(ctx context.Context, tx *types.ParsedTransactio
 	params := map[string]any{
 		"amount":  amount.Int().Text(10),
 		"outputs": outputs,
-		"proof":   common.EncodeProof(proofRes.Proof),
 		"data":    data,
 	}
 	depositFunction := depositABI
+	if common.IsEnforcedToken(tx.DomainConfig.TokenName) {
+		depositFunction = depositABI_enforced
+		proofBytes, err := common.EncodeEnforcedProof(ctx, &proofRes, enforcedDepositProofABI, nil)
+		if err != nil {
+			return nil, err
+		}
+		params["proof"] = "0x" + hex.EncodeToString(proofBytes)
+	} else {
+		params["proof"] = common.EncodeProof(proofRes.Proof)
+	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorMarshalPrepedParams, err)
@@ -227,7 +269,7 @@ func (h *depositHandler) Prepare(ctx context.Context, tx *types.ParsedTransactio
 	}, nil
 }
 
-func (h *depositHandler) formatProvingRequest(ctx context.Context, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit) ([]byte, error) {
+func (h *depositHandler) formatProvingRequest(ctx context.Context, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress) ([]byte, error) {
 	outputSize := common.GetInputSize(len(outputCoins))
 	outputCommitments := make([]string, outputSize)
 	outputValueInts := make([]uint64, outputSize)
@@ -250,6 +292,32 @@ func (h *depositHandler) formatProvingRequest(ctx context.Context, outputCoins [
 		return nil, i18n.NewError(ctx, msgs.MsgErrorMarshalValuesFungible, err)
 	}
 
+	var extras []byte
+	if circuit.UsesEnforcement {
+		// Deposit circuit checks only OUTPUT owners (no sender identity check).
+		// identitiesMerkleProof is [nOutputs][64], so generate exactly nOutputs proofs.
+		smtProofKyc, err := smtProofForOutputOwnersOnly(ctx, h.callbacks, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, outputCoins, outputSize, smtKycTreeType)
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+		}
+		smtProofCompliance, err := smtProofForOutputOwnersOnly(ctx, h.callbacks, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, outputCoins, outputSize, smtComplianceTreeType)
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+		}
+		enforcedExtras := &corepb.ProvingRequestExtras_NonRepudiationEnforced{
+			SmtKycProof:        smtProofKyc,
+			SmtComplianceProof: smtProofCompliance,
+		}
+		if keys := h.keyProvider.GetAuthorityKeys(contractAddress.String()); keys != nil {
+			enforcedExtras.ArbiterPublicKey = keys.ArbiterPublicKey[:]
+			enforcedExtras.EnforcerPublicKey = keys.EnforcerPublicKey[:]
+		}
+		extras, err = proto.Marshal(enforcedExtras)
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorMarshalExtraObj, err)
+		}
+	}
+
 	payload := &corepb.ProvingRequest{
 		Circuit: circuit.ToProto(),
 		Common: &corepb.ProvingRequestCommon{
@@ -259,6 +327,7 @@ func (h *depositHandler) formatProvingRequest(ctx context.Context, outputCoins [
 			TokenSecrets:      tokenSecrets,
 			TokenType:         corepb.TokenType_fungible,
 		},
+		Extras: extras,
 	}
 	return proto.Marshal(payload)
 }

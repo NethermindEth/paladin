@@ -333,7 +333,7 @@ func TestNewWithdrawHandler(t *testing.T) {
 	merkleTreeRootSchema := &prototk.StateSchema{Id: "merkle_tree_root"}
 	merkleTreeNodeSchema := &prototk.StateSchema{Id: "merkle_tree_node"}
 
-	handler := NewWithdrawHandler(name, callbacks, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema)
+	handler := NewWithdrawHandler(name, callbacks, nil, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema)
 
 	assert.Equal(t, name, handler.name)
 	assert.Equal(t, callbacks, handler.callbacks)

@@ -108,6 +108,7 @@ func TestDecodeDomainConfig(t *testing.T) {
 			"withdraw":       &zetosignerapi.Circuit{Name: "circuit-withdraw"},
 			"transfer":       &zetosignerapi.Circuit{Name: "circuit-transfer"},
 			"transferLocked": &zetosignerapi.Circuit{Name: "circuit-transfer-locked"},
+			"forcedTransfer": &zetosignerapi.Circuit{Name: "circuit-forced-transfer"},
 		},
 		TokenName: "token-name",
 	}
@@ -204,6 +205,7 @@ func TestPrepareDeploy(t *testing.T) {
 				"withdraw":       &zetosignerapi.Circuit{Name: "circuit-withdraw"},
 				"transfer":       &zetosignerapi.Circuit{Name: "circuit-transfer"},
 				"transferLocked": &zetosignerapi.Circuit{Name: "circuit-transfer-locked"},
+				"forcedTransfer": &zetosignerapi.Circuit{Name: "circuit-forced-transfer"},
 			},
 			constructorParamsJson: fmt.Sprintf("{\"tokenName\":\"%s\"}", constants.TOKEN_ANON),
 			isNonFungible:         false,
@@ -216,6 +218,7 @@ func TestPrepareDeploy(t *testing.T) {
 				"withdraw":       &zetosignerapi.Circuit{Name: "circuit-withdraw"},
 				"transfer":       &zetosignerapi.Circuit{Name: "circuit-transfer"},
 				"transferLocked": &zetosignerapi.Circuit{Name: "circuit-transfer-locked"},
+				"forcedTransfer": &zetosignerapi.Circuit{Name: "circuit-forced-transfer"},
 			},
 			constructorParamsJson: fmt.Sprintf("{\"tokenName\":\"%s\"}", constants.TOKEN_NF_ANON),
 			isNonFungible:         true,
@@ -228,6 +231,7 @@ func TestPrepareDeploy(t *testing.T) {
 				"withdraw":       &zetosignerapi.Circuit{Name: "circuit-withdraw"},
 				"transfer":       &zetosignerapi.Circuit{Name: "circuit-transfer"},
 				"transferLocked": &zetosignerapi.Circuit{Name: "circuit-transfer-locked"},
+				"forcedTransfer": &zetosignerapi.Circuit{Name: "circuit-forced-transfer"},
 			},
 			constructorParamsJson: fmt.Sprintf("{\"tokenName\":\"%s\"}", constants.TOKEN_NF_ANON_NULLIFIER),
 			isNonFungible:         true,
@@ -290,6 +294,7 @@ func TestInitContract(t *testing.T) {
 			"withdraw":       &zetosignerapi.Circuit{Name: "circuit-withdraw"},
 			"transfer":       &zetosignerapi.Circuit{Name: "circuit-transfer"},
 			"transferLocked": &zetosignerapi.Circuit{Name: "circuit-transfer-locked"},
+			"forcedTransfer": &zetosignerapi.Circuit{Name: "circuit-forced-transfer"},
 		},
 		TokenName: "testToken1",
 	}
@@ -302,10 +307,11 @@ func TestInitContract(t *testing.T) {
 	require.True(t, res.Valid)
 	require.JSONEq(t, `{
 		"circuits": {
-			"deposit": { "name": "circuit-deposit", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false },
-			"withdraw": { "name": "circuit-withdraw", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false },
-			"transfer": { "name": "circuit-transfer", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false },
-			"transferLocked": { "name": "circuit-transfer-locked", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false }
+			"deposit": { "name": "circuit-deposit", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false, "usesNonRepudiation": false, "usesEnforcement": false },
+			"withdraw": { "name": "circuit-withdraw", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false, "usesNonRepudiation": false, "usesEnforcement": false },
+			"transfer": { "name": "circuit-transfer", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false, "usesNonRepudiation": false, "usesEnforcement": false },
+			"transferLocked": { "name": "circuit-transfer-locked", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false, "usesNonRepudiation": false, "usesEnforcement": false },
+			"forcedTransfer": { "name": "circuit-forced-transfer", "type": "", "usesEncryption": false, "usesKyc":false, "usesNullifiers": false, "usesNonRepudiation": false, "usesEnforcement": false }
 		},
 		"tokenName": "testToken1"
 	}`, res.ContractConfig.ContractConfigJson)
@@ -593,7 +599,7 @@ func TestHandleEventBatch(t *testing.T) {
 	req.Events[0].DataJson = string(data)
 	req.Events[0].SoliditySignature = "event UTXOMint(uint256[] outputs, address indexed submitter, bytes data)"
 	_, err = z.HandleEventBatch(ctx, req)
-	assert.ErrorContains(t, err, "PD210020: Failed to handle events (failures=1). [0]PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210020: Failed to handle events (failures=1). [0]PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	data, _ = json.Marshal(map[string]any{
 		"data":      encodedData,

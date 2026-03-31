@@ -24,6 +24,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/core"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/node"
 	"github.com/stretchr/testify/assert"
@@ -154,7 +155,7 @@ func TestStorage(t *testing.T) {
 	// test rollback
 	tx, err := storage.BeginTx()
 	assert.NoError(t, err)
-	idx1, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
+	idx1, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
 	err = tx.UpsertRootNodeRef(idx1)
 	assert.NoError(t, err)
 	assert.Equal(t, "d204000000000000000000000000000000000000000000000000000000000000", storage.(*statesStorage).pendingNodesTx.inflightRoot.Hex())
@@ -171,7 +172,7 @@ func TestUpsertRootNodeIndex(t *testing.T) {
 	assert.NotNil(t, storage)
 	tx, err := storage.BeginTx()
 	assert.NoError(t, err)
-	idx1, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
+	idx1, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
 	err = tx.UpsertRootNodeRef(idx1)
 	assert.NoError(t, err)
 	assert.Equal(t, "d204000000000000000000000000000000000000000000000000000000000000", storage.(*statesStorage).pendingNodesTx.inflightRoot.Hex())
@@ -187,7 +188,7 @@ func TestUpsertRootNodeIndex(t *testing.T) {
 
 func TestGetNode(t *testing.T) {
 	stateQueryConext := pldtypes.ShortID()
-	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
+	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
 
 	storage := NewStatesStorage(&domain.MockDomainCallbacks{MockFindAvailableStates: returnCustomError}, "test", stateQueryConext, "root-schema", "node-schema")
 	_, err := storage.GetNode(idx)
@@ -231,7 +232,7 @@ func TestGetNode(t *testing.T) {
 	storage = NewStatesStorage(&domain.MockDomainCallbacks{MockFindAvailableStates: returnEmptyStates}, "test", stateQueryConext, "root-schema", "node-schema")
 	tx1, err := storage.BeginTx()
 	assert.NoError(t, err)
-	n1, _ := node.NewLeafNode(node.NewIndexOnly(idx))
+	n1, _ := node.NewLeafNode(node.NewIndexOnly(idx), nil)
 	err = tx1.InsertNode(n1)
 	assert.NoError(t, err)
 	assert.Nil(t, tx1.Commit())
@@ -243,7 +244,7 @@ func TestGetNode(t *testing.T) {
 	storage = NewStatesStorage(&domain.MockDomainCallbacks{MockFindAvailableStates: returnEmptyStates}, "test", stateQueryConext, "root-schema", "node-schema")
 	tx2, err := storage.BeginTx()
 	assert.NoError(t, err)
-	n3, _ := node.NewLeafNode(node.NewIndexOnly(idx))
+	n3, _ := node.NewLeafNode(node.NewIndexOnly(idx), nil)
 	err = tx2.InsertNode(n3)
 	assert.NoError(t, err)
 	n4, err := storage.GetNode(n3.Ref())
@@ -255,8 +256,8 @@ func TestInsertNode(t *testing.T) {
 	stateQueryConext := pldtypes.ShortID()
 	storage := NewStatesStorage(&domain.MockDomainCallbacks{MockFindAvailableStates: returnEmptyStates}, "test", stateQueryConext, "root-schema", "node-schema")
 	assert.NotNil(t, storage)
-	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
-	n, _ := node.NewLeafNode(node.NewIndexOnly(idx))
+	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
+	n, _ := node.NewLeafNode(node.NewIndexOnly(idx), nil)
 
 	tx1, err := storage.BeginTx()
 	assert.NoError(t, err)
@@ -276,7 +277,7 @@ func TestInsertNode(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, n.Ref().Hex(), rootNode.Hex())
 
-	n, _ = node.NewBranchNode(idx, idx)
+	n, _ = node.NewBranchNode(idx, idx, crypto.NewPoseidonHasher())
 	tx2, err := storage.BeginTx()
 	assert.NoError(t, err)
 	err = tx2.InsertNode(n)
@@ -303,11 +304,11 @@ func TestNodesTxGetNode(t *testing.T) {
 	tx := &nodesTx{
 		inflightNodes: make(map[core.NodeRef]core.Node),
 	}
-	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
+	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
 	_, err := tx.getNode(idx)
 	assert.EqualError(t, err, core.ErrNotFound.Error())
 
-	n, _ := node.NewLeafNode(node.NewIndexOnly(idx))
+	n, _ := node.NewLeafNode(node.NewIndexOnly(idx), nil)
 	tx.inflightNodes[idx] = n
 	n2, err := tx.getNode(idx)
 	assert.NoError(t, err)
@@ -327,7 +328,7 @@ func TestGetNewStates(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, states, 0)
 
-	rootNode, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234))
+	rootNode, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234), crypto.NewPoseidonHasher())
 	storage.rootNode = &smtRootNode{
 		root: rootNode,
 		txId: "txid",
@@ -336,8 +337,8 @@ func TestGetNewStates(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, states, 1)
 
-	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234567890))
-	node, _ := node.NewLeafNode(node.NewIndexOnly(idx))
+	idx, _ := node.NewNodeIndexFromBigInt(big.NewInt(1234567890), crypto.NewPoseidonHasher())
+	node, _ := node.NewLeafNode(node.NewIndexOnly(idx), nil)
 	storage.committedNewNodes = map[core.NodeRef]*smtNode{
 		idx: {
 			node: node,

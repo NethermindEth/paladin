@@ -28,6 +28,7 @@ type Zeto interface {
 	GetHandler(method, tokenName string) types.DomainHandler
 	Name() string
 	CoinSchemaID() string
+	MerkleTreeRootSchemaID() string
 	NFTSchemaID() string
 }
 

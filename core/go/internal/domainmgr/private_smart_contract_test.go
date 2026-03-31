@@ -78,15 +78,14 @@ func goodPSC(t *testing.T, td *testDomainContext) *domainContract {
 		return &prototk.InitContractResponse{
 			Valid: true,
 			ContractConfig: &prototk.ContractConfig{
-				ContractConfigJson:            `{}`,
-				CoordinatorSelection:          prototk.ContractConfig_COORDINATOR_ENDORSER,
-				CoordinatorEndorserCandidates: []string{"endorser1@node1"},
-				SubmitterSelection:            prototk.ContractConfig_SUBMITTER_SENDER,
+				ContractConfigJson:   `{}`,
+				CoordinatorSelection: prototk.ContractConfig_COORDINATOR_ENDORSER,
+				SubmitterSelection:   prototk.ContractConfig_SUBMITTER_SENDER,
 			},
 		}, nil
 	}
 
-	loadResult, psc, err := d.initSmartContract(d.ctx, d.dm.persistence.NOTX(), &PrivateSmartContract{
+	loadResult, psc, err := d.initSmartContract(d.ctx, &PrivateSmartContract{
 		DeployTX:        uuid.New(),
 		RegistryAddress: *d.RegistryAddress(),
 		Address:         pldtypes.EthAddress(pldtypes.RandBytes(20)),
@@ -141,6 +140,7 @@ func doDomainInitTransactionOK(t *testing.T, td *testDomainContext, resFn ...fun
 					VerifierType: verifiers.ETH_ADDRESS,
 				},
 			},
+			EndorsementSet: []string{"id@node1"},
 		}
 		for _, fn := range resFn {
 			fn(res)
@@ -156,6 +156,7 @@ func doDomainInitTransactionOK(t *testing.T, td *testDomainContext, resFn ...fun
 	err := psc.InitTransaction(td.ctx, ptx, localTx)
 	require.NoError(t, err)
 	assert.Len(t, ptx.PreAssembly.RequiredVerifiers, 1)
+	assert.Equal(t, []string{"id@node1"}, ptx.PreAssembly.EndorsementSet)
 	return psc, ptx, localTx
 }
 
