@@ -26,6 +26,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/utxo"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/utxo/core"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
@@ -191,7 +192,7 @@ func (z *ZetoNFToken) setUTXO() error {
 		return err
 	}
 
-	z.utxoToken = utxo.NewNonFungible(z.TokenID.Int(), z.URI, publicKey, z.Salt.Int())
+	z.utxoToken = utxo.NewNonFungible(z.TokenID.Int(), z.URI, publicKey, z.Salt.Int(), crypto.NewPoseidonHasher())
 	return nil
 }
 
@@ -239,6 +240,7 @@ var MerkleTreeNodeABI = &abi.Parameter{
 	Components: abi.ParameterArray{
 		{Name: "refKey", Type: "bytes32", Indexed: true},
 		{Name: "index", Type: "bytes32"},
+		{Name: "value", Type: "bytes32"},
 		{Name: "type", Type: "bytes1"},
 		{Name: "leftChild", Type: "bytes32"},
 		{Name: "rightChild", Type: "bytes32"},
@@ -248,6 +250,7 @@ var MerkleTreeNodeABI = &abi.Parameter{
 type MerkleTreeNode struct {
 	RefKey     pldtypes.Bytes32  `json:"refKey"`
 	Index      pldtypes.Bytes32  `json:"index"`
+	Value      pldtypes.Bytes32  `json:"value"`
 	Type       pldtypes.HexBytes `json:"type"`
 	LeftChild  pldtypes.Bytes32  `json:"leftChild"`
 	RightChild pldtypes.Bytes32  `json:"rightChild"`
@@ -258,6 +261,7 @@ func (m *MerkleTreeNode) Hash(smtName string) (string, error) {
 	h.Write([]byte(smtName)) // Include the SMT name in the hash to ensure global uniqueness
 	h.Write(m.RefKey.Bytes())
 	h.Write(m.Index.Bytes())
+	h.Write(m.Value.Bytes())
 	h.Write([]byte(m.Type))
 	h.Write(m.LeftChild.Bytes())
 	h.Write(m.RightChild.Bytes())

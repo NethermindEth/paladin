@@ -213,6 +213,10 @@ func TestNewMerkleTreeSpec(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KycStatesTree, spec.Type)
 
-	spec, err = NewMerkleTreeSpec(ctx, "testSmt", 3, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
-	require.ErrorContains(t, err, "PD210140: Unknown states merkle tree type: 3")
+	spec, err = NewMerkleTreeSpec(ctx, "testSmt", ComplianceStatesTree, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
+	require.NoError(t, err)
+	assert.Equal(t, ComplianceStatesTree, spec.Type)
+
+	spec, err = NewMerkleTreeSpec(ctx, "testSmt", 4, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
+	require.ErrorContains(t, err, "PD210140: Unknown states merkle tree type: 4")
 }

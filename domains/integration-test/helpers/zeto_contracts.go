@@ -40,6 +40,9 @@ import (
 //go:embed abis/ZetoFactory.json
 var zetoFactoryJSON []byte
 
+//go:embed abis/ERC1967Proxy.json
+var erc1967ProxyJSON []byte
+
 type ZetoDomainConfig struct {
 	DomainContracts zetoDomainContracts `yaml:"contracts"`
 }
@@ -61,8 +64,11 @@ type cloneableContract struct {
 	batchWithdrawVerifier string
 	lockVerifier          string
 	batchLockVerifier     string
-	burnVerifier          string
-	batchBurnVerifier     string
+	burnVerifier              string
+	batchBurnVerifier         string
+	forcedTransferVerifier    string
+	codec                     string
+	transferFacet             string
 }
 
 type zetoDomainContracts struct {
@@ -79,8 +85,11 @@ type zetoDomainContract struct {
 	BatchWithdrawVerifier string                  `yaml:"batchWithdrawVerifier"`
 	LockVerifier          string                  `yaml:"lockVerifier"`
 	BatchLockVerifier     string                  `yaml:"batchLockVerifier"`
-	Circuits              *zetosignerapi.Circuits `yaml:"circuits"`
-	AbiAndBytecode        abiAndBytecode          `yaml:"abiAndBytecode"`
+	ForcedTransferVerifier string                  `yaml:"forcedTransferVerifier"`
+	Codec                  string                  `yaml:"codec"`
+	TransferFacet          string                  `yaml:"transferFacet"`
+	Circuits               *zetosignerapi.Circuits `yaml:"circuits"`
+	AbiAndBytecode         abiAndBytecode          `yaml:"abiAndBytecode"`
 	Libraries             []string                `yaml:"libraries"`
 	Cloneable             bool                    `yaml:"cloneable"`
 }
@@ -107,8 +116,9 @@ type verifiersInfo struct {
 	BatchWithdrawVerifier string `json:"batchWithdrawVerifier"`
 	LockVerifier          string `json:"lockVerifier"`
 	BatchLockVerifier     string `json:"batchLockVerifier"`
-	BurnVerifier          string `json:"burnVerifier"`
-	BatchBurnVerifier     string `json:"batchBurnVerifier"`
+	BurnVerifier              string `json:"burnVerifier"`
+	BatchBurnVerifier         string `json:"batchBurnVerifier"`
+	ForcedTransferVerifier    string `json:"forcedTransferVerifier"`
 }
 
 func DeployZetoContracts(t *testing.T, hdWalletSeed *testbed.UTInitFunction, configFile string, controller string) *ZetoDomainContracts {
@@ -157,6 +167,15 @@ func PrepareZetoConfig(t *testing.T, domainContracts *ZetoDomainContracts, zkpDi
 	return &config
 }
 
+func (z *ZetoDomainContracts) GetContractAddress(name string) *pldtypes.EthAddress {
+	return z.deployedContracts[name]
+}
+
+func (z *ZetoDomainContracts) GetCloneableContract(name string) (codec, transferFacet string) {
+	c := z.cloneableContracts[name]
+	return c.codec, c.transferFacet
+}
+
 func newZetoDomainContracts() *ZetoDomainContracts {
 	factory := solutils.MustLoadBuild(zetoFactoryJSON)
 
@@ -180,12 +199,26 @@ func deployDomainContracts(ctx context.Context, rpc rpcclient.Client, deployer s
 		return nil, err
 	}
 
-	// deploy the factory contract
-	factoryAddr, _, err := deployContract(ctx, rpc, deployer, &config.DomainContracts.Factory, deployedContracts)
+	// deploy the factory implementation contract
+	factoryImplAddr, _, err := deployContract(ctx, rpc, deployer, &config.DomainContracts.Factory, deployedContracts)
 	if err != nil {
 		return nil, err
 	}
-	log.L(ctx).Infof("Deployed factory contract to %s", factoryAddr.String())
+	log.L(ctx).Infof("Deployed factory implementation to %s", factoryImplAddr.String())
+
+	// deploy an ERC1967Proxy in front of the factory, calling initialize()
+	// The factory is a UUPS upgradeable contract whose constructor calls
+	// _disableInitializers(), so initialize() can only be called via proxy.
+	proxyBuild := solutils.MustLoadBuild(erc1967ProxyJSON)
+	initCalldata := "0x8129fc1c" // initialize() selector (no params)
+	proxyParams := fmt.Sprintf(`{"implementation":"%s","_data":"%s"}`, factoryImplAddr.String(), initCalldata)
+	var proxyAddrStr string
+	rpcerr := rpc.CallRPC(ctx, &proxyAddrStr, "testbed_deployBytecode", deployer, proxyBuild.ABI, proxyBuild.Bytecode.String(), pldtypes.RawJSON(proxyParams))
+	if rpcerr != nil {
+		return nil, rpcerr
+	}
+	factoryAddr := pldtypes.MustEthAddress(proxyAddrStr)
+	log.L(ctx).Infof("Deployed factory proxy to %s", factoryAddr.String())
 
 	ctrs := newZetoDomainContracts()
 	ctrs.FactoryAddress = factoryAddr
@@ -206,8 +239,11 @@ func findCloneableContracts(config *ZetoDomainConfig) map[string]cloneableContra
 				depositVerifier:       contract.DepositVerifier,
 				withdrawVerifier:      contract.WithdrawVerifier,
 				batchWithdrawVerifier: contract.BatchWithdrawVerifier,
-				lockVerifier:          contract.LockVerifier,
-				batchLockVerifier:     contract.BatchLockVerifier,
+				lockVerifier:              contract.LockVerifier,
+				batchLockVerifier:         contract.BatchLockVerifier,
+				forcedTransferVerifier:    contract.ForcedTransferVerifier,
+				codec:                     contract.Codec,
+				transferFacet:             contract.TransferFacet,
 			}
 		}
 	}
@@ -293,6 +329,7 @@ func registerImpl(ctx context.Context, name string, domainContracts *ZetoDomainC
 	batchLockVerifierName := domainContracts.cloneableContracts[name].batchLockVerifier
 	burnVerifierName := domainContracts.cloneableContracts[name].burnVerifier
 	batchBurnVerifierName := domainContracts.cloneableContracts[name].batchBurnVerifier
+	forcedTransferVerifierName := domainContracts.cloneableContracts[name].forcedTransferVerifier
 
 	params := &setImplementationParams{
 		Name: name,
@@ -379,6 +416,14 @@ func registerImpl(ctx context.Context, name string, domainContracts *ZetoDomainC
 			return fmt.Errorf("batch lock verifier contract not found among the deployed contracts")
 		}
 		params.Implementation.Verifiers.BatchBurnVerifier = batchBurnVerifierAddr.String()
+	}
+
+	if forcedTransferVerifierName != "" {
+		forcedTransferVerifierAddr, ok := domainContracts.deployedContracts[forcedTransferVerifierName]
+		if !ok {
+			return fmt.Errorf("forced transfer verifier contract %s not found among the deployed contracts", forcedTransferVerifierName)
+		}
+		params.Implementation.Verifiers.ForcedTransferVerifier = forcedTransferVerifierAddr.String()
 	}
 
 	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{

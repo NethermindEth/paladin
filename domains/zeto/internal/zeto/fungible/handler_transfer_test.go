@@ -40,6 +40,7 @@ func TestTransferValidateParams(t *testing.T) {
 	h := NewTransferHandler(
 		"test1",
 		nil,
+		nil,
 		&pb.StateSchema{Id: "coin"},
 		&pb.StateSchema{Id: "merkle_tree_root"},
 		&pb.StateSchema{Id: "merkle_tree_node"},

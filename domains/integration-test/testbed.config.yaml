@@ -14,6 +14,7 @@ db:
 rpcServer:
   http:
     port: 0
+    defaultRequestTimeout: 10m
   ws:
     disabled: true
 grpc:

@@ -114,7 +114,7 @@ func TestHandleMintEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleMintEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -190,7 +190,7 @@ func TestHandleTransferEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleTransferEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransfer event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransfer event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -263,7 +263,7 @@ func TestHandleTransferWithEncryptionEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleTransferWithEncryptionEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransferWithEncryptedValues event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransferWithEncryptedValues event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -393,7 +393,7 @@ func TestHandleWithdrawEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleWithdrawEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOWithdraw event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.NoError(t, err) // UTXO tree update errors are non-fatal (logged as warning)
 }
 
 func TestParseStatesFromEvent(t *testing.T) {
@@ -451,14 +451,14 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 
 	t.Run("valid data for the identity registered event", func(t *testing.T) {
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
 	t.Run("bad data for the identity registered event - should be logged and move on", func(t *testing.T) {
 		ev.DataJson = "bad json"
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
@@ -468,7 +468,7 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
@@ -479,7 +479,7 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.ErrorContains(t, err, "PD210020: Failed to handle events IdentityRegistered. inputs values not inside Finite Field")
 	})
 
@@ -490,7 +490,7 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, errSmtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, errSmtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 }

@@ -42,6 +42,9 @@ var ZetoAnonABIJSON []byte
 //go:embed abis/Zeto_AnonNullifierKyc.json
 var ZetoAnonNullifierKycABIJSON []byte
 
+//go:embed abis/Zeto_AnonEncNullifierKycNonRepudiationEnforced.json
+var ZetoAnonEncNullifierKycNonRepudiationEnforcedABIJSON []byte
+
 type ZetoHelper struct {
 	t       *testing.T
 	rpc     rpcclient.Client
@@ -237,6 +240,96 @@ func (z *ZetoHelper) Withdraw(ctx context.Context, amount int64) *DomainTransact
 	}
 	fn := types.ZetoFungibleABI.Functions()["withdraw"]
 	return NewDomainTransactionHelper(ctx, z.t, z.rpc, z.Address, fn, toJSON(z.t, &params))
+}
+
+func (z *ZetoHelperFungible) ForcedTransfer(ctx context.Context, seizedOwner string, to []string, amounts []uint64) *DomainTransactionHelper {
+	entries := make([]*types.FungibleTransferParamEntry, len(amounts))
+	for i, amount := range amounts {
+		entries[i] = &types.FungibleTransferParamEntry{
+			To:     to[i],
+			Amount: pldtypes.Uint64ToUint256(amount),
+		}
+	}
+	fn := types.ZetoFungibleABI.Functions()["forcedTransfer"]
+	return NewDomainTransactionHelper(ctx, z.t, z.rpc, z.Address, fn, toJSON(z.t, &types.ForcedTransferParams{
+		SeizedOwner: seizedOwner,
+		Transfers:   entries,
+	}))
+}
+
+func (z *ZetoHelperFungible) SetArbiter(ctx context.Context, tb testbed.Testbed, sender string, publicKey []*big.Int) {
+	setArbiterABI := abi.ABI{
+		&abi.Entry{Type: abi.Function, Name: "setArbiter", Inputs: abi.ParameterArray{{Name: "newKey", Type: "uint256[2]"}}},
+	}
+	paramsJson, _ := json.Marshal(&map[string]any{"newKey": [2]string{publicKey[0].Text(10), publicKey[1].Text(10)}})
+	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(), From: sender, To: z.Address,
+			Function: "setArbiter", Data: paramsJson,
+		},
+		ABI: setArbiterABI,
+	})
+	assert.NoError(z.t, err)
+}
+
+func (z *ZetoHelperFungible) SetEnforcer(ctx context.Context, tb testbed.Testbed, sender string, publicKey []*big.Int) {
+	setEnforcerABI := abi.ABI{
+		&abi.Entry{Type: abi.Function, Name: "setEnforcer", Inputs: abi.ParameterArray{{Name: "newKey", Type: "uint256[2]"}}},
+	}
+	paramsJson, _ := json.Marshal(&map[string]any{"newKey": [2]string{publicKey[0].Text(10), publicKey[1].Text(10)}})
+	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(), From: sender, To: z.Address,
+			Function: "setEnforcer", Data: paramsJson,
+		},
+		ABI: setEnforcerABI,
+	})
+	assert.NoError(z.t, err)
+}
+
+func (z *ZetoHelperFungible) SetComplianceRoot(ctx context.Context, tb testbed.Testbed, sender string, root *big.Int) {
+	setComplianceRootABI := abi.ABI{
+		&abi.Entry{Type: abi.Function, Name: "setComplianceRoot", Inputs: abi.ParameterArray{{Name: "newRoot", Type: "uint256"}, {Name: "data", Type: "bytes"}}},
+	}
+	paramsJson, _ := json.Marshal(&map[string]any{"newRoot": root.Text(10), "data": "0x"})
+	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(), From: sender, To: z.Address,
+			Function: "setComplianceRoot", Data: paramsJson,
+		},
+		ABI: setComplianceRootABI,
+	})
+	assert.NoError(z.t, err)
+}
+
+func (z *ZetoHelperFungible) SetCodec(ctx context.Context, tb testbed.Testbed, sender string, codecAddress *pldtypes.EthAddress) {
+	setCodecABI := abi.ABI{
+		&abi.Entry{Type: abi.Function, Name: "setCodec", Inputs: abi.ParameterArray{{Name: "codec", Type: "address"}}},
+	}
+	paramsJson, _ := json.Marshal(&map[string]string{"codec": codecAddress.String()})
+	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(), From: sender, To: z.Address,
+			Function: "setCodec", Data: paramsJson,
+		},
+		ABI: setCodecABI,
+	})
+	assert.NoError(z.t, err)
+}
+
+func (z *ZetoHelperFungible) SetTransferFacet(ctx context.Context, tb testbed.Testbed, sender string, facetAddress *pldtypes.EthAddress) {
+	setFacetABI := abi.ABI{
+		&abi.Entry{Type: abi.Function, Name: "setTransferFacet", Inputs: abi.ParameterArray{{Name: "facet", Type: "address"}}},
+	}
+	paramsJson, _ := json.Marshal(&map[string]string{"facet": facetAddress.String()})
+	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(), From: sender, To: z.Address,
+			Function: "setTransferFacet", Data: paramsJson,
+		},
+		ABI: setFacetABI,
+	})
+	assert.NoError(z.t, err)
 }
 
 func (z *ZetoHelper) Register(ctx context.Context, tb testbed.Testbed, sender string, publicKey []*big.Int) {

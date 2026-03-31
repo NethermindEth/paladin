@@ -1,7 +1,23 @@
+/*
+ * Copyright © 2024 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package fungible
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 
@@ -23,7 +39,8 @@ var _ types.DomainHandler = &forcedTransferHandler{}
 
 type forcedTransferHandler struct {
 	baseHandler
-	callbacks plugintk.DomainCallbacks
+	callbacks   plugintk.DomainCallbacks
+	keyProvider common.AuthorityKeyProvider
 }
 
 var forcedTransferABI = &abi.Entry{
@@ -36,7 +53,30 @@ var forcedTransferABI = &abi.Entry{
 	},
 }
 
-func NewForcedTransferHandler(name string, callbacks plugintk.DomainCallbacks, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema, dataSchema *pb.StateSchema) *forcedTransferHandler {
+var forcedTransferABI_enforced = &abi.Entry{
+	Type: abi.Function,
+	Name: types.METHOD_FORCED_TRANSFER,
+	Inputs: abi.ParameterArray{
+		{Name: "outputs", Type: "uint256[]"},
+		{Name: "proof", Type: "bytes"},
+		{Name: "data", Type: "bytes"},
+	},
+}
+
+// Must match AENKNRECodec._decodeForcedTransfer
+var enforcedForcedTransferProofABI = &abi.ParameterArray{
+	{Name: "enforcementNullifiers", Type: "uint256[]"},
+	{Name: "root", Type: "uint256"},
+	{Name: "enabledInputs", Type: "uint256[]"},
+	{Name: "encryptionNonce", Type: "uint256"},
+	{Name: "ecdhPublicKey", Type: "uint256[2]"},
+	{Name: "encryptedValuesForReceiver", Type: "uint256[]"},
+	{Name: "encryptedValuesForArbiter", Type: "uint256[]"},
+	{Name: "encryptedValuesForEnforcer", Type: "uint256[]"},
+	{Name: "proof", Type: "tuple", InternalType: "struct Commonlib.Proof", Components: common.ProofComponents},
+}
+
+func NewForcedTransferHandler(name string, callbacks plugintk.DomainCallbacks, keyProvider common.AuthorityKeyProvider, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema, dataSchema *pb.StateSchema) *forcedTransferHandler {
 	return &forcedTransferHandler{
 		baseHandler: baseHandler{
 			name: name,
@@ -47,7 +87,8 @@ func NewForcedTransferHandler(name string, callbacks plugintk.DomainCallbacks, c
 				DataSchema:           dataSchema,
 			},
 		},
-		callbacks: callbacks,
+		callbacks:   callbacks,
+		keyProvider: keyProvider,
 	}
 }
 
@@ -57,7 +98,7 @@ func (h *forcedTransferHandler) ValidateParams(ctx context.Context, config *type
 		return nil, err
 	}
 	if ftParams.SeizedOwner == "" {
-		return nil, i18n.NewError(ctx, msgs.MsgErrorNoTransferParams)
+		return nil, i18n.NewError(ctx, msgs.MsgErrorNoSeizedOwner)
 	}
 	if err := validateTransferParams(ctx, ftParams.Transfers); err != nil {
 		return nil, err
@@ -205,14 +246,35 @@ func (h *forcedTransferHandler) Prepare(ctx context.Context, tx *types.ParsedTra
 
 	params := map[string]any{
 		"outputs": outputs,
-		"proof":   common.EncodeProof(proofRes.Proof),
 		"data":    data,
+	}
+	ftFunction := forcedTransferABI
+	if common.IsEnforcedToken(tx.DomainConfig.TokenName) {
+		ftFunction = forcedTransferABI_enforced
+		// enabledInputs: 1 for real inputs, 0 for fillers
+		enabledInputs := make([]string, inputSize)
+		for i := 0; i < inputSize; i++ {
+			if i < len(req.InputStates) {
+				enabledInputs[i] = "1"
+			} else {
+				enabledInputs[i] = "0"
+			}
+		}
+		proofBytes, err := common.EncodeEnforcedProof(ctx, &proofRes, enforcedForcedTransferProofABI, map[string]interface{}{
+			"enabledInputs": enabledInputs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		params["proof"] = "0x" + hex.EncodeToString(proofBytes)
+	} else {
+		params["proof"] = common.EncodeProof(proofRes.Proof)
 	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorMarshalPrepedParams, err)
 	}
-	functionJSON, err := json.Marshal(forcedTransferABI)
+	functionJSON, err := json.Marshal(ftFunction)
 	if err != nil {
 		return nil, err
 	}
@@ -229,10 +291,6 @@ func (h *forcedTransferHandler) Prepare(ctx context.Context, tx *types.ParsedTra
 }
 
 // formatProvingRequest builds a ProvingRequest with NonRepudiationEnforced extras.
-// TODO(P11): compliance SMT proof generation — requires a compliance tree type in common.MerkleTreeType
-//            and a corresponding smt.MerkleTreeNameForComplianceStates helper.
-// TODO(P11): arbiter/enforcer public key retrieval — requires reading on-chain contract state
-//            (arbiterPublicKey() and enforcerPublicKey() view calls).
 func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputCoins, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress) ([]byte, error) {
 	inputSize := common.GetInputSize(len(inputCoins))
 	inputCommitments := make([]string, inputSize)
@@ -281,23 +339,22 @@ func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputC
 		return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 	}
 
-	// TODO(P11): generate compliance SMT proof from on-chain compliance tree.
-	// For now, use an empty proof — integration tests will provide the real implementation.
-	smtComplianceProof := &corepb.MerkleProofObject{
-		Root: "0",
+	// Compliance SMT proof: build a fresh tree with seized owner FROZEN, others ACTIVE.
+	// The forced transfer circuit verifies the seized owner has FROZEN status (2).
+	identities := h.keyProvider.GetComplianceIdentities(contractAddress.String())
+	smtComplianceProof, err := smtProofForForcedTransferCompliance(ctx, identities, inputOwner, inputOwner, outputCoins, inputSize+1)
+	if err != nil {
+		return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 	}
-
-	// TODO(P11): fetch arbiter and enforcer public keys from on-chain contract state.
-	// These are set via setArbiter()/setEnforcer() and exposed as view functions.
-	arbiterPublicKey := []string{"0", "0"}
-	enforcerPublicKey := []string{"0", "0"}
 
 	extrasObj := &corepb.ProvingRequestExtras_NonRepudiationEnforced{
 		SmtUtxoProof:       smtUtxoProof,
 		SmtKycProof:        smtKycProof,
 		SmtComplianceProof: smtComplianceProof,
-		ArbiterPublicKey:   arbiterPublicKey,
-		EnforcerPublicKey:  enforcerPublicKey,
+	}
+	if keys := h.keyProvider.GetAuthorityKeys(contractAddress.String()); keys != nil {
+		extrasObj.ArbiterPublicKey = keys.ArbiterPublicKey[:]
+		extrasObj.EnforcerPublicKey = keys.EnforcerPublicKey[:]
 	}
 	extras, err := proto.Marshal(extrasObj)
 	if err != nil {

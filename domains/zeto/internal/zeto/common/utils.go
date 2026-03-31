@@ -22,8 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 
-	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/proto"
 	corepb "github.com/LFDT-Paladin/paladin/domains/zeto/pkg/proto"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/types"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/core"
@@ -35,6 +35,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/iden3/go-iden3-crypto/babyjub"
 )
 
@@ -46,12 +47,33 @@ type StateSchemas struct {
 	MerkleTreeNodeSchema *prototk.StateSchema
 }
 
+// AuthorityKeys holds the arbiter and enforcer BabyJubJub public keys for a contract instance.
+type AuthorityKeys struct {
+	ArbiterPublicKey  [2]string
+	EnforcerPublicKey [2]string
+}
+
+// ComplianceIdentity holds a registered identity's BabyJubJub public key coordinates.
+type ComplianceIdentity struct {
+	PubKeyX *big.Int
+	PubKeyY *big.Int
+}
+
+// AuthorityKeyProvider supplies per-contract authority keys, compliance identities,
+// and transaction state tracking for the enforced token handlers.
+type AuthorityKeyProvider interface {
+	GetAuthorityKeys(contractAddress string) *AuthorityKeys
+	GetComplianceIdentities(contractAddress string) []ComplianceIdentity
+	TrackTxInputStates(txID string, commitmentHashes []pldtypes.HexUint256)
+}
+
 type MerkleTreeType int
 
 const (
 	StatesTree MerkleTreeType = iota
 	LockedStatesTree
 	KycStatesTree
+	ComplianceStatesTree
 )
 
 type MerkleTreeSpec struct {
@@ -60,7 +82,7 @@ type MerkleTreeSpec struct {
 	Type       MerkleTreeType
 	Storage    smt.StatesStorage
 	Tree       core.SparseMerkleTree
-	EmptyProof *proto.MerkleProof
+	EmptyProof *corepb.MerkleProof
 }
 
 func NewMerkleTreeSpec(ctx context.Context, name string, treeType MerkleTreeType, callbacks plugintk.DomainCallbacks, merkleTreeRootSchemaId, merkleTreeNodeSchemaId string, stateQueryContext string) (*MerkleTreeSpec, error) {
@@ -73,6 +95,8 @@ func NewMerkleTreeSpec(ctx context.Context, name string, treeType MerkleTreeType
 		levels = smt.SMT_HEIGHT_UTXO
 	case KycStatesTree:
 		levels = smt.SMT_HEIGHT_KYC
+	case ComplianceStatesTree:
+		levels = smt.SMT_HEIGHT_COMPLIANCE
 	default:
 		return nil, i18n.NewError(ctx, msgs.MsgUnknownSmtType, treeType)
 	}
@@ -81,9 +105,14 @@ func NewMerkleTreeSpec(ctx context.Context, name string, treeType MerkleTreeType
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorNewSmt, name, err)
 	}
-	emptyProof := &smt.Empty_Proof_Utxos
-	if treeType == KycStatesTree {
+	var emptyProof *corepb.MerkleProof
+	switch treeType {
+	case KycStatesTree:
 		emptyProof = &smt.Empty_Proof_kyc
+	case ComplianceStatesTree:
+		emptyProof = &smt.Empty_Proof_Compliance
+	default:
+		emptyProof = &smt.Empty_Proof_Utxos
 	}
 	return &MerkleTreeSpec{
 		Name:       name,
@@ -93,6 +122,15 @@ func NewMerkleTreeSpec(ctx context.Context, name string, treeType MerkleTreeType
 		Tree:       tree,
 		EmptyProof: emptyProof,
 	}, nil
+}
+
+// MakeEmptyProof creates an empty merkle proof with the given number of zero nodes.
+func MakeEmptyProof(levels int) *corepb.MerkleProof {
+	nodes := make([]string, levels)
+	for i := range nodes {
+		nodes[i] = "0"
+	}
+	return &corepb.MerkleProof{Nodes: nodes}
 }
 
 const modulus = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
@@ -197,6 +235,30 @@ func EncodeProof(proof *corepb.SnarkProof) map[string]interface{} {
 		},
 		"pC": []string{proof.C[0], proof.C[1]},
 	}
+}
+
+// EncodeEnforcedProof builds the ABI-encoded proof bytes blob for AENKNR-E circuits.
+// Fields are populated from PublicInputs, extraFields, or the Groth16 proof struct.
+func EncodeEnforcedProof(ctx context.Context, proofRes *corepb.ProvingResponse, proofABI *abi.ParameterArray, extraFields map[string]interface{}) ([]byte, error) {
+	proofData := make(map[string]interface{})
+	for _, param := range *proofABI {
+		if param.Name == "proof" {
+			proofData["proof"] = EncodeProof(proofRes.Proof)
+		} else if extra, ok := extraFields[param.Name]; ok {
+			proofData[param.Name] = extra
+		} else if val, ok := proofRes.PublicInputs[param.Name]; ok {
+			if param.Type == "uint256[]" || param.Type == "uint256[2]" {
+				proofData[param.Name] = strings.Split(val, ",")
+			} else {
+				proofData[param.Name] = val
+			}
+		}
+	}
+	proofJSON, err := json.Marshal(proofData)
+	if err != nil {
+		return nil, i18n.NewError(ctx, msgs.MsgErrorMarshalPrepedParams, err)
+	}
+	return proofABI.EncodeABIDataJSONCtx(ctx, proofJSON)
 }
 
 // Generate a random 256-bit integer

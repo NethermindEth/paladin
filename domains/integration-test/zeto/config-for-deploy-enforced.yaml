@@ -1,0 +1,73 @@
+contracts:
+  factory:
+    abiAndBytecode:
+      path: ./helpers/abis/ZetoFactory.json
+  implementations:
+    - name: PoseidonUnit2L
+      abiAndBytecode:
+        path: ./helpers/abis/Poseidon2.json
+    - name: PoseidonUnit3L
+      abiAndBytecode:
+        path: ./helpers/abis/Poseidon3.json
+    - name: SmtLib
+      abiAndBytecode:
+        path: ./helpers/abis/SmtLib.json
+    - name: Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced
+      abiAndBytecode:
+        path: ./helpers/abis/Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced.json
+    - name: Groth16Verifier_DepositKycNonRepudiationEnforced
+      abiAndBytecode:
+        path: ./helpers/abis/Groth16Verifier_DepositKycNonRepudiationEnforced.json
+    - name: Groth16Verifier_WithdrawNullifierKycEnforced
+      abiAndBytecode:
+        path: ./helpers/abis/Groth16Verifier_WithdrawNullifierKycEnforced.json
+    - name: Groth16Verifier_ForcedTransferNullifierKycEnforced
+      abiAndBytecode:
+        path: ./helpers/abis/Groth16Verifier_ForcedTransferNullifierKycEnforced.json
+    - name: AENKNRECodec
+      abiAndBytecode:
+        path: ./helpers/abis/AENKNRECodec.json
+    - name: Zeto_AENKNRETransferFacet
+      abiAndBytecode:
+        path: ./helpers/abis/Zeto_AENKNRETransferFacet.json
+    - name: Zeto_AnonEncNullifierKycNonRepudiationEnforced
+      verifier: Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced
+      depositVerifier: Groth16Verifier_DepositKycNonRepudiationEnforced
+      withdrawVerifier: Groth16Verifier_WithdrawNullifierKycEnforced
+      forcedTransferVerifier: Groth16Verifier_ForcedTransferNullifierKycEnforced
+      codec: AENKNRECodec
+      transferFacet: Zeto_AENKNRETransferFacet
+      circuits:
+        deposit:
+          name: deposit_kyc_non_repudiation_enforced
+          usesNullifiers: true
+          usesEncryption: true
+          usesKyc: true
+          usesNonRepudiation: true
+          usesEnforcement: true
+        withdraw:
+          name: withdraw_nullifier_kyc_enforced
+          usesNullifiers: true
+          usesEncryption: true
+          usesKyc: true
+          usesNonRepudiation: true
+          usesEnforcement: true
+        transfer:
+          name: anon_enc_nullifier_kyc_non_repudiation_enforced
+          usesNullifiers: true
+          usesEncryption: true
+          usesKyc: true
+          usesNonRepudiation: true
+          usesEnforcement: true
+        transferLocked:
+          name: ""
+        forcedTransfer:
+          name: forced_transfer_nullifier_kyc_enforced
+          usesNullifiers: true
+          usesEncryption: true
+          usesKyc: true
+          usesNonRepudiation: true
+          usesEnforcement: true
+      cloneable: true
+      abiAndBytecode:
+        path: ./helpers/abis/Zeto_AnonEncNullifierKycNonRepudiationEnforced.json

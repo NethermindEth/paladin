@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
+	"sync"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
@@ -57,16 +58,57 @@ type Zeto struct {
 	merkleTreeRootSchema *prototk.StateSchema
 	merkleTreeNodeSchema *prototk.StateSchema
 	dataSchema           *prototk.StateSchema
-	snarkProver          signerapi.InMemorySigner
-	events               struct {
+	snarkProver           signerapi.InMemorySigner
+	authorityKeys         sync.Map // map[contractAddress string]*common.AuthorityKeys
+	complianceIdentities  sync.Map // map[contractAddress string][]common.ComplianceIdentity
+	txInputStates         sync.Map // map[txID string][]pldtypes.HexUint256 — tracks input commitment hashes per transaction
+	events         struct {
 		mint               string
 		burn               string
 		transfer           string
 		transferWithEnc    string
 		withdraw           string
 		lock               string
-		identityRegistered string
+		identityRegistered               string
+		transferNonRepudiationEnforced   string
+		forcedTransferEnforced           string
+		arbiterUpdated                   string
+		enforcerSet                      string
 	}
+}
+
+type TransferNonRepudiationEnforcedEvent struct {
+	Inputs                     []pldtypes.HexUint256 `json:"inputs"`
+	Outputs                    []pldtypes.HexUint256 `json:"outputs"`
+	EnforcementNullifiers      []pldtypes.HexUint256 `json:"enforcementNullifiers"`
+	EncryptionNonce            pldtypes.HexUint256   `json:"encryptionNonce"`
+	EcdhPublicKey              [2]pldtypes.HexUint256 `json:"ecdhPublicKey"`
+	EncryptedValuesForReceiver []pldtypes.HexUint256 `json:"encryptedValuesForReceiver"`
+	EncryptedValuesForArbiter  []pldtypes.HexUint256 `json:"encryptedValuesForArbiter"`
+	EncryptedValuesForEnforcer []pldtypes.HexUint256 `json:"encryptedValuesForEnforcer"`
+	ArbiterKeyId               pldtypes.HexUint256   `json:"arbiterKeyId"`
+	Data                       pldtypes.HexBytes     `json:"data"`
+}
+
+type ForcedTransferEnforcedEvent struct {
+	EnforcementNullifiers      []pldtypes.HexUint256 `json:"enforcementNullifiers"`
+	Outputs                    []pldtypes.HexUint256 `json:"outputs"`
+	EncryptionNonce            pldtypes.HexUint256   `json:"encryptionNonce"`
+	EcdhPublicKey              [2]pldtypes.HexUint256 `json:"ecdhPublicKey"`
+	EncryptedValuesForReceiver []pldtypes.HexUint256 `json:"encryptedValuesForReceiver"`
+	EncryptedValuesForArbiter  []pldtypes.HexUint256 `json:"encryptedValuesForArbiter"`
+	EncryptedValuesForEnforcer []pldtypes.HexUint256 `json:"encryptedValuesForEnforcer"`
+	ArbiterKeyId               pldtypes.HexUint256   `json:"arbiterKeyId"`
+	Data                       pldtypes.HexBytes     `json:"data"`
+}
+
+type ArbiterUpdatedEvent struct {
+	NewKey [2]pldtypes.HexUint256 `json:"newKey"`
+	KeyId  pldtypes.HexUint256   `json:"keyId"`
+}
+
+type EnforcerSetEvent struct {
+	NewKey [2]pldtypes.HexUint256 `json:"newKey"`
 }
 
 type MintEvent struct {
@@ -138,6 +180,10 @@ func (z *Zeto) CoinSchemaID() string {
 	return z.coinSchema.Id
 }
 
+func (z *Zeto) MerkleTreeRootSchemaID() string {
+	return z.merkleTreeRootSchema.Id
+}
+
 func (z *Zeto) DataSchemaID() string {
 	return z.dataSchema.Id
 }
@@ -145,6 +191,53 @@ func (z *Zeto) DataSchemaID() string {
 func (z *Zeto) NFTSchemaID() string {
 	return z.nftSchema.Id
 }
+var _ common.AuthorityKeyProvider = &Zeto{}
+
+func (z *Zeto) GetAuthorityKeys(contractAddress string) *common.AuthorityKeys {
+	if v, ok := z.authorityKeys.Load(contractAddress); ok {
+		return v.(*common.AuthorityKeys)
+	}
+	return nil
+}
+
+// updateAuthorityKey copies the current keys, applies the mutation, and stores a new immutable pointer.
+// Readers via GetAuthorityKeys always see a consistent snapshot (no partial writes).
+func (z *Zeto) updateAuthorityKey(contractAddress string, mutate func(common.AuthorityKeys) common.AuthorityKeys) {
+	var current common.AuthorityKeys
+	if v, ok := z.authorityKeys.Load(contractAddress); ok {
+		current = *v.(*common.AuthorityKeys)
+	}
+	updated := mutate(current)
+	z.authorityKeys.Store(contractAddress, &updated)
+}
+
+func (z *Zeto) GetComplianceIdentities(contractAddress string) []common.ComplianceIdentity {
+	if v, ok := z.complianceIdentities.Load(contractAddress); ok {
+		return v.([]common.ComplianceIdentity)
+	}
+	return nil
+}
+
+func (z *Zeto) addComplianceIdentity(contractAddress string, identity common.ComplianceIdentity) {
+	existing := z.GetComplianceIdentities(contractAddress)
+	z.complianceIdentities.Store(contractAddress, append(existing, identity))
+}
+
+// TrackTxInputStates records the input commitment hashes for a transaction ID.
+// Used by the event handler to mark correct states as spent (SpentStates needs
+// state IDs, not nullifier values, due to FK constraints in the state store).
+func (z *Zeto) TrackTxInputStates(txID string, commitmentHashes []pldtypes.HexUint256) {
+	z.txInputStates.Store(txID, commitmentHashes)
+}
+
+// ConsumeTxInputStates retrieves and removes the tracked input states for a transaction.
+func (z *Zeto) ConsumeTxInputStates(txID string) []pldtypes.HexUint256 {
+	if v, ok := z.txInputStates.LoadAndDelete(txID); ok {
+		return v.([]pldtypes.HexUint256)
+	}
+	return nil
+}
+
 func (z *Zeto) getAlgoZetoSnarkBJJ() string {
 	return zetosignerapi.AlgoDomainZetoSnarkBJJ(z.name)
 }
@@ -353,17 +446,17 @@ func (z *Zeto) GetHandler(method, tokenName string) types.DomainHandler {
 	case types.METHOD_MINT:
 		return fungible.NewMintHandler(z.name, z.coinSchema, z.dataSchema)
 	case types.METHOD_TRANSFER:
-		return fungible.NewTransferHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
+		return fungible.NewTransferHandler(z.name, z.Callbacks, z, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
 	case types.METHOD_TRANSFER_LOCKED:
 		return fungible.NewTransferLockedHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
 	case types.METHOD_LOCK:
 		return fungible.NewLockHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema)
 	case types.METHOD_DEPOSIT:
-		return fungible.NewDepositHandler(z.name, z.coinSchema)
+		return fungible.NewDepositHandler(z.name, z.Callbacks, z, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema)
 	case types.METHOD_WITHDRAW:
-		return fungible.NewWithdrawHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema)
+		return fungible.NewWithdrawHandler(z.name, z.Callbacks, z, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema)
 	case types.METHOD_FORCED_TRANSFER:
-		return fungible.NewForcedTransferHandler(z.name, z.Callbacks, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
+		return fungible.NewForcedTransferHandler(z.name, z.Callbacks, z, z.coinSchema, z.merkleTreeRootSchema, z.merkleTreeNodeSchema, z.dataSchema)
 	default:
 		return nil
 	}
@@ -497,6 +590,14 @@ func (z *Zeto) registerEventSignatures(eventAbis abi.ABI) {
 			z.events.lock = event.SolString()
 		case "IdentityRegistered":
 			z.events.identityRegistered = event.SolString()
+		case "UTXOTransferNonRepudiationEnforced":
+			z.events.transferNonRepudiationEnforced = event.SolString()
+		case "UTXOForcedTransferEnforced":
+			z.events.forcedTransferEnforced = event.SolString()
+		case "ArbiterUpdated":
+			z.events.arbiterUpdated = event.SolString()
+		case "EnforcerSet":
+			z.events.enforcerSet = event.SolString()
 		}
 	}
 }
@@ -519,6 +620,7 @@ func (z *Zeto) HandleEventBatch(ctx context.Context, req *prototk.HandleEventBat
 	var smtForStates *common.MerkleTreeSpec
 	var smtForLockedStates *common.MerkleTreeSpec
 	var smtForKyc *common.MerkleTreeSpec
+	var smtForCompliance *common.MerkleTreeSpec
 	if common.IsNullifiersToken(domainConfig.TokenName) {
 		smtName := smt.MerkleTreeName(domainConfig.TokenName, contractAddress)
 		smtForStates, err = common.NewMerkleTreeSpec(ctx, smtName, common.StatesTree, z.Callbacks, z.merkleTreeRootSchema.Id, z.merkleTreeNodeSchema.Id, req.StateQueryContext)
@@ -538,6 +640,13 @@ func (z *Zeto) HandleEventBatch(ctx context.Context, req *prototk.HandleEventBat
 			return nil, err
 		}
 	}
+	if common.IsEnforcedToken(domainConfig.TokenName) {
+		smtName := smt.MerkleTreeNameForComplianceStates(domainConfig.TokenName, contractAddress)
+		smtForCompliance, err = common.NewMerkleTreeSpec(ctx, smtName, common.ComplianceStatesTree, z.Callbacks, z.merkleTreeRootSchema.Id, z.merkleTreeNodeSchema.Id, req.StateQueryContext)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, ev := range req.Events {
 		var err error
 		switch ev.SoliditySignature {
@@ -552,7 +661,15 @@ func (z *Zeto) HandleEventBatch(ctx context.Context, req *prototk.HandleEventBat
 		case z.events.lock:
 			err = z.handleLockedEvent(ctx, smtForStates, smtForLockedStates, ev, domainConfig.TokenName, &res)
 		case z.events.identityRegistered:
-			err = z.handleIdentityRegisteredEvent(ctx, smtForKyc, ev, domainConfig.TokenName, &res)
+			err = z.handleIdentityRegisteredEvent(ctx, smtForKyc, smtForCompliance, ev, domainConfig.TokenName, contractAddress, &res)
+		case z.events.transferNonRepudiationEnforced:
+			err = z.handleTransferNonRepudiationEnforcedEvent(ctx, smtForStates, ev, domainConfig.TokenName, &res)
+		case z.events.forcedTransferEnforced:
+			err = z.handleForcedTransferEnforcedEvent(ctx, smtForStates, ev, domainConfig.TokenName, &res)
+		case z.events.arbiterUpdated:
+			z.handleArbiterUpdatedEvent(ctx, ev, contractAddress)
+		case z.events.enforcerSet:
+			z.handleEnforcerSetEvent(ctx, ev, contractAddress)
 		}
 		if err != nil {
 			errors = append(errors, err.Error())
@@ -583,6 +700,15 @@ func (z *Zeto) HandleEventBatch(ctx context.Context, req *prototk.HandleEventBat
 			}
 			if len(newStatesForSMTForKyc) > 0 {
 				res.NewStates = append(res.NewStates, newStatesForSMTForKyc...)
+			}
+		}
+		if common.IsEnforcedToken(domainConfig.TokenName) && smtForCompliance != nil {
+			newStatesForCompliance, err := smtForCompliance.Storage.GetNewStates()
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorGetNewSmtStates, smtForCompliance.Name, err)
+			}
+			if len(newStatesForCompliance) > 0 {
+				res.NewStates = append(res.NewStates, newStatesForCompliance...)
 			}
 		}
 	}

@@ -208,7 +208,7 @@ func TestNewDepositHandler(t *testing.T) {
 		Id: "coinSchema",
 	}
 
-	handler := NewDepositHandler(name, coinSchema)
+	handler := NewDepositHandler(name, nil, nil, coinSchema, nil, nil)
 
 	assert.NotNil(t, handler)
 	assert.Equal(t, name, handler.name)

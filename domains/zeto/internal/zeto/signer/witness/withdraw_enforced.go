@@ -61,10 +61,13 @@ func (inputs *WithdrawEnforcedWitnessInputs) Assemble(ctx context.Context, keyEn
 	m["complianceRoot"] = complianceRoot
 	m["complianceMerkleProof"] = complianceProofs
 
-	// Enforcer public key (no arbiter in withdraw); reuse decoded value
+	// Authority public keys
+	if m["arbiterPublicKey"], err = decodeHexBigIntPair(ctx, inputs.EnforcedExtras.ArbiterPublicKey); err != nil {
+		return nil, err
+	}
 	m["enforcerPublicKey"] = enforcerPub
 
-	// Encryption (enforcer ciphertext for change note)
+	// Encryption
 	assembleEncryptionInputs(ctx, inputs.EnforcedExtras.EncryptionNonce, m)
 
 	return m, nil

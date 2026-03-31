@@ -18,6 +18,8 @@ package smt
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math/big"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/msgs"
@@ -26,8 +28,10 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/query"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/core"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/node"
+	apicore "github.com/hyperledger-labs/zeto/go-sdk/pkg/utxo/core"
 )
 
 type StatesStorage interface {
@@ -85,6 +89,10 @@ func NewStatesStorage(c plugintk.DomainCallbacks, smtName, stateQueryContext, ro
 		nodeSchemaId:      nodeSchemaId,
 		committedNewNodes: make(map[core.NodeRef]*smtNode),
 	}
+}
+
+func (s *statesStorage) GetHasher() apicore.Hasher {
+	return crypto.NewPoseidonHasher()
 }
 
 func (s *statesStorage) SetTransactionId(txId string) {
@@ -150,7 +158,7 @@ func (s *statesStorage) GetRootNodeRef() (core.NodeRef, error) {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorUnmarshalRootIdx, err)
 	}
 
-	idx, err := node.NewNodeIndexFromHex(root.RootIndex.HexString())
+	idx, err := node.NewNodeIndexFromHex(root.RootIndex.HexString(), s.GetHasher())
 	return idx, err
 }
 
@@ -203,26 +211,32 @@ func (s *statesStorage) GetNode(ref core.NodeRef) (core.Node, error) {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorUnmarshalSMTNode, err)
 	}
 
+	hasher := s.GetHasher()
 	var newNode core.Node
 	nodeType := core.NodeTypeFromByte(n.Type[:][0])
 	switch nodeType {
 	case core.NodeTypeLeaf:
-		idx, err1 := node.NewNodeIndexFromHex(n.Index.HexString())
+		idx, err1 := node.NewNodeIndexFromHex(n.Index.HexString(), hasher)
 		if err1 != nil {
 			return nil, i18n.NewError(ctx, msgs.MsgErrorNewNodeIndex, err1)
 		}
 		v := node.NewIndexOnly(idx)
-		newNode, err = node.NewLeafNode(v)
+		// Reconstruct with stored value if present, otherwise nil (key=value)
+		var leafValue *big.Int
+		if !n.Value.IsZero() {
+			leafValue = new(big.Int).SetBytes(n.Value.Bytes())
+		}
+		newNode, err = node.NewLeafNode(v, leafValue)
 	case core.NodeTypeBranch:
-		leftChild, err1 := node.NewNodeIndexFromHex(n.LeftChild.HexString())
+		leftChild, err1 := node.NewNodeIndexFromHex(n.LeftChild.HexString(), hasher)
 		if err1 != nil {
 			return nil, i18n.NewError(ctx, msgs.MsgErrorNewNodeIndex, err1)
 		}
-		rightChild, err2 := node.NewNodeIndexFromHex(n.RightChild.HexString())
+		rightChild, err2 := node.NewNodeIndexFromHex(n.RightChild.HexString(), hasher)
 		if err2 != nil {
 			return nil, i18n.NewError(ctx, msgs.MsgErrorNewNodeIndex, err2)
 		}
-		newNode, err = node.NewBranchNode(leftChild, rightChild)
+		newNode, err = node.NewBranchNode(leftChild, rightChild, hasher)
 	}
 	return newNode, err
 }
@@ -304,6 +318,14 @@ func (s *statesStorage) makeNewStateFromTreeNode(ctx context.Context, n *smtNode
 			return nil, i18n.NewError(ctx, msgs.MsgErrorParseNodeRef, err)
 		}
 		newNode.Index = idxBytes
+		if v := node.Value(); v != nil {
+			hex := fmt.Sprintf("%064x", v)
+			valBytes, err := pldtypes.ParseBytes32(hex)
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorParseNodeRef, err)
+			}
+			newNode.Value = valBytes
+		}
 	}
 
 	data, _ := json.Marshal(newNode)
