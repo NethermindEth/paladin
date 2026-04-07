@@ -1,3 +1,18 @@
+/*
+ * Copyright © 2025 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import PaladinClient, {
   PaladinVerifier,
   TransactionType,
@@ -11,7 +26,7 @@ import complianceRootAbi from "./zeto-abis/IZetoComplianceRoot.json";
 import enforcedAbi from "./zeto-abis/IZetoEnforced.json";
 
 // ---------------------------------------------------------------------------
-// Internal: raw PUBLIC transaction helper (same pattern as trex.ts)
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 async function sendTx(
@@ -36,36 +51,11 @@ async function sendTx(
   }
 }
 
-async function queryTx(
-  paladin: PaladinClient,
-  from: PaladinVerifier,
-  to: string,
-  abi: any[],
-  fn: string,
-  data: Record<string, any> = {},
-): Promise<any> {
-  return paladin.ptx.call({
-    type: TransactionType.PUBLIC,
-    from: from.lookup,
-    to,
-    data,
-    function: fn,
-    abi,
-  });
-}
-
 // ---------------------------------------------------------------------------
 // BabyJub key resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Resolves a Paladin verifier's BabyJubJub public key as [X, Y] decimal strings.
- *
- * The Paladin key store returns a 32-byte compressed point. We decompress it
- * using circomlibjs and return the two field element coordinates as decimal
- * strings, which is the format expected by Zeto's Solidity registration and
- * the Poseidon hash inputs in the compliance/KYC circuits.
- */
+/** Resolves a Paladin verifier's BabyJubJub public key as [X, Y] decimal strings. */
 export async function getBabyjubPublicKey(
   verifier: PaladinVerifier,
 ): Promise<string[]> {
@@ -100,16 +90,10 @@ export async function getBabyjubPublicKey(
 }
 
 // ---------------------------------------------------------------------------
-// Zeto KYC registration
+// Zeto admin operations
 // ---------------------------------------------------------------------------
 
-/**
- * Registers a BabyJubJub public key in the Zeto KYC identity tree.
- *
- * This calls `register(uint256[2] publicKey, bytes data)` on the Zeto contract.
- * The domain's event handler adds the key to the off-chain identities SMT and
- * (for enforced tokens) the compliance SMT with status ACTIVE.
- */
+/** Registers a BabyJubJub public key in the Zeto KYC identity tree. */
 export async function registerZetoKyc(
   paladin: PaladinClient,
   owner: PaladinVerifier,
@@ -122,32 +106,7 @@ export async function registerZetoKyc(
   });
 }
 
-/**
- * Checks whether a BabyJubJub public key is registered in the KYC tree.
- */
-export async function isRegistered(
-  paladin: PaladinClient,
-  from: PaladinVerifier,
-  zetoAddr: string,
-  pubKey: string[],
-): Promise<boolean> {
-  const result = await queryTx(paladin, from, zetoAddr, kycAbi.abi, "isRegistered", {
-    publicKey: pubKey,
-  });
-  return Boolean(result[0]);
-}
-
-// ---------------------------------------------------------------------------
-// Arbiter key management
-// ---------------------------------------------------------------------------
-
-/**
- * Sets the arbiter BabyJubJub public key on the Zeto enforced contract.
- *
- * The arbiter receives encrypted copies of every transfer's inputs/outputs
- * for audit/non-repudiation. This key is rotatable — each call emits an
- * ArbiterUpdated event with an incrementing keyId.
- */
+/** Sets the arbiter (audit) BabyJubJub key. Rotatable. */
 export async function setArbiter(
   paladin: PaladinClient,
   owner: PaladinVerifier,
@@ -159,29 +118,7 @@ export async function setArbiter(
   });
 }
 
-/**
- * Reads the current arbiter public key from the contract.
- */
-export async function getArbiter(
-  paladin: PaladinClient,
-  from: PaladinVerifier,
-  zetoAddr: string,
-): Promise<string[]> {
-  const result = await queryTx(paladin, from, zetoAddr, enforcedAbi.abi, "getArbiter");
-  return [result[0][0].toString(), result[0][1].toString()];
-}
-
-// ---------------------------------------------------------------------------
-// Enforcer key management
-// ---------------------------------------------------------------------------
-
-/**
- * Sets the enforcer BabyJubJub public key on the Zeto enforced contract.
- *
- * The enforcer can freeze accounts and execute forced transfers (clawback).
- * This key is set-once — calling setEnforcer a second time will revert with
- * EnforcerAlreadySet. Deploy a fresh Zeto contract if the key must change.
- */
+/** Sets the enforcer (seizure) BabyJubJub key. Set-once — reverts on second call. */
 export async function setEnforcer(
   paladin: PaladinClient,
   owner: PaladinVerifier,
@@ -193,39 +130,38 @@ export async function setEnforcer(
   });
 }
 
-/**
- * Reads the current enforcer public key from the contract.
- */
-export async function getEnforcer(
+// ---------------------------------------------------------------------------
+// Codec and transfer facet (diamond-lite pattern for enforced tokens)
+// ---------------------------------------------------------------------------
+
+const codecFacetAbi = [
+  { type: "function", name: "setCodec", inputs: [{ name: "codec", type: "address" }], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "setTransferFacet", inputs: [{ name: "facet", type: "address" }], outputs: [], stateMutability: "nonpayable" },
+];
+
+export async function setCodec(
   paladin: PaladinClient,
-  from: PaladinVerifier,
+  owner: PaladinVerifier,
   zetoAddr: string,
-): Promise<string[]> {
-  const result = await queryTx(paladin, from, zetoAddr, enforcedAbi.abi, "getEnforcer");
-  return [result[0][0].toString(), result[0][1].toString()];
+  codecAddr: string,
+): Promise<void> {
+  await sendTx(paladin, owner, zetoAddr, codecFacetAbi, "setCodec", { codec: codecAddr });
+}
+
+export async function setTransferFacet(
+  paladin: PaladinClient,
+  owner: PaladinVerifier,
+  zetoAddr: string,
+  facetAddr: string,
+): Promise<void> {
+  await sendTx(paladin, owner, zetoAddr, codecFacetAbi, "setTransferFacet", { facet: facetAddr });
 }
 
 // ---------------------------------------------------------------------------
-// Compliance root management
+// Compliance root
 // ---------------------------------------------------------------------------
 
-/**
- * Posts a new compliance SMT root on-chain.
- *
- * The compliance root is the Poseidon hash at the top of an off-chain Sparse
- * Merkle Tree where each leaf encodes a user's compliance status:
- *   key   = Poseidon(pubKeyX, pubKeyY)
- *   value = Poseidon(pubKeyX, pubKeyY, STATUS)    STATUS: 1=ACTIVE, 2=FROZEN
- *
- * The root must be posted on-chain BEFORE any Zeto operation that requires
- * compliance proofs (transfer, deposit, withdraw, forcedTransfer). The Go
- * domain reads getComplianceRoot() during Prepare to construct the ZK proof's
- * public inputs. If the on-chain root doesn't match the off-chain tree used
- * for proof generation, the Groth16 verification will fail.
- *
- * @param data - Arbitrary bytes attached to the ComplianceRootUpdated event
- *               (pass "0x" if unused).
- */
+/** Posts the compliance SMT root on-chain. Must be called before any operation needing compliance proofs. */
 export async function setComplianceRoot(
   paladin: PaladinClient,
   owner: PaladinVerifier,
@@ -237,17 +173,5 @@ export async function setComplianceRoot(
     newRoot: root,
     data,
   });
-}
-
-/**
- * Reads the current compliance root from the contract.
- */
-export async function getComplianceRoot(
-  paladin: PaladinClient,
-  from: PaladinVerifier,
-  zetoAddr: string,
-): Promise<string> {
-  const result = await queryTx(paladin, from, zetoAddr, complianceRootAbi.abi, "getComplianceRoot");
-  return result[0].toString();
 }
 

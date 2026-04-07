@@ -1,0 +1,51 @@
+# Docker context is monorepo root.
+# Only include paladin/ and zeto/{solidity,go-sdk}.
+
+# Exclude everything at monorepo root except paladin/ and zeto/
+architecture/
+nethermind-zeto/
+rs-soroban-sdk/
+stellar-core/
+stellar-rpc/
+
+# Exclude zeto subdirs we don't need (keep zkp/artifacts for AENKNR-E circuits)
+zeto/zkp/circuits
+zeto/zkp/node_modules
+zeto/zkp/js
+zeto/doc/
+
+# Standard build artifact exclusions
+**/Dockerfile*
+**/coverage
+**/mocks
+**/node_modules
+**/build
+**/bin
+**/tools
+**/typechain-types
+**/artifacts
+!zeto/zkp/artifacts
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.pb.go
+.git
+**/.gradle
+
+# Doc site is 100s of MB
+paladin/doc-site/
+
+# Zeto ZKP is 1GB
+paladin/domains/zeto/zkp
+
+# perf is not needed
+paladin/perf/
+!paladin/perf/go.mod
+
+# Other folders not needed
+paladin/examples/
+
+# Operator has its own docker build
+paladin/operator/**
+!paladin/operator/go.mod
+!paladin/operator/build.gradle

@@ -1,33 +1,31 @@
+/*
+ * Copyright © 2025 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { Merkletree, InMemoryDB, str2Bytes, ZERO_HASH } from "@iden3/js-merkletree";
 import { poseidon2, poseidon3 } from "poseidon-lite";
 
-/**
- * Compliance status constants matching the circom circuit template:
- *   compliance_status.circom → STATUS parameter
- */
 export const STATUS_ACTIVE = 1n;
 export const STATUS_FROZEN = 2n;
 
-/**
- * SMT height for the compliance tree. Must match:
- *   - Go domain: smt.SMT_HEIGHT_COMPLIANCE = 64
- *   - Zeto TS test: SMT_HEIGHT = 64
- *   - circom circuit: nComplianceSMTLevels parameter
- */
-const SMT_HEIGHT = 64;
+// Must match Go domain (SMT_HEIGHT_COMPLIANCE = 20) and circom nComplianceSMTLevels.
+const SMT_HEIGHT = 20;
 
 /**
- * Off-chain compliance Sparse Merkle Tree manager.
- *
- * Tracks each registered identity's compliance status (ACTIVE or FROZEN).
- * Only the root hash is posted on-chain via setComplianceRoot().
- *
- * Leaf encoding (must match compliance_status.circom exactly):
- *   key   = Poseidon2(pubKeyX, pubKeyY)
- *   value = Poseidon3(pubKeyX, pubKeyY, STATUS)
- *
- * Uses the same libraries as the Zeto TS tests (@iden3/js-merkletree + poseidon-lite)
- * to guarantee root compatibility.
+ * Off-chain compliance SMT. Tracks ACTIVE/FROZEN status per identity.
+ * Only the root is posted on-chain. Leaf encoding matches compliance_status.circom:
+ *   key = Poseidon2(pubKeyX, pubKeyY), value = Poseidon3(pubKeyX, pubKeyY, STATUS)
  */
 export class ComplianceSmtManager {
   private tree!: Merkletree;
@@ -38,13 +36,7 @@ export class ComplianceSmtManager {
     this.tree = new Merkletree(db, true, SMT_HEIGHT);
   }
 
-  /**
-   * Sets the compliance status for an identity.
-   *
-   * If the identity is new, inserts a leaf. If it already exists, updates the
-   * leaf value (e.g. ACTIVE → FROZEN for a freeze, or FROZEN → ACTIVE for an
-   * unfreeze). This uses @iden3/js-merkletree's native update() — no tree rebuild.
-   */
+  /** Inserts or updates an identity's compliance status (ACTIVE or FROZEN). */
   async setStatus(pubKeyX: string, pubKeyY: string, status: bigint): Promise<void> {
     const x = BigInt(pubKeyX);
     const y = BigInt(pubKeyY);
@@ -60,22 +52,13 @@ export class ComplianceSmtManager {
     }
   }
 
-  /**
-   * Returns the current compliance root as a decimal string.
-   *
-   * This is the value passed to setComplianceRoot() on-chain.
-   */
+  /** Returns the current root as a decimal string for setComplianceRoot(). */
   async getRoot(): Promise<string> {
     const root = await this.tree.root();
     return root.bigInt().toString();
   }
 
-  /**
-   * Generates a circom-compatible inclusion proof for an identity.
-   *
-   * Returns { root, siblings } where siblings is an array of BigInt values
-   * ready for use as circuit witness inputs.
-   */
+  /** Generates a circom-compatible inclusion proof for an identity. */
   async getProof(pubKeyX: string, pubKeyY: string): Promise<{ root: bigint; siblings: bigint[] }> {
     const leafKey = poseidon2([BigInt(pubKeyX), BigInt(pubKeyY)]);
     const proof = await this.tree.generateCircomVerifierProof(leafKey, ZERO_HASH);

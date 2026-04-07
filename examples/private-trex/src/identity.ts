@@ -1,7 +1,21 @@
+/*
+ * Copyright © 2025 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import PaladinClient, { PaladinVerifier } from "@lfdecentralizedtrust/paladin-sdk";
-import { TREXSuite, registerIdentity, setAddressFrozen } from "./trex";
-import { getBabyjubPublicKey, registerZetoKyc, setComplianceRoot } from "./helpers";
-import { ComplianceSmtManager, STATUS_ACTIVE, STATUS_FROZEN } from "./complianceSmt";
+import { getBabyjubPublicKey, setComplianceRoot } from "./helpers";
+import { ComplianceSmtManager } from "./complianceSmt";
 
 export interface ActorIdentity {
   name: string;
@@ -22,30 +36,7 @@ export async function resolveActorIdentity(
   };
 }
 
-/**
- * Registers an actor in both T-REX (identity registry) and Zeto (KYC + compliance ACTIVE).
- *
- * Does NOT post the compliance root on-chain — call postComplianceRoot() once
- * after batch onboarding to avoid redundant on-chain transactions.
- */
-export async function onboardActor(
-  paladin: PaladinClient,
-  issuer: PaladinVerifier,
-  actor: ActorIdentity,
-  trex: TREXSuite,
-  zetoAddr: string,
-  complianceSmt: ComplianceSmtManager,
-): Promise<void> {
-  await registerIdentity(paladin, issuer, trex.identityRegistry, trex.dummyIdentity, actor.evmAddress, 756);
-  await registerZetoKyc(paladin, issuer, zetoAddr, actor.babyjubPubKey);
-  await complianceSmt.setStatus(actor.babyjubPubKey[0], actor.babyjubPubKey[1], STATUS_ACTIVE);
-}
-
-/**
- * Posts the current compliance SMT root on-chain.
- *
- * Call once after batch onboarding or after any freeze/unfreeze.
- */
+/** Posts the current compliance SMT root on-chain. Call after batch onboarding or freeze/unfreeze. */
 export async function postComplianceRoot(
   paladin: PaladinClient,
   agent: PaladinVerifier,
@@ -53,37 +44,4 @@ export async function postComplianceRoot(
   complianceSmt: ComplianceSmtManager,
 ): Promise<void> {
   await setComplianceRoot(paladin, agent, zetoAddr, await complianceSmt.getRoot());
-}
-
-/**
- * Freezes an actor on both T-REX (address freeze) and Zeto (compliance FROZEN),
- * then posts the updated compliance root on-chain.
- */
-export async function freezeActor(
-  paladin: PaladinClient,
-  agent: PaladinVerifier,
-  actor: ActorIdentity,
-  trex: TREXSuite,
-  zetoAddr: string,
-  complianceSmt: ComplianceSmtManager,
-): Promise<void> {
-  await setAddressFrozen(paladin, agent, trex.token, actor.evmAddress, true);
-  await complianceSmt.setStatus(actor.babyjubPubKey[0], actor.babyjubPubKey[1], STATUS_FROZEN);
-  await postComplianceRoot(paladin, agent, zetoAddr, complianceSmt);
-}
-
-/**
- * Unfreezes an actor on both T-REX and Zeto, then posts the updated compliance root.
- */
-export async function unfreezeActor(
-  paladin: PaladinClient,
-  agent: PaladinVerifier,
-  actor: ActorIdentity,
-  trex: TREXSuite,
-  zetoAddr: string,
-  complianceSmt: ComplianceSmtManager,
-): Promise<void> {
-  await setAddressFrozen(paladin, agent, trex.token, actor.evmAddress, false);
-  await complianceSmt.setStatus(actor.babyjubPubKey[0], actor.babyjubPubKey[1], STATUS_ACTIVE);
-  await postComplianceRoot(paladin, agent, zetoAddr, complianceSmt);
 }

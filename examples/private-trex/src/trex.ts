@@ -206,9 +206,6 @@ export const unpause = (p: PaladinClient, agent: PaladinVerifier, token: string)
 export const registerIdentity = (p: PaladinClient, agent: PaladinVerifier, ir: string, identity: string, user: string, country: number) =>
   call(p, agent, ir, IR.abi, "registerIdentity", { _userAddress: user, _identity: identity, _country: country });
 
-export const deleteIdentity = (p: PaladinClient, agent: PaladinVerifier, ir: string, user: string) =>
-  call(p, agent, ir, IR.abi, "deleteIdentity", { _userAddress: user });
-
 // Queries
 
 export async function balanceOf(p: PaladinClient, from: PaladinVerifier, token: string, account: string): Promise<bigint> {
@@ -218,10 +215,5 @@ export async function balanceOf(p: PaladinClient, from: PaladinVerifier, token: 
 
 export async function isFrozen(p: PaladinClient, from: PaladinVerifier, token: string, user: string): Promise<boolean> {
   const result = await query(p, from, token, Token.abi, "isFrozen", { _userAddress: user });
-  return Boolean(result[0]);
-}
-
-export async function isVerified(p: PaladinClient, from: PaladinVerifier, ir: string, user: string): Promise<boolean> {
-  const result = await query(p, from, ir, IR.abi, "isVerified", { _userAddress: user });
   return Boolean(result[0]);
 }

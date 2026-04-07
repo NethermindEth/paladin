@@ -1,173 +1,404 @@
-/*
- * Copyright © 2025 Kaleido, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations under the License.
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import PaladinClient from "@lfdecentralizedtrust/paladin-sdk";
-import { nodeConnections } from "paladin-example-common";
+import PaladinClient, { ZetoFactory, PaladinVerifier } from "@lfdecentralizedtrust/paladin-sdk";
+import { checkReceipt, DEFAULT_POLL_TIMEOUT, LONG_POLL_TIMEOUT, nodeConnections } from "paladin-example-common";
 import * as trex from "./trex";
+import { setArbiter, setEnforcer, setCodec, setTransferFacet, registerZetoKyc } from "./helpers";
+import * as fs from "fs";
+import * as path from "path";
+import { ComplianceSmtManager } from "./complianceSmt";
+import {
+  resolveActorIdentity,
+  postComplianceRoot,
+} from "./identity";
+import { AuthorityNoteIndexer, DecryptedTransfer } from "./authorityIndexer";
+import { genKeypair } from "maci-crypto";
+import enforcedAbi from "./zeto-abis/IZetoEnforced.json";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const log = console.log;
+const header = (title: string, subtitle: string) => {
+  log(`\n${"═".repeat(50)}`);
+  log(`  ${title}`);
+  log(`  ${subtitle}`);
+  log(`${"═".repeat(50)}\n`);
+};
+const step = (n: number, msg: string) => log(`\n--- Step ${n}: ${msg} ---\n`);
+const ok = (msg: string) => log(`  ✓ ${msg}`);
+const info = (msg: string) => log(`  ${msg}`);
+
+async function publicBalance(p: PaladinClient, from: PaladinVerifier, token: string, addr: string): Promise<string> {
+  return (await trex.balanceOf(p, from, token, addr)).toLocaleString();
+}
+
+async function privateBalance(zeto: any, p: PaladinClient, v: PaladinVerifier): Promise<string> {
+  return (await zeto.using(p).balanceOf(v, { account: v.lookup })).totalBalance;
+}
+
+function expectRejection(receipt: any, reason: string): boolean {
+  if (receipt?.failureMessage) {
+    ok(`REJECTED: ${receipt.failureMessage}`);
+    return true;
+  }
+  console.error(`  ERROR: transfer should have been rejected (${reason})`);
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Main demo
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<boolean> {
-  if (nodeConnections.length < 3) {
-    console.error("Need at least 3 nodes for this scenario.");
+  if (nodeConnections.length < 1) {
+    console.error("Need at least 1 node for this scenario.");
     return false;
   }
 
-  const [n1, n2, n3] = nodeConnections;
-  const [p1, p2, p3] = [n1, n2, n3].map((n) => new PaladinClient(n.clientOptions));
+  // Single-node mode: all actors on node1 with one PaladinClient
+  const n1 = nodeConnections[0];
+  const p1 = new PaladinClient(n1.clientOptions);
+  // For multi-node setups, use separate clients; for single-node, alias them
+  const p2 = nodeConnections.length >= 2 ? new PaladinClient(nodeConnections[1].clientOptions) : p1;
+  const p3 = nodeConnections.length >= 3 ? new PaladinClient(nodeConnections[2].clientOptions) : p1;
   const runId = Math.random().toString(36).substring(2, 8);
 
-  // 6 actors across 3 nodes:
-  //   Node 1: Issuer (deploys), Bank (operates)
-  //   Node 2: Alice, Charlie (investors)
-  //   Node 3: Bob, Regulator
+  // All actors on node1 (single-node) or distributed across nodes
   const v = (client: PaladinClient, name: string, nodeId: string) =>
     client.getVerifiers(`${name}-${runId}@${nodeId}`)[0];
 
-  const issuer = v(p1, "issuer", n1.id);
-  const bank = v(p1, "bank", n1.id);
-  const alice = v(p2, "alice", n2.id);
-  const charlie = v(p2, "charlie", n2.id);
-  const bob = v(p3, "bob", n3.id);
-  // Regulator verifier created here when Zeto flows are wired in:
-  // const regulator = v(p3, "regulator", n3.id);
+  const n2id = nodeConnections.length >= 2 ? nodeConnections[1].id : n1.id;
+  const n3id = nodeConnections.length >= 3 ? nodeConnections[2].id : n1.id;
 
-  const addrs = await Promise.all(
-    [issuer, bank, alice, bob, charlie].map(async (v) => v.address()),
-  );
-  const [issuerAddr, bankAddr, aliceAddr, bobAddr, charlieAddr] = addrs;
+  const issuer    = v(p1, "issuer", n1.id);
+  const bank      = v(p1, "bank", n1.id);
+  const regulator = v(p1, "regulator", n1.id);
+  const alice     = v(p2, "alice", n2id);
+  const bob       = v(p3, "bob", n3id);
+  const charlie   = v(p3, "charlie", n3id);
 
-  // Helper: query all balances at once
-  const balances = async () => {
-    const [b, a, bo, c] = await Promise.all(
-      [bankAddr, aliceAddr, bobAddr, charlieAddr].map((addr) =>
-        trex.balanceOf(p1, bank, suite.token, addr),
-      ),
-    );
-    return { bank: b, alice: a, bob: bo, charlie: c };
-  };
+  log(`\nRun ${runId} — resolving actor identities...`);
+  const [issuerI, bankI, regulatorI, aliceI, bobI, charlieI] = await Promise.all([
+    resolveActorIdentity("Issuer", issuer),
+    resolveActorIdentity("Bank", bank),
+    resolveActorIdentity("Regulator", regulator),
+    resolveActorIdentity("Alice", alice),
+    resolveActorIdentity("Bob", bob),
+    resolveActorIdentity("Charlie", charlie),
+  ]);
 
-  // Helper: assert a call fails
-  const expectFailure = async (fn: () => Promise<void>, reason: string) => {
-    try {
-      await fn();
-      console.error(`   ERROR: should have failed (${reason})`);
-      return false;
-    } catch {
-      console.log(`   Rejected: ${reason}`);
-      return true;
-    }
-  };
-
-  console.log(`\nRun ${runId} — Issuer=${issuerAddr}, Bank=${bankAddr}`);
-  console.log(`  Alice=${aliceAddr}, Bob=${bobAddr}, Charlie=${charlieAddr}\n`);
-
-  // ── Startup: Deploy & configure ───────────────────────────────────────────
-
-  console.log("=== Startup ===\n");
-
-  console.log("Deploying T-REX suite...");
-  const suite = await trex.deployTREX(p1, issuer, "Demo Bond Token", "DBT", {
-    token: [issuerAddr, bankAddr],
-    ir: [issuerAddr, bankAddr],
-  });
-
-  // KYC: Alice ✅, Bob ✅, Charlie ❌
-  console.log("Registering identities...");
-  for (const [addr, label] of [[issuerAddr, "Issuer"], [bankAddr, "Bank"], [aliceAddr, "Alice"], [bobAddr, "Bob"]] as const) {
-    await trex.registerIdentity(p1, issuer, suite.identityRegistry, suite.dummyIdentity, addr, 840);
-    console.log(`  ${label} KYC'd`);
+  const actors = { issuer: issuerI, bank: bankI, regulator: regulatorI, alice: aliceI, bob: bobI, charlie: charlieI };
+  for (const [name, a] of Object.entries(actors)) {
+    info(`${name}: ${a.evmAddress}`);
   }
-  console.log("  Charlie NOT KYC'd (deliberate)");
 
-  console.log("Unpausing token...");
+  // ══════════════════════════════════════════════════════════════════════
+  // SETUP
+  // ══════════════════════════════════════════════════════════════════════
+
+  step(1, "Deploy T-REX (ERC-3643) token");
+
+  const suite = await trex.deployTREX(p1, issuer, "Demo Bond Token", "DBT", {
+    token: [issuerI.evmAddress, bankI.evmAddress],
+    ir: [issuerI.evmAddress, bankI.evmAddress],
+  });
+  ok(`Token: ${suite.token}`);
+  ok(`Identity Registry: ${suite.identityRegistry}`);
+
+  step(2, "Deploy Zeto AENKNR-E (shielded pool)");
+
+  // Bank deploys and owns the Zeto contract (matches Go integration test pattern).
+  // This is required because forcedTransfer's on-chain submission must come from the
+  // contract owner, and the ZK circuit signs with the from identity's BabyJub key.
+  const zetoFactory = new ZetoFactory(p1, "zeto");
+  const zeto = await zetoFactory
+    .newZeto(bank, { tokenName: "Zeto_AnonEncNullifierKycNonRepudiationEnforced" })
+    .waitForDeploy(LONG_POLL_TIMEOUT);
+  if (!zeto) { console.error("Zeto deploy failed"); return false; }
+  ok(`Zeto: ${zeto.address}`);
+
+  // Set codec and transfer facet (diamond-lite pattern for enforced tokens)
+  const deployDataPath = path.resolve(__dirname, "../data/deploy.json");
+  if (fs.existsSync(deployDataPath)) {
+    const deployData = JSON.parse(fs.readFileSync(deployDataPath, "utf-8"));
+    if (deployData.contracts?.codec) {
+      await setCodec(p1, bank, zeto.address, deployData.contracts.codec);
+      ok(`Codec set: ${deployData.contracts.codec}`);
+    }
+    if (deployData.contracts?.transferFacet) {
+      await setTransferFacet(p1, bank, zeto.address, deployData.contracts.transferFacet);
+      ok(`Transfer facet set: ${deployData.contracts.transferFacet}`);
+    }
+  }
+
+  step(3, "Link T-REX <> Zeto, set authorities");
+
+  const setErc20Receipt = await zeto
+    .setERC20(bank, { erc20: suite.token })
+    .waitForReceipt(DEFAULT_POLL_TIMEOUT);
+  if (!checkReceipt(setErc20Receipt)) return false;
+  ok("T-REX linked as ERC-20 backing for Zeto deposits");
+
+  await trex.registerIdentity(p1, issuer, suite.identityRegistry, suite.dummyIdentity, zeto.address, 756);
+  ok("Zeto escrow registered in T-REX IR");
+
+  // Arbiter key is generated EXTERNALLY — not managed by Paladin.
+  // The private key stays in this process for decryption (Act 3).
+  // In production, it would live in the UI backend's secure storage.
+  const arbiterKeypair = genKeypair();
+  const arbiterPrivKey = BigInt(arbiterKeypair.privKey.toString()); // raw key — genEcdhSharedKey formats internally
+  const arbiterPubKey = [arbiterKeypair.pubKey[0].toString(), arbiterKeypair.pubKey[1].toString()];
+  await setArbiter(p1, bank, zeto.address, arbiterPubKey);
+  ok("Arbiter set (external keypair — private key held for decryption)");
+
+  await setEnforcer(p1, bank, zeto.address, bankI.babyjubPubKey);
+  ok("Enforcer set (Bank — set-once)");
+
+
+  step(4, "KYC onboarding (Alice, Bob — NOT Charlie)");
+
+  const complianceSmt = new ComplianceSmtManager();
+  await complianceSmt.init();
+
+  for (const actor of [issuerI, bankI, regulatorI, aliceI, bobI]) {
+    // T-REX identity: issuer is agent. Zeto KYC: bank is owner.
+    await trex.registerIdentity(p1, issuer, suite.identityRegistry, suite.dummyIdentity, actor.evmAddress, 756);
+    await registerZetoKyc(p1, bank, zeto.address, actor.babyjubPubKey);
+    await complianceSmt.setStatus(actor.babyjubPubKey[0], actor.babyjubPubKey[1], 1n);
+    ok(`${actor.name}: T-REX identity + Zeto KYC + compliance ACTIVE`);
+  }
+  info("Charlie intentionally NOT onboarded");
+
+  await postComplianceRoot(p1, bank, zeto.address, complianceSmt);
+  ok("Compliance root posted on-chain");
+
   await trex.unpause(p1, issuer, suite.token);
+  ok("T-REX token unpaused");
+
+  step(5, "Issue treasury to Bank");
 
   const TREASURY = 1_000_000;
-  console.log(`Minting ${TREASURY} to Bank...`);
-  await trex.mint(p1, issuer, suite.token, bankAddr, TREASURY);
+  await trex.mint(p1, issuer, suite.token, bankI.evmAddress, TREASURY);
+  ok(`Minted ${TREASURY.toLocaleString()} DBT to Bank`);
 
-  // Zeto integration: after deploying NM-Zeto, register its address in IR
-  // and call trex.approve() before Zeto.deposit().
+  step(6, "Bank deposits 50% into Zeto privacy pool");
 
-  // ── Minutes 1–3: Public transfers ─────────────────────────────────────────
+  const DEPOSIT = TREASURY / 2;
+  await trex.approve(p1, bank, suite.token, zeto.address, DEPOSIT);
+  const depositReceipt = await zeto
+    .deposit(bank, { amount: DEPOSIT })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!checkReceipt(depositReceipt)) return false;
 
-  console.log("\n=== Public transfers (fully transparent on Etherscan) ===\n");
+  info(`Bank public:  ${await publicBalance(p1, bank, suite.token, bankI.evmAddress)}`);
+  info(`Bank private: ${await privateBalance(zeto, p1, bank)}`);
 
-  const ALICE_BUY = 100_000;
-  console.log(`Bank → Alice (${ALICE_BUY})...`);
-  await trex.transfer(p1, bank, suite.token, aliceAddr, ALICE_BUY);
+  // ══════════════════════════════════════════════════════════════════════
+  // ACT 1 — PUBLIC TRANSFERS
+  // ══════════════════════════════════════════════════════════════════════
 
-  const ALICE_TO_BOB = 25_000;
-  console.log(`Alice → Bob (${ALICE_TO_BOB})...`);
-  await trex.transfer(p2, alice, suite.token, bobAddr, ALICE_TO_BOB);
+  header("ACT 1: PUBLIC TRANSFERS", "Open block explorer — everything visible");
 
-  let bal = await balances();
-  console.log(`  Bank=${bal.bank}  Alice=${bal.alice}  Bob=${bal.bob}`);
+  step(7, "Alice buys 10,000 public tokens from Bank");
 
-  // Minutes 4–11: Shielded transfers and selective disclosure happen
-  // entirely in the Zeto domain — T-REX is not involved.
+  await trex.transfer(p1, bank, suite.token, aliceI.evmAddress, 10_000);
+  info(`Alice public: ${await publicBalance(p2, alice, suite.token, aliceI.evmAddress)}`);
+  info(">> Block explorer: sender, receiver, amount ALL visible <<");
 
-  // ── Minutes 12–15: Compliance enforcement ─────────────────────────────────
+  step(8, "Alice sends 2,000 public tokens to Bob");
 
-  console.log("\n=== Compliance enforcement ===\n");
+  await trex.transfer(p2, alice, suite.token, bobI.evmAddress, 2_000);
+  info(`Alice public: ${await publicBalance(p2, alice, suite.token, aliceI.evmAddress)}`);
+  info(`Bob public:   ${await publicBalance(p3, bob, suite.token, bobI.evmAddress)}`);
+  info(">> Every observer can see WHO sent WHAT to WHOM <<");
 
-  // Scenario 1: KYC gate
-  console.log("-- KYC enforcement --\n");
+  // ══════════════════════════════════════════════════════════════════════
+  // ACT 2 — SHIELDED TRANSFERS
+  // ══════════════════════════════════════════════════════════════════════
 
-  console.log(`isVerified(Charlie) = ${await trex.isVerified(p1, bank, suite.identityRegistry, charlieAddr)}`);
-  console.log("Alice → Charlie (10,000) — expect rejection...");
-  if (!await expectFailure(
-    () => trex.transfer(p2, alice, suite.token, charlieAddr, 10_000),
-    "receiver not KYC'd",
-  )) return false;
+  header("ACT 2: SHIELDED TRANSFERS", "Same explorer — amounts and parties hidden");
 
-  console.log("\nBank approves Charlie's KYC...");
-  await trex.registerIdentity(p1, bank, suite.identityRegistry, suite.dummyIdentity, charlieAddr, 840);
-  console.log(`isVerified(Charlie) = ${await trex.isVerified(p1, bank, suite.identityRegistry, charlieAddr)}`);
+  step(9, "Alice buys 50,000 private tokens from Bank (Zeto transfer)");
 
-  console.log("Alice → Charlie (10,000) — should succeed...");
-  await trex.transfer(p2, alice, suite.token, charlieAddr, 10_000);
-  bal = await balances();
-  console.log(`  Alice=${bal.alice}  Charlie=${bal.charlie}`);
+  const privateBuyReceipt = await zeto
+    .transfer(bank, { transfers: [{ to: alice, amount: 50_000, data: "0x" }] })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!checkReceipt(privateBuyReceipt)) return false;
 
-  // Scenario 2: Freeze
-  console.log("\n-- Freeze --\n");
+  info(`Alice private: ${await privateBalance(zeto, p2, alice)}`);
+  info(">> On-chain tx exists but CANNOT determine WHO received or HOW MUCH <<");
 
-  console.log("Bank freezes Charlie...");
-  await trex.setAddressFrozen(p1, bank, suite.token, charlieAddr, true);
-  console.log(`isFrozen(Charlie) = ${await trex.isFrozen(p1, bank, suite.token, charlieAddr)}`);
+  step(10, "Alice sends 20,000 private tokens to Bob");
 
-  console.log("Charlie → Bob (5,000) — expect rejection...");
-  if (!await expectFailure(
-    () => trex.transfer(p2, charlie, suite.token, bobAddr, 5_000),
-    "account is frozen",
-  )) return false;
+  const aliceToBobReceipt = await zeto.using(p2)
+    .transfer(alice, { transfers: [{ to: bob, amount: 20_000, data: "0x" }] })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!checkReceipt(aliceToBobReceipt)) return false;
 
-  // Scenario 3: Clawback
-  console.log("\n-- Clawback --\n");
+  info(`Alice private: ${await privateBalance(zeto, p2, alice)}`);
+  info(`Bob private:   ${await privateBalance(zeto, p3, bob)}`);
+  info(">> Public T-REX balances UNCHANGED — privacy preserved <<");
 
-  const charlieBalance = await trex.balanceOf(p1, bank, suite.token, charlieAddr);
-  console.log(`Bank clawback: reclaiming ${charlieBalance} from Charlie...`);
-  await trex.forcedTransfer(p1, bank, suite.token, charlieAddr, bankAddr, charlieBalance);
+  // ══════════════════════════════════════════════════════════════════════
+  // ACT 3 — REGULATORY DISCLOSURE
+  // ══════════════════════════════════════════════════════════════════════
 
-  // ── Final state ───────────────────────────────────────────────────────────
+  header("ACT 3: REGULATORY DISCLOSURE", "Regulator can see what public observers cannot");
 
-  bal = await balances();
-  const frozen = await trex.isFrozen(p1, bank, suite.token, charlieAddr);
-  console.log("\n=== Final state ===\n");
-  console.log(`Bank=${bal.bank}  Alice=${bal.alice}  Bob=${bal.bob}  Charlie=${bal.charlie} (frozen=${frozen})`);
-  console.log("\nDemo complete.");
+  step(11, "Regulator decrypts shielded transfers");
+
+  info("Public observers see on-chain tx hashes but CANNOT determine who sent what to whom.");
+  info("The regulator holds the arbiter private key and can decrypt every transfer.\n");
+
+  const indexer = new AuthorityNoteIndexer();
+
+  const decryptTransferEvent = async (
+    label: string,
+    txHash: string,
+  ): Promise<DecryptedTransfer | undefined> => {
+    const events = await p1.bidx.decodeTransactionEvents(txHash, enforcedAbi.abi, "");
+    const evt = events?.find((e: any) =>
+      e.soliditySignature?.includes("UTXOTransferNonRepudiationEnforced"),
+    );
+    if (!evt) {
+      info(`  ${label}: event not found (tx may not be indexed yet)`);
+      return undefined;
+    }
+    const data = evt.data as any;
+    const ciphertext = (data.encryptedValuesForArbiter as string[]).map(BigInt);
+    const ecdhPubKey = (data.ecdhPublicKey as string[]).map(BigInt);
+    const nonce = BigInt(data.encryptionNonce);
+
+    const decrypted = indexer.decryptTransfer(ciphertext, arbiterPrivKey, ecdhPubKey, nonce);
+    indexer.indexNotes(decrypted);
+    return decrypted;
+  };
+
+  const formatDecrypted = (d: DecryptedTransfer) => {
+    const inTotal = d.inputs.reduce((s, i) => s + i.value, 0n);
+    const out0 = d.outputs[0];
+    const out1 = d.outputs[1];
+    info(`    Input total:  ${inTotal}`);
+    if (out0.value > 0n) info(`    Output 1:     ${out0.value} → owner ${out0.ownerPubKey[0].substring(0, 12)}...`);
+    if (out1.value > 0n) info(`    Output 2:     ${out1.value} → owner ${out1.ownerPubKey[0].substring(0, 12)}...`);
+  };
+
+  if (privateBuyReceipt?.transactionHash) {
+    info(`Tx (Bank→Alice):  ${privateBuyReceipt.transactionHash}`);
+    const d = await decryptTransferEvent("Bank→Alice", privateBuyReceipt.transactionHash);
+    if (d) {
+      ok("Decrypted:");
+      formatDecrypted(d);
+    }
+  }
+
+  if (aliceToBobReceipt?.transactionHash) {
+    info(`\nTx (Alice→Bob):   ${aliceToBobReceipt.transactionHash}`);
+    const d = await decryptTransferEvent("Alice→Bob", aliceToBobReceipt.transactionHash);
+    if (d) {
+      ok("Decrypted:");
+      formatDecrypted(d);
+    }
+  }
+
+  info("\n>> Public observers see NOTHING. Regulator decrypts EVERYTHING. <<");
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ACT 4 — COMPLIANCE ENFORCEMENT
+  // ══════════════════════════════════════════════════════════════════════
+
+  header("ACT 4: COMPLIANCE — KYC, FREEZE, CLAWBACK", "Privacy does NOT break compliance");
+
+  // -- Scenario 1: KYC enforcement --
+
+  step(12, "Alice → Charlie (5,000 private) — Charlie NOT KYCed");
+
+  const kycRejectReceipt = await zeto.using(p2)
+    .transfer(alice, { transfers: [{ to: charlie, amount: 5_000, data: "0x" }] })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!expectRejection(kycRejectReceipt, "Charlie not KYCed")) return false;
+
+  step(13, "Bank approves Charlie's KYC");
+
+  await trex.registerIdentity(p1, issuer, suite.identityRegistry, suite.dummyIdentity, charlieI.evmAddress, 756);
+  await registerZetoKyc(p1, bank, zeto.address, charlieI.babyjubPubKey);
+  await complianceSmt.setStatus(charlieI.babyjubPubKey[0], charlieI.babyjubPubKey[1], 1n);
+  await postComplianceRoot(p1, bank, zeto.address, complianceSmt);
+  ok("Charlie KYCed on both T-REX and Zeto");
+
+  step(14, "Alice → Charlie (5,000 private) — now succeeds");
+
+  const aliceToCharlieReceipt = await zeto.using(p2)
+    .transfer(alice, { transfers: [{ to: charlie, amount: 5_000, data: "0x" }] })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!checkReceipt(aliceToCharlieReceipt)) return false;
+
+  info(`Charlie private: ${await privateBalance(zeto, p3, charlie)}`);
+
+  // -- Scenario 2: Freeze --
+
+  step(15, "Bank freezes Charlie (dual-domain)");
+
+  await trex.setAddressFrozen(p1, bank, suite.token, charlieI.evmAddress, true);
+  await complianceSmt.setStatus(charlieI.babyjubPubKey[0], charlieI.babyjubPubKey[1], 2n /* FROZEN */);
+  await postComplianceRoot(p1, bank, zeto.address, complianceSmt);
+  ok("Charlie frozen on T-REX + Zeto compliance");
+  info(`isFrozen(Charlie) = ${await trex.isFrozen(p1, bank, suite.token, charlieI.evmAddress)}`);
+
+  step(16, "Charlie → Bob (2,000 private) — FROZEN");
+
+  const frozenRejectReceipt = await zeto.using(p3)
+    .transfer(charlie, { transfers: [{ to: bob, amount: 2_000, data: "0x" }] })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!expectRejection(frozenRejectReceipt, "Charlie is frozen")) return false;
+
+  // -- Scenario 3: Clawback --
+
+  step(17, "Bank (enforcer) claws back Charlie's private funds");
+
+  const charlieBal = Number(await privateBalance(zeto, p3, charlie));
+  info(`Charlie private balance: ${charlieBal}`);
+
+  const forcedReceipt = await zeto
+    .forcedTransfer(bank, {
+      seizedOwner: charlie.lookup,
+      transfers: [{ to: bank, amount: charlieBal, data: "0x" }],
+    })
+    .waitForReceipt(LONG_POLL_TIMEOUT);
+  if (!checkReceipt(forcedReceipt)) return false;
+
+  info(`Charlie private: ${await privateBalance(zeto, p3, charlie)} (should be 0)`);
+  info(`Bank private:    ${await privateBalance(zeto, p1, bank)}`);
+  ok("Clawback complete — ALL frozen funds seized");
+
+  // ══════════════════════════════════════════════════════════════════════
+  // FINAL SUMMARY
+  // ══════════════════════════════════════════════════════════════════════
+
+  header("FINAL BALANCES", "Public vs Private — same asset, different visibility");
+
+  const summary: Array<{ name: string; p: PaladinClient; v: PaladinVerifier; addr: string }> = [
+    { name: "Bank",    p: p1, v: bank,    addr: bankI.evmAddress },
+    { name: "Alice",   p: p2, v: alice,   addr: aliceI.evmAddress },
+    { name: "Bob",     p: p3, v: bob,     addr: bobI.evmAddress },
+    { name: "Charlie", p: p3, v: charlie, addr: charlieI.evmAddress },
+  ];
+
+  for (const { name, p, v: ver, addr } of summary) {
+    const pub = await publicBalance(p1, bank, suite.token, addr);
+    const priv = await privateBalance(zeto, p, ver);
+    const frozen = name === "Charlie" ? ` (frozen=${await trex.isFrozen(p1, bank, suite.token, addr)})` : "";
+    log(`  ${name.padEnd(10)} public: ${pub.padStart(10)}  private: ${priv.padStart(10)}${frozen}`);
+  }
+
+  log("\n=== Demo Complete ===\n");
+  log("  1. Public transfers  — fully visible on block explorer");
+  log("  2. Private transfers — on-chain but amounts/parties hidden");
+  log("  3. Regulatory access — arbiter decrypts everything");
+  log("  4. KYC enforcement  — unregistered receivers rejected");
+  log("  5. Account freeze   — frozen users cannot transact");
+  log("  6. Clawback         — enforcer seizes frozen user's private funds");
+  log("");
   return true;
 }
 
@@ -176,5 +407,5 @@ export { main };
 if (require.main === module) {
   main()
     .then((ok) => process.exit(ok ? 0 : 1))
-    .catch((err) => { console.error("T-REX example crashed:", err); process.exit(1); });
+    .catch((err) => { console.error("Private T-REX example crashed:", err); process.exit(1); });
 }

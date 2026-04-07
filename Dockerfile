@@ -92,21 +92,27 @@ ENV PATH=$PATH:/usr/local/wasmer/bin
 WORKDIR /app
 
 # Initialize gradle and build tasks
-COPY build.gradle settings.gradle ./
-COPY buildSrc buildSrc
+# Context is monorepo root — all paladin paths prefixed with paladin/
+COPY paladin/build.gradle paladin/settings.gradle ./
+COPY paladin/buildSrc buildSrc
 RUN gradle --no-daemon --parallel :buildSrc:jar
 
-# Copy in a set of thing before the first gradle command that are less likely to change
-COPY solidity solidity
-COPY config config
-COPY common/go common/go
-COPY sdk/go sdk/go
-COPY toolkit/proto toolkit/proto
-COPY toolkit toolkit
-COPY go.work.sum ./
+# Copy in a set of things before the first gradle command that are less likely to change
+COPY paladin/solidity solidity
+COPY paladin/config config
+COPY paladin/common/go common/go
+COPY paladin/sdk/go sdk/go
+COPY paladin/toolkit/proto toolkit/proto
+COPY paladin/toolkit toolkit
+COPY paladin/go.work.sum ./
+
+# Copy zeto contracts (referenced by solidity/package.json as file:../../zeto/solidity)
+COPY zeto/solidity /zeto/solidity
+# Copy zeto go-sdk (referenced by domains/zeto/go.mod replace directive)
+COPY zeto/go-sdk /zeto/go-sdk
 
 # We have to use a special minimal go.work for this
-COPY go.work.base go.work
+COPY paladin/go.work.base go.work
 
 # Set Go CGO environment variables
 ENV CGO_ENABLED=1
@@ -121,24 +127,39 @@ RUN gradle --no-daemon --parallel :toolkit:go:assemble :solidity:compile
 # Stage 2... Full build - currently core/zeto/noto/core are all cop-req'd together
 # (If we untangle this we can get more parallelism and less re-build in our docker build)
 FROM base-builder AS full-builder
-COPY go.work go.work
-COPY core/go core/go
-COPY core/java core/java
-COPY toolkit/java toolkit/java
-COPY domains/pente domains/pente
-COPY domains/zeto domains/zeto
-COPY domains/noto domains/noto
-COPY domains/integration-test domains/integration-test
-COPY registries/static registries/static
-COPY registries/evm registries/evm
-COPY signingmodules/example signingmodules/example
-COPY transports/grpc transports/grpc
-COPY ui/client ui/client
-# No build of these three, but we need to go.mod to make the go.work valid
-COPY testinfra/go.mod testinfra/go.mod
-COPY operator/go.mod operator/go.mod
-COPY perf/go.mod perf/go.mod
+COPY paladin/go.work go.work
+COPY paladin/core/go core/go
+COPY paladin/core/java core/java
+COPY paladin/toolkit/java toolkit/java
+COPY paladin/domains/pente domains/pente
+COPY paladin/domains/zeto domains/zeto
+COPY paladin/domains/noto domains/noto
+COPY paladin/domains/integration-test domains/integration-test
+COPY paladin/registries/static registries/static
+COPY paladin/registries/evm registries/evm
+COPY paladin/signingmodules/example signingmodules/example
+COPY paladin/transports/grpc transports/grpc
+COPY paladin/ui/client ui/client
+# No build of these three, but we need go.mod to make the go.work valid
+COPY paladin/testinfra/go.mod testinfra/go.mod
+COPY paladin/operator/go.mod operator/go.mod
+COPY paladin/perf/go.mod perf/go.mod
 RUN gradle --no-daemon --parallel assemble
+
+# Copy AENKNR-E circuit artifacts from zeto repo into the build output
+# Each circuit needs: .zkey (proving key), -vkey.json (verification key), _js/ (WASM witness calculator)
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced_js/ /app/build/domains/zeto/zkp/anon_enc_nullifier_kyc_non_repudiation_enforced_js/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced_js/ /app/build/domains/zeto/zkp/deposit_kyc_non_repudiation_enforced_js/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced_js/ /app/build/domains/zeto/zkp/withdraw_nullifier_kyc_enforced_js/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced_js/ /app/build/domains/zeto/zkp/forced_transfer_nullifier_kyc_enforced_js/
 
 # Stage 3: Pull together runtime
 FROM ubuntu:24.04 AS runtime
