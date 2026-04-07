@@ -7,11 +7,11 @@ import {IPaladinContractRegistry_V0} from "../interfaces/IPaladinContractRegistr
 contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
     function deploy(
         bytes32 transactionId,
-        string memory tokenName,
-        string memory name,
-        string memory symbol,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
         address initialOwner,
-        bytes memory data,
+        bytes calldata data,
         bool isNonFungible,
         bool isEnforced
     ) external {
@@ -50,11 +50,11 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
 
     function deploy(
         bytes32 transactionId,
-        string memory tokenName,
-        string memory name,
-        string memory symbol,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
         address initialOwner,
-        bytes memory data,
+        bytes calldata data,
         bool isNonFungible
     ) external {
         this.deploy(
@@ -71,11 +71,11 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
 
     function deploy(
         bytes32 transactionId,
-        string memory tokenName,
-        string memory name,
-        string memory symbol,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
         address initialOwner,
-        bytes memory data
+        bytes calldata data
     ) external {
         this.deploy(
             transactionId,
