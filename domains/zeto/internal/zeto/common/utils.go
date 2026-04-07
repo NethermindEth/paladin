@@ -159,6 +159,12 @@ func IsEnforcedToken(tokenName string) bool {
 	return tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
 }
 
+// UseNullifierAvailability returns whether state availability should use nullifier-based
+// tracking. Enforced tokens use state_spend_records instead (for forcedTransfer tracking).
+func UseNullifierAvailability(tokenName string) bool {
+	return IsNullifiersToken(tokenName) && !IsEnforcedToken(tokenName)
+}
+
 // the Zeto implementations support two input/output sizes for the circuits: 2 and 10,
 // if the input or output size is larger than 2, then the batch circuit is used with
 // input/output size 10
@@ -192,6 +198,12 @@ func LoadBabyJubKey(payload []byte) (*babyjub.PublicKey, error) {
 }
 
 func EncodeTransactionData(ctx context.Context, transaction *prototk.TransactionSpecification, infoStates []*prototk.EndorsableState) (pldtypes.HexBytes, error) {
+	return EncodeTransactionDataWithSpentCommitments(ctx, transaction, infoStates, nil)
+}
+
+// EncodeTransactionDataWithSpentCommitments encodes transaction data including spent commitment
+// hashes. Used by forcedTransfer so all nodes can mark seized UTXOs as spent.
+func EncodeTransactionDataWithSpentCommitments(ctx context.Context, transaction *prototk.TransactionSpecification, infoStates []*prototk.EndorsableState, spentCommitments []pldtypes.HexUint256) (pldtypes.HexBytes, error) {
 	var err error
 	stateIDs := make([]pldtypes.Bytes32, len(infoStates))
 	for i, state := range infoStates {
@@ -205,9 +217,13 @@ func EncodeTransactionData(ctx context.Context, transaction *prototk.Transaction
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorParseTxId, err)
 	}
+	if spentCommitments == nil {
+		spentCommitments = []pldtypes.HexUint256{}
+	}
 	dataValues := &types.ZetoTransactionData_V0{
-		TransactionID: transactionID,
-		InfoStates:    stateIDs,
+		TransactionID:    transactionID,
+		InfoStates:       stateIDs,
+		SpentCommitments: spentCommitments,
 	}
 
 	var dataJSON []byte
@@ -223,6 +239,31 @@ func EncodeTransactionData(ctx context.Context, transaction *prototk.Transaction
 	}
 
 	return data, err
+}
+
+// DecodeTransactionData decodes the ABI-encoded transaction data from an on-chain event's data field.
+func DecodeTransactionData(ctx context.Context, data pldtypes.HexBytes) (*types.ZetoTransactionData_V0, error) {
+	if len(data) < 4 {
+		return nil, nil
+	}
+	dataPrefix := data[0:4]
+	if dataPrefix.String() != types.ZetoTransactionDataID_V0.String() {
+		return nil, nil
+	}
+
+	var dataValues types.ZetoTransactionData_V0
+	dataDecoded, err := types.ZetoTransactionDataABI_V0.DecodeABIDataCtx(ctx, data, 4)
+	if err == nil {
+		var dataJSON []byte
+		dataJSON, err = dataDecoded.JSON()
+		if err == nil {
+			err = json.Unmarshal(dataJSON, &dataValues)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &dataValues, nil
 }
 
 func EncodeProof(proof *corepb.SnarkProof) map[string]interface{} {

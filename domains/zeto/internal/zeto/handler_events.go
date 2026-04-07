@@ -282,8 +282,10 @@ func (z *Zeto) handleForcedTransferEnforcedEvent(ctx context.Context, smtTree *c
 			return nil
 		}
 		z.recordTransactionInfo(ev, txData, res)
-		// Forced transfer has no Inputs field — input commitments are private witnesses.
-		// Only outputs are confirmed as new UTXOs.
+		// Mark seized UTXOs as spent using commitment hashes embedded in the data field.
+		if len(txData.SpentCommitments) > 0 {
+			res.SpentStates = append(res.SpentStates, parseStatesFromEvent(txData.TransactionID, txData.SpentCommitments)...)
+		}
 		res.ConfirmedStates = append(res.ConfirmedStates, parseStatesFromEvent(txData.TransactionID, transfer.Outputs)...)
 		if common.IsNullifiersToken(tokenName) {
 			err := z.updateMerkleTree(ctx, smtTree.Tree, smtTree.Storage, txData.TransactionID, transfer.Outputs)
@@ -348,25 +350,5 @@ func formatErrors(errors []string) string {
 }
 
 func decodeTransactionData(ctx context.Context, data pldtypes.HexBytes) (*types.ZetoTransactionData_V0, error) {
-	if len(data) < 4 {
-		return nil, nil
-	}
-	dataPrefix := data[0:4]
-	if dataPrefix.String() != types.ZetoTransactionDataID_V0.String() {
-		return nil, nil
-	}
-
-	var dataValues types.ZetoTransactionData_V0
-	dataDecoded, err := types.ZetoTransactionDataABI_V0.DecodeABIDataCtx(ctx, data, 4)
-	if err == nil {
-		var dataJSON []byte
-		dataJSON, err = dataDecoded.JSON()
-		if err == nil {
-			err = json.Unmarshal(dataJSON, &dataValues)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &dataValues, nil
+	return common.DecodeTransactionData(ctx, data)
 }

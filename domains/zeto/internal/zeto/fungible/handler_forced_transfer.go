@@ -143,7 +143,7 @@ func (h *forcedTransferHandler) Assemble(ctx context.Context, tx *types.ParsedTr
 		return nil, i18n.NewError(ctx, msgs.MsgErrorResolveVerifier, params.SeizedOwner)
 	}
 
-	useNullifiers := common.IsNullifiersToken(tx.DomainConfig.TokenName)
+	useNullifiers := common.UseNullifierAvailability(tx.DomainConfig.TokenName)
 	inputStates, expectedTotal, revert, err := prepareInputsForTransfer(ctx, h.callbacks, h.stateSchemas.CoinSchema, useNullifiers, req.StateQueryContext, resolvedSeizedOwner.Verifier, params.Transfers)
 	if err != nil {
 		if revert {
@@ -239,7 +239,16 @@ func (h *forcedTransferHandler) Prepare(ctx context.Context, tx *types.ParsedTra
 		return nil, err
 	}
 
-	data, err := common.EncodeTransactionData(ctx, req.Transaction, req.InfoStates)
+	// Encode input state IDs (commitment hashes) into the transaction data so all
+	// nodes can mark the seized UTXOs as spent when processing the event.
+	spentCommitments := make([]pldtypes.HexUint256, 0, len(req.InputStates))
+	for _, state := range req.InputStates {
+		parsed, err := pldtypes.ParseHexUint256(ctx, state.Id)
+		if err == nil {
+			spentCommitments = append(spentCommitments, *parsed)
+		}
+	}
+	data, err := common.EncodeTransactionDataWithSpentCommitments(ctx, req.Transaction, req.InfoStates, spentCommitments)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorEncodeTxData, err)
 	}

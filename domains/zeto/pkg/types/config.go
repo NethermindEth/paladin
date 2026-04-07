@@ -106,13 +106,15 @@ var DomainInstanceConfigABI = &abi.ParameterArray{
 var ZetoTransactionDataID_V0 = ethtypes.MustNewHexBytes0xPrefix("0x00010000")
 
 type ZetoTransactionData_V0 struct {
-	TransactionID pldtypes.Bytes32   `json:"transactionId"`
-	InfoStates    []pldtypes.Bytes32 `json:"infoStates"`
+	TransactionID    pldtypes.Bytes32      `json:"transactionId"`
+	InfoStates       []pldtypes.Bytes32    `json:"infoStates"`
+	SpentCommitments []pldtypes.HexUint256 `json:"spentCommitments"`
 }
 
 var ZetoTransactionDataABI_V0 = &abi.ParameterArray{
 	{Name: "transactionId", Type: "bytes32"},
 	{Name: "infoStates", Type: "bytes32[]"},
+	{Name: "spentCommitments", Type: "uint256[]"},
 }
 
 type DomainHandler = domain.DomainHandler[DomainInstanceConfig]

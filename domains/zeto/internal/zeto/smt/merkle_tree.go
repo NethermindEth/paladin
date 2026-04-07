@@ -22,9 +22,9 @@ import (
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/smt"
 )
 
-const SMT_HEIGHT_UTXO = 64
-const SMT_HEIGHT_KYC = 64
-const SMT_HEIGHT_COMPLIANCE = 64
+const SMT_HEIGHT_UTXO = 32
+const SMT_HEIGHT_KYC = 20
+const SMT_HEIGHT_COMPLIANCE = 20
 
 var Empty_Proof_Utxos proto.MerkleProof
 var Empty_Proof_kyc proto.MerkleProof
