@@ -1,4 +1,7 @@
 node_modules/
 build/
 paladin-config.yaml
+paladin-config-base-sepolia-resolved.yaml
 data/
+.env
+*.log

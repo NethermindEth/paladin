@@ -1,0 +1,44 @@
+nodeName: node1
+
+db:
+  type: postgres
+  postgres:
+    dsn: 'postgres://postgres:my-secret@paladin-postgres:5432/paladin_demo?sslmode=disable'
+    autoMigrate: true
+    migrationsDir: '/app/db/migrations/postgres'
+
+rpcServer:
+  http:
+    port: 8548
+    address: 0.0.0.0
+    defaultRequestTimeout: 10m
+  ws:
+    port: 8549
+    address: 0.0.0.0
+
+blockIndexer:
+  fromBlock: latest
+
+blockchain:
+  http:
+    url: ${ALCHEMY_HTTP_URL}
+  ws:
+    url: ${ALCHEMY_WS_URL}
+    initialConnectAttempts: 25
+
+log:
+  level: info
+
+wallets:
+  - name: wallet1
+    keySelector: .*
+    signer:
+      keyDerivation:
+        type: 'bip32'
+      keyStore:
+        type: 'static'
+        static:
+          keys:
+            seed:
+              encoding: hex
+              inline: ${WALLET_SEED}

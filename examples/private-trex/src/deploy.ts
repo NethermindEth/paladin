@@ -23,7 +23,6 @@ import { checkReceipt, LONG_POLL_TIMEOUT, getNodeConnections } from "paladin-exa
 import * as fs from "fs";
 import * as path from "path";
 
-
 const ABIS_DIR = path.resolve(__dirname, "../../../domains/integration-test/helpers/abis");
 
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -84,7 +83,7 @@ async function deployContract(
   artifact: Artifact,
   libraries: Record<string, string> = {},
   args: Record<string, any> = {},
-): Promise<string> {
+): Promise<{ address: string; blockNumber: number }> {
   const linkedBytecode = linkBytecode(artifact, libraries);
 
   log(`Deploying ${name}...`);
@@ -102,7 +101,7 @@ async function deployContract(
   }
   const addr = receipt!.contractAddress!;
   log(`  ${name} => ${addr}`);
-  return addr;
+  return { address: addr, blockNumber: (receipt as any).blockNumber ?? 0 };
 }
 
 async function callContract(
@@ -127,6 +126,45 @@ async function callContract(
   }
 }
 
+// Resume support: saves after each contract so a failed deploy can continue.
+
+const PARTIAL_FILE = path.resolve(__dirname, "../data/deploy-partial.json");
+
+type PartialState = Record<string, string | number | undefined> & { deployBlockNumber?: number };
+
+function loadPartialState(): PartialState {
+  if (fs.existsSync(PARTIAL_FILE)) {
+    log(`Resuming from ${PARTIAL_FILE}`);
+    return JSON.parse(fs.readFileSync(PARTIAL_FILE, "utf-8"));
+  }
+  return {};
+}
+
+function savePartialState(state: PartialState): void {
+  const dir = path.dirname(PARTIAL_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PARTIAL_FILE, JSON.stringify(state, null, 2));
+}
+
+/** Deploy a contract, or reuse from partial state if already deployed. */
+function makeDeployer(paladin: PaladinClient, deployer: PaladinVerifier, partial: PartialState) {
+  return async (
+    key: string, name: string, artifact: Artifact,
+    libraries: Record<string, string> = {}, args: Record<string, any> = {},
+  ): Promise<string> => {
+    const existing = partial[key] as string | undefined;
+    if (existing) {
+      log(`Reusing ${name} => ${existing} (already deployed)`);
+      return existing;
+    }
+    const result = await deployContract(paladin, deployer, name, artifact, libraries, args);
+    partial[key] = result.address;
+    if (!partial.deployBlockNumber) partial.deployBlockNumber = result.blockNumber;
+    savePartialState(partial);
+    return result.address;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main deployment
 // ---------------------------------------------------------------------------
@@ -145,12 +183,14 @@ async function main() {
   const paladin = new PaladinClient(nodeConnections[0].clientOptions);
   const deployer = paladin.getVerifiers(`deployer@${nodeConnections[0].id}`)[0];
 
+  const partial = loadPartialState();
+  const deploy = makeDeployer(paladin, deployer, partial);
+
   console.log("\n=== Phase 1: Deploy Zeto AENKNR-E Contracts ===\n");
 
-  // 1. Libraries
-  const poseidon2 = await deployContract(paladin, deployer, "PoseidonUnit2L", loadArtifact("Poseidon2"));
-  const poseidon3 = await deployContract(paladin, deployer, "PoseidonUnit3L", loadArtifact("Poseidon3"));
-  const smtLib = await deployContract(paladin, deployer, "SmtLib", loadArtifact("SmtLib"));
+  const poseidon2 = await deploy("poseidon2", "PoseidonUnit2L", loadArtifact("Poseidon2"));
+  const poseidon3 = await deploy("poseidon3", "PoseidonUnit3L", loadArtifact("Poseidon3"));
+  const smtLib = await deploy("smtLib", "SmtLib", loadArtifact("SmtLib"));
 
   const libs: Record<string, string> = {
     "PoseidonUnit2L": poseidon2,
@@ -161,57 +201,32 @@ async function main() {
     "@iden3/contracts/contracts/lib/SmtLib.sol:SmtLib": smtLib,
   };
 
-  // 2. Verifiers (no links needed)
-  const transferVerifier = await deployContract(
-    paladin, deployer,
+  const transferVerifier = await deploy("transferVerifier",
     "Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced",
-    loadArtifact("Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced"),
-  );
-  const depositVerifier = await deployContract(
-    paladin, deployer,
+    loadArtifact("Groth16Verifier_AnonEncNullifierKycNonRepudiationEnforced"));
+  const depositVerifier = await deploy("depositVerifier",
     "Groth16Verifier_DepositKycNonRepudiationEnforced",
-    loadArtifact("Groth16Verifier_DepositKycNonRepudiationEnforced"),
-  );
-  const withdrawVerifier = await deployContract(
-    paladin, deployer,
+    loadArtifact("Groth16Verifier_DepositKycNonRepudiationEnforced"));
+  const withdrawVerifier = await deploy("withdrawVerifier",
     "Groth16Verifier_WithdrawNullifierKycEnforced",
-    loadArtifact("Groth16Verifier_WithdrawNullifierKycEnforced"),
-  );
-  const forcedTransferVerifier = await deployContract(
-    paladin, deployer,
+    loadArtifact("Groth16Verifier_WithdrawNullifierKycEnforced"));
+  const forcedTransferVerifier = await deploy("forcedTransferVerifier",
     "Groth16Verifier_ForcedTransferNullifierKycEnforced",
-    loadArtifact("Groth16Verifier_ForcedTransferNullifierKycEnforced"),
-  );
+    loadArtifact("Groth16Verifier_ForcedTransferNullifierKycEnforced"));
 
-  // 3. Codec and transfer facet (codec has no links, facet needs libraries)
-  const codec = await deployContract(
-    paladin, deployer, "AENKNRECodec", loadArtifact("AENKNRECodec"),
-  );
-  const transferFacet = await deployContract(
-    paladin, deployer, "Zeto_AENKNRETransferFacet",
-    loadArtifact("Zeto_AENKNRETransferFacet"), libs,
-  );
+  const codec = await deploy("codec", "AENKNRECodec", loadArtifact("AENKNRECodec"));
+  const transferFacet = await deploy("transferFacet",
+    "Zeto_AENKNRETransferFacet", loadArtifact("Zeto_AENKNRETransferFacet"), libs);
 
-  // 4. Implementation (needs libraries)
-  const implementation = await deployContract(
-    paladin, deployer, "Zeto_AnonEncNullifierKycNonRepudiationEnforced",
-    loadArtifact("Zeto_AnonEncNullifierKycNonRepudiationEnforced"), libs,
-  );
+  const implementation = await deploy("implementation",
+    "Zeto_AnonEncNullifierKycNonRepudiationEnforced",
+    loadArtifact("Zeto_AnonEncNullifierKycNonRepudiationEnforced"), libs);
 
-  // 5. Factory (implementation + ERC1967Proxy)
   console.log("\n=== Phase 2: Deploy ZetoFactory ===\n");
 
-  const factoryImpl = await deployContract(
-    paladin, deployer, "ZetoFactory (impl)", loadArtifact("ZetoFactory"),
-  );
-
-  // Deploy ERC1967Proxy pointing to factory impl, calling initialize()
-  const initSelector = "0x8129fc1c"; // initialize() with no params
-  const proxyArtifact = loadArtifact("ERC1967Proxy");
-  const factoryProxy = await deployContract(
-    paladin, deployer, "ZetoFactory (proxy)",
-    proxyArtifact, {}, { implementation: factoryImpl, _data: initSelector },
-  );
+  const factoryImpl = await deploy("factoryImpl", "ZetoFactory (impl)", loadArtifact("ZetoFactory"));
+  const factoryProxy = await deploy("factoryProxy", "ZetoFactory (proxy)",
+    loadArtifact("ERC1967Proxy"), {}, { implementation: factoryImpl, _data: "0x8129fc1c" });
   log(`Factory proxy: ${factoryProxy}`);
 
   // 6. Register implementation with factory
@@ -239,6 +254,7 @@ async function main() {
   log("Registered AENKNR-E implementation with factory");
 
   // 7. Save deployment data
+  const deployBlockNumber = partial.deployBlockNumber ?? 0;
   const deployData = {
     factoryAddress: factoryProxy,
     contracts: {
@@ -248,13 +264,17 @@ async function main() {
       factoryImpl, factoryProxy,
     },
     deployedAt: new Date().toISOString(),
-    chainId: "local-besu",
+    chainId: process.env.ALCHEMY_API_KEY ? "sepolia" : "local-besu",
+    deployBlockNumber,
   };
 
   const dataDir = path.resolve(__dirname, "../data");
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   const dataFile = path.join(dataDir, "deploy.json");
   fs.writeFileSync(dataFile, JSON.stringify(deployData, null, 2));
+
+  // Clean up partial state file
+  if (fs.existsSync(PARTIAL_FILE)) fs.unlinkSync(PARTIAL_FILE);
 
   console.log(`\n=== Deployment Complete ===`);
   console.log(`Factory address: ${factoryProxy}`);
