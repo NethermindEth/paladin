@@ -1,17 +1,16 @@
-import PaladinClient, { ZetoFactory, PaladinVerifier } from "@lfdecentralizedtrust/paladin-sdk";
-import { checkReceipt, DEFAULT_POLL_TIMEOUT, LONG_POLL_TIMEOUT, nodeConnections } from "paladin-example-common";
+import PaladinClient, { ZetoFactory, ZetoInstance, PaladinVerifier, ITransactionReceipt } from "@lfdecentralizedtrust/paladin-sdk";
+import { checkReceipt, nodeConnections } from "paladin-example-common";
 import * as trex from "./trex";
 import { setArbiter, setEnforcer, setCodec, setTransferFacet, registerZetoKyc } from "./helpers";
 import * as fs from "fs";
 import * as path from "path";
 import { ComplianceSmtManager } from "./complianceSmt";
-import {
-  resolveActorIdentity,
-  postComplianceRoot,
-} from "./identity";
+import { resolveActorIdentity, postComplianceRoot } from "./identity";
 import { AuthorityNoteIndexer, DecryptedTransfer } from "./authorityIndexer";
 import { genKeypair } from "maci-crypto";
 import enforcedAbi from "./zeto-abis/IZetoEnforced.json";
+import { fundActors, fundDomainSubmitKey, defaultFundingList } from "./fund-actors";
+import { IS_SEPOLIA, SEPOLIA_RPC_URL, POLL_TIMEOUT, LONG_POLL_TIMEOUT, etherscanTx, etherscanAddr } from "./sepolia";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,20 +27,30 @@ const step = (n: number, msg: string) => log(`\n--- Step ${n}: ${msg} ---\n`);
 const ok = (msg: string) => log(`  ✓ ${msg}`);
 const info = (msg: string) => log(`  ${msg}`);
 
+/** Log a contract address with optional Etherscan link (Sepolia only). */
+const contract = (label: string, addr: string) => {
+  ok(IS_SEPOLIA ? `${label}: ${addr} (${etherscanAddr(addr)})` : `${label}: ${addr}`);
+};
+
+/** Log a transaction hash with Etherscan link. */
+const txLink = (label: string, hash: string) => {
+  info(IS_SEPOLIA ? `${label}: ${hash} (${etherscanTx(hash)})` : `${label}: ${hash}`);
+};
+
 async function publicBalance(p: PaladinClient, from: PaladinVerifier, token: string, addr: string): Promise<string> {
   return (await trex.balanceOf(p, from, token, addr)).toLocaleString();
 }
 
-async function privateBalance(zeto: any, p: PaladinClient, v: PaladinVerifier): Promise<string> {
+async function privateBalance(zeto: ZetoInstance, p: PaladinClient, v: PaladinVerifier): Promise<string> {
   return (await zeto.using(p).balanceOf(v, { account: v.lookup })).totalBalance;
 }
 
-function expectRejection(receipt: any, reason: string): boolean {
+function expectRejection(receipt: ITransactionReceipt | undefined, reason: string): boolean {
   if (receipt?.failureMessage) {
     ok(`REJECTED: ${receipt.failureMessage}`);
     return true;
   }
-  console.error(`  ERROR: transfer should have been rejected (${reason})`);
+  log(`  ERROR: transfer should have been rejected (${reason})`);
   return false;
 }
 
@@ -51,7 +60,7 @@ function expectRejection(receipt: any, reason: string): boolean {
 
 async function main(): Promise<boolean> {
   if (nodeConnections.length < 1) {
-    console.error("Need at least 1 node for this scenario.");
+    log("ERROR: Need at least 1 node for this scenario.");
     return false;
   }
 
@@ -93,6 +102,15 @@ async function main(): Promise<boolean> {
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  // FUND ACTORS (Sepolia only — skipped if actors already have balance)
+  // ══════════════════════════════════════════════════════════════════════
+
+  if (IS_SEPOLIA && SEPOLIA_RPC_URL) {
+    log("\n--- Funding actors on Sepolia ---\n");
+    await fundActors(p1, SEPOLIA_RPC_URL, defaultFundingList(n1.id, runId));
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   // SETUP
   // ══════════════════════════════════════════════════════════════════════
 
@@ -102,8 +120,8 @@ async function main(): Promise<boolean> {
     token: [issuerI.evmAddress, bankI.evmAddress],
     ir: [issuerI.evmAddress, bankI.evmAddress],
   });
-  ok(`Token: ${suite.token}`);
-  ok(`Identity Registry: ${suite.identityRegistry}`);
+  contract("Token", suite.token);
+  contract("Identity Registry", suite.identityRegistry);
 
   step(2, "Deploy Zeto AENKNR-E (shielded pool)");
 
@@ -114,8 +132,8 @@ async function main(): Promise<boolean> {
   const zeto = await zetoFactory
     .newZeto(bank, { tokenName: "Zeto_AnonEncNullifierKycNonRepudiationEnforced" })
     .waitForDeploy(LONG_POLL_TIMEOUT);
-  if (!zeto) { console.error("Zeto deploy failed"); return false; }
-  ok(`Zeto: ${zeto.address}`);
+  if (!zeto) { log("  ERROR: Zeto deploy failed"); return false; }
+  contract("Zeto", zeto.address);
 
   // Set codec and transfer facet (diamond-lite pattern for enforced tokens)
   const deployDataPath = path.resolve(__dirname, "../data/deploy.json");
@@ -135,7 +153,7 @@ async function main(): Promise<boolean> {
 
   const setErc20Receipt = await zeto
     .setERC20(bank, { erc20: suite.token })
-    .waitForReceipt(DEFAULT_POLL_TIMEOUT);
+    .waitForReceipt(POLL_TIMEOUT);
   if (!checkReceipt(setErc20Receipt)) return false;
   ok("T-REX linked as ERC-20 backing for Zeto deposits");
 
@@ -218,6 +236,13 @@ async function main(): Promise<boolean> {
 
   header("ACT 2: SHIELDED TRANSFERS", "Same explorer — amounts and parties hidden");
 
+  // Fund the domain submit key for this Zeto contract (Sepolia only).
+  // The deposit above triggered Paladin to create this key in its key store.
+  // It's a BIP32-derived key used to submit base-layer TXs for private transfers.
+  if (IS_SEPOLIA && SEPOLIA_RPC_URL) {
+    await fundDomainSubmitKey(SEPOLIA_RPC_URL, zeto.address);
+  }
+
   step(9, "Alice buys 50,000 private tokens from Bank (Zeto transfer)");
 
   const privateBuyReceipt = await zeto
@@ -257,17 +282,21 @@ async function main(): Promise<boolean> {
     txHash: string,
   ): Promise<DecryptedTransfer | undefined> => {
     const events = await p1.bidx.decodeTransactionEvents(txHash, enforcedAbi.abi, "");
-    const evt = events?.find((e: any) =>
+    const evt = events?.find((e: { soliditySignature?: string }) =>
       e.soliditySignature?.includes("UTXOTransferNonRepudiationEnforced"),
     );
     if (!evt) {
       info(`  ${label}: event not found (tx may not be indexed yet)`);
       return undefined;
     }
-    const data = evt.data as any;
+    const data = evt.data as Record<string, unknown>;
+    if (!data?.encryptedValuesForArbiter || !data?.ecdhPublicKey || !data?.encryptionNonce) {
+      info(`  ${label}: missing decryption fields in event data`);
+      return undefined;
+    }
     const ciphertext = (data.encryptedValuesForArbiter as string[]).map(BigInt);
     const ecdhPubKey = (data.ecdhPublicKey as string[]).map(BigInt);
-    const nonce = BigInt(data.encryptionNonce);
+    const nonce = BigInt(data.encryptionNonce as string);
 
     const decrypted = indexer.decryptTransfer(ciphertext, arbiterPrivKey, ecdhPubKey, nonce);
     indexer.indexNotes(decrypted);
@@ -284,7 +313,7 @@ async function main(): Promise<boolean> {
   };
 
   if (privateBuyReceipt?.transactionHash) {
-    info(`Tx (Bank→Alice):  ${privateBuyReceipt.transactionHash}`);
+    txLink("Tx (Bank→Alice)", privateBuyReceipt.transactionHash);
     const d = await decryptTransferEvent("Bank→Alice", privateBuyReceipt.transactionHash);
     if (d) {
       ok("Decrypted:");
@@ -293,7 +322,7 @@ async function main(): Promise<boolean> {
   }
 
   if (aliceToBobReceipt?.transactionHash) {
-    info(`\nTx (Alice→Bob):   ${aliceToBobReceipt.transactionHash}`);
+    txLink("\nTx (Alice→Bob)", aliceToBobReceipt.transactionHash);
     const d = await decryptTransferEvent("Alice→Bob", aliceToBobReceipt.transactionHash);
     if (d) {
       ok("Decrypted:");
@@ -356,7 +385,12 @@ async function main(): Promise<boolean> {
 
   step(17, "Bank (enforcer) claws back Charlie's private funds");
 
-  const charlieBal = Number(await privateBalance(zeto, p3, charlie));
+  const charlieBalStr = await privateBalance(zeto, p3, charlie);
+  const charlieBal = parseInt(charlieBalStr, 10);
+  if (!Number.isSafeInteger(charlieBal) || charlieBal <= 0) {
+    log(`  ERROR: unexpected Charlie balance: ${charlieBalStr}`);
+    return false;
+  }
   info(`Charlie private balance: ${charlieBal}`);
 
   const forcedReceipt = await zeto
@@ -406,6 +440,6 @@ export { main };
 
 if (require.main === module) {
   main()
-    .then((ok) => process.exit(ok ? 0 : 1))
-    .catch((err) => { console.error("Private T-REX example crashed:", err); process.exit(1); });
+    .then((success) => process.exit(success ? 0 : 1))
+    .catch((err) => { log(`Private T-REX example crashed: ${err}`); process.exit(1); });
 }

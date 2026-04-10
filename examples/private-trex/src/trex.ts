@@ -17,7 +17,8 @@ import PaladinClient, {
   PaladinVerifier,
   TransactionType,
 } from "@lfdecentralizedtrust/paladin-sdk";
-import { checkReceipt, DEFAULT_POLL_TIMEOUT } from "paladin-example-common";
+import { checkReceipt } from "paladin-example-common";
+import { POLL_TIMEOUT as DEFAULT_POLL_TIMEOUT } from "./sepolia";
 import { contracts } from "@erc3643org/erc-3643";
 
 const {
@@ -192,6 +193,9 @@ export const approve = (p: PaladinClient, from: PaladinVerifier, token: string, 
 export const forcedTransfer = (p: PaladinClient, agent: PaladinVerifier, token: string, from: string, to: string, amount: bigint | number) =>
   call(p, agent, token, Token.abi, "forcedTransfer", { _from: from, _to: to, _amount: amount.toString() });
 
+export const burn = (p: PaladinClient, agent: PaladinVerifier, token: string, from: string, amount: bigint | number) =>
+  call(p, agent, token, Token.abi, "burn", { _userAddress: from, _amount: amount.toString() });
+
 export const setAddressFrozen = (p: PaladinClient, agent: PaladinVerifier, token: string, user: string, freeze: boolean) =>
   call(p, agent, token, Token.abi, "setAddressFrozen", { _userAddress: user, _freeze: freeze });
 
@@ -215,5 +219,10 @@ export async function balanceOf(p: PaladinClient, from: PaladinVerifier, token: 
 
 export async function isFrozen(p: PaladinClient, from: PaladinVerifier, token: string, user: string): Promise<boolean> {
   const result = await query(p, from, token, Token.abi, "isFrozen", { _userAddress: user });
+  return Boolean(result[0]);
+}
+
+export async function isAgent(p: PaladinClient, from: PaladinVerifier, token: string, agent: string): Promise<boolean> {
+  const result = await query(p, from, token, Token.abi, "isAgent", { _agent: agent });
   return Boolean(result[0]);
 }

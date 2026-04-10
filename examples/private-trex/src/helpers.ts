@@ -19,7 +19,8 @@ import PaladinClient, {
   algorithmZetoSnarkBJJ,
   IDEN3_PUBKEY_BABYJUBJUB_COMPRESSED_0X,
 } from "@lfdecentralizedtrust/paladin-sdk";
-import { checkReceipt, DEFAULT_POLL_TIMEOUT } from "paladin-example-common";
+import { checkReceipt } from "paladin-example-common";
+import { POLL_TIMEOUT as DEFAULT_POLL_TIMEOUT } from "./sepolia";
 import { buildBabyjub } from "circomlibjs";
 import kycAbi from "./zeto-abis/IZetoKyc.json";
 import complianceRootAbi from "./zeto-abis/IZetoComplianceRoot.json";
