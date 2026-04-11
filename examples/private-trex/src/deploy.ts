@@ -222,12 +222,13 @@ async function main() {
     "Zeto_AnonEncNullifierKycNonRepudiationEnforced",
     loadArtifact("Zeto_AnonEncNullifierKycNonRepudiationEnforced"), libs);
 
+  // ZetoFactory inherits from plain Ownable (not OwnableUpgradeable) —
+  // deploy directly, no ERC1967Proxy wrap.
   console.log("\n=== Phase 2: Deploy ZetoFactory ===\n");
 
-  const factoryImpl = await deploy("factoryImpl", "ZetoFactory (impl)", loadArtifact("ZetoFactory"));
-  const factoryProxy = await deploy("factoryProxy", "ZetoFactory (proxy)",
-    loadArtifact("ERC1967Proxy"), {}, { implementation: factoryImpl, _data: "0x8129fc1c" });
-  log(`Factory proxy: ${factoryProxy}`);
+  const factoryImpl = await deploy("factoryImpl", "ZetoFactory", loadArtifact("ZetoFactory"));
+  const factoryProxy = factoryImpl;
+  log(`Factory: ${factoryProxy}`);
 
   // 6. Register implementation with factory
   console.log("\n=== Phase 3: Register Implementation ===\n");
