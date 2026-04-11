@@ -194,6 +194,15 @@ build_all() {
     log "$DOCKER_IMAGE exists (docker rmi $DOCKER_IMAGE to rebuild)"
   fi
 
+  # sdk/typescript's `npm run build` runs `npm run abi` first, which copies
+  # ABIs from paladin/solidity/artifacts. Those artifacts are produced by
+  # hardhat — we compile the paladin Solidity sources on the host here so
+  # the subsequent TypeScript build has something to copy from. The Docker
+  # image already compiles them internally; this host-side compile is
+  # strictly for the SDK's build prerequisite.
+  log "Compiling paladin Solidity on host for SDK ABIs..."
+  (cd "$PALADIN_DIR/solidity" && npm install --silent && npx hardhat compile)
+
   log "Building TypeScript dependencies..."
   (cd "$PALADIN_DIR/sdk/typescript" && npm install --silent && npm run build)
   (cd "$PALADIN_DIR/examples/common" && npm install --silent && npm run build)
