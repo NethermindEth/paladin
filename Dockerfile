@@ -28,7 +28,9 @@ ARG WASMER_VERSION
 # Set environment variables
 ENV LANG=C.UTF-8
 
-# Install build dependencies
+# Install build dependencies. python3 is required by node-gyp when the
+# zeto/solidity npm install compiles native addons such as bufferutil
+# (a transitive dep of the hardhat toolbox).
 RUN apt-get update && apt-get install -y \
     curl \
     unzip \
@@ -40,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libgomp1 \
     xz-utils \
+    python3 \
     && apt-get clean
 
 # Install JDK
@@ -110,6 +113,10 @@ COPY paladin/go.work.sum ./
 COPY zeto/solidity /zeto/solidity
 # Copy zeto go-sdk (referenced by domains/zeto/go.mod replace directive)
 COPY zeto/go-sdk /zeto/go-sdk
+# Copy zeto zkp/js — zeto/solidity/package.json references it via file:../zkp/js
+# and the hardhat compile step (run in the full-builder stage below) cannot
+# resolve the dependency without it.
+COPY zeto/zkp/js /zeto/zkp/js
 
 # We have to use a special minimal go.work for this
 COPY paladin/go.work.base go.work
@@ -144,6 +151,19 @@ COPY paladin/ui/client ui/client
 COPY paladin/testinfra/go.mod testinfra/go.mod
 COPY paladin/operator/go.mod operator/go.mod
 COPY paladin/perf/go.mod perf/go.mod
+
+# Compile the Nethermind zeto Solidity sources locally so the domains/zeto
+# gradle build can consume the resulting ABIs (notably IZetoEnforced.json,
+# which is an AENKNR-E fork addition that upstream hyperledger-labs/zeto
+# never published). Produces /zeto/solidity/artifacts/contracts/** which
+# `extractZetoArtifacts` then copies into ${zkpOut}/artifacts/contracts.
+#
+# We use `npm ci` (not `npm install`) so OpenZeppelin and other deps are
+# locked to the exact versions in zeto/solidity/package-lock.json. Loose
+# semver on ^5.0.2 resolved to 5.6.1 in fresh installs, which removed the
+# __UUPSUpgradeable_init() helper that factory_upgradeable.sol still calls.
+RUN cd /zeto/solidity && npm ci --no-audit --no-fund && npx hardhat compile
+
 RUN gradle --no-daemon --parallel assemble
 
 # Copy AENKNR-E circuit artifacts from zeto repo into the build output

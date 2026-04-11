@@ -8,10 +8,11 @@ rs-soroban-sdk/
 stellar-core/
 stellar-rpc/
 
-# Exclude zeto subdirs we don't need (keep zkp/artifacts for AENKNR-E circuits)
+# Exclude zeto subdirs we don't need (keep zkp/artifacts for AENKNR-E circuits,
+# and keep zkp/js because zeto/solidity/package.json depends on it via file:../zkp/js
+# which must resolve when the Solidity sources are compiled inside the builder).
 zeto/zkp/circuits
 zeto/zkp/node_modules
-zeto/zkp/js
 zeto/doc/
 
 # Standard build artifact exclusions
