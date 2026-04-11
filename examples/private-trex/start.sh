@@ -194,14 +194,39 @@ build_all() {
     log "$DOCKER_IMAGE exists (docker rmi $DOCKER_IMAGE to rebuild)"
   fi
 
-  # sdk/typescript's `npm run build` runs `npm run abi` first, which copies
-  # ABIs from paladin/solidity/artifacts. Those artifacts are produced by
-  # hardhat — we compile the paladin Solidity sources on the host here so
-  # the subsequent TypeScript build has something to copy from. The Docker
-  # image already compiles them internally; this host-side compile is
-  # strictly for the SDK's build prerequisite.
-  log "Compiling paladin Solidity on host for SDK ABIs..."
+  # The Docker image compiles Solidity sources internally, but several
+  # host-side steps (TypeScript SDK build, the deploy script in src/deploy.ts)
+  # need those ABIs on disk BEFORE the container starts. Compile everything
+  # the host needs here, then populate domains/integration-test/helpers/abis/
+  # the same way gradle's integration-test:copySolidity task does in-container.
+  log "Compiling paladin Solidity on host..."
   (cd "$PALADIN_DIR/solidity" && npm install --silent && npx hardhat compile)
+
+  log "Compiling zeto Solidity on host..."
+  (cd "$ZETO_DIR/solidity" && npm ci --no-audit --no-fund --silent && npx hardhat compile)
+
+  log "Generating Poseidon2/Poseidon3 ABIs..."
+  local poseidon_tmp="$PALADIN_DIR/domains/zeto/tools/solidity"
+  mkdir -p "$poseidon_tmp"
+  (cd "$poseidon_tmp" && \
+    [ -d node_modules/circomlibjs ] || npm install --silent circomlibjs@0.1.7 && \
+    cp "$PALADIN_DIR/domains/zeto/scripts/build-poseidon.js" . && \
+    node build-poseidon.js)
+
+  log "Populating domains/integration-test/helpers/abis/..."
+  local abis_out="$PALADIN_DIR/domains/integration-test/helpers/abis"
+  mkdir -p "$abis_out"
+  # Every hardhat-compiled contract ABI under paladin/solidity/artifacts/.
+  # Includes direct project contracts, @openzeppelin transitive imports,
+  # and anything else the compile graph pulled in. Flat-copy: filename only.
+  find "$PALADIN_DIR/solidity/artifacts" \
+    -name '*.json' ! -name '*.dbg.json' -exec cp -f {} "$abis_out/" \; 2>/dev/null || true
+  # Same for the zeto fork's artifacts — contracts, @iden3, @openzeppelin, etc.
+  find "$ZETO_DIR/solidity/artifacts" \
+    -name '*.json' ! -name '*.dbg.json' -exec cp -f {} "$abis_out/" \; 2>/dev/null || true
+  # Poseidon artifacts from the circomlibjs-based generator.
+  cp "$poseidon_tmp/Poseidon2.json" "$poseidon_tmp/Poseidon3.json" "$abis_out/" 2>/dev/null || true
+  log "  $(ls "$abis_out" | wc -l | tr -d ' ') ABI files populated"
 
   log "Building TypeScript dependencies..."
   (cd "$PALADIN_DIR/sdk/typescript" && npm install --silent && npm run build)
