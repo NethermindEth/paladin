@@ -198,21 +198,22 @@ async function main() {
     loadArtifact("Zeto_AnonEncNullifierKycNonRepudiationEnforced"), libs,
   );
 
-  // 5. Factory (implementation + ERC1967Proxy)
+  // 5. Factory
+  //
+  // paladin/solidity/contracts/domains/zeto/ZetoFactory.sol extends
+  // @lfdecentralizedtrust/zeto-contracts factory.sol's `ZetoTokenFactory`,
+  // which inherits from plain `Ownable` (not `OwnableUpgradeable`). It has
+  // no `initialize()` function and uses a constructor. Wrapping it in an
+  // ERC1967Proxy would delegatecall a non-existent `initialize()` selector
+  // and revert with FailedCall() — so we deploy it directly and use the
+  // implementation address as the factory address throughout.
   console.log("\n=== Phase 2: Deploy ZetoFactory ===\n");
 
   const factoryImpl = await deployContract(
-    paladin, deployer, "ZetoFactory (impl)", loadArtifact("ZetoFactory"),
+    paladin, deployer, "ZetoFactory", loadArtifact("ZetoFactory"),
   );
-
-  // Deploy ERC1967Proxy pointing to factory impl, calling initialize()
-  const initSelector = "0x8129fc1c"; // initialize() with no params
-  const proxyArtifact = loadArtifact("ERC1967Proxy");
-  const factoryProxy = await deployContract(
-    paladin, deployer, "ZetoFactory (proxy)",
-    proxyArtifact, {}, { implementation: factoryImpl, _data: initSelector },
-  );
-  log(`Factory proxy: ${factoryProxy}`);
+  const factoryProxy = factoryImpl; // alias: the rest of the script calls this "factoryProxy"
+  log(`Factory: ${factoryProxy}`);
 
   // 6. Register implementation with factory
   console.log("\n=== Phase 3: Register Implementation ===\n");
