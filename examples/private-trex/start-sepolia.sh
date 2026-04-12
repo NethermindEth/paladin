@@ -49,6 +49,7 @@ ALCHEMY_WS_URL="wss://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
 # Workspace root: expects paladin/ and zeto/ side by side
 WORKSPACE="${WORKSPACE:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 PALADIN_DIR="$WORKSPACE/paladin"
+ZETO_DIR="$WORKSPACE/zeto"
 
 CONTAINER_NAME="paladin-node1"
 POSTGRES_NAME="paladin-postgres"
@@ -117,6 +118,34 @@ build_all() {
   else
     log "$DOCKER_IMAGE exists (docker rmi $DOCKER_IMAGE to rebuild)"
   fi
+
+  # Host-side Solidity compilation + ABI population. The Docker image
+  # compiles internally, but the TypeScript SDK build (npm run abi) and the
+  # deploy script (src/deploy.ts) need ABI JSONs on the host filesystem
+  # before the container starts.
+  log "Compiling paladin Solidity on host..."
+  (cd "$PALADIN_DIR/solidity" && npm install --silent && npx hardhat compile)
+
+  log "Compiling zeto Solidity on host..."
+  (cd "$ZETO_DIR/solidity" && npm ci --no-audit --no-fund --silent && npx hardhat compile)
+
+  log "Generating Poseidon2/Poseidon3 ABIs..."
+  local poseidon_tmp="$PALADIN_DIR/domains/zeto/tools/solidity"
+  mkdir -p "$poseidon_tmp"
+  (cd "$poseidon_tmp" && \
+    [ -d node_modules/circomlibjs ] || npm install --silent circomlibjs@0.1.7 && \
+    cp "$PALADIN_DIR/domains/zeto/scripts/build-poseidon.js" . && \
+    node build-poseidon.js)
+
+  log "Populating domains/integration-test/helpers/abis/..."
+  local abis_out="$PALADIN_DIR/domains/integration-test/helpers/abis"
+  mkdir -p "$abis_out"
+  find "$PALADIN_DIR/solidity/artifacts" \
+    -name '*.json' ! -name '*.dbg.json' -exec cp -f {} "$abis_out/" \; 2>/dev/null || true
+  find "$ZETO_DIR/solidity/artifacts" \
+    -name '*.json' ! -name '*.dbg.json' -exec cp -f {} "$abis_out/" \; 2>/dev/null || true
+  cp "$poseidon_tmp/Poseidon2.json" "$poseidon_tmp/Poseidon3.json" "$abis_out/" 2>/dev/null || true
+  log "  $(ls "$abis_out" | wc -l | tr -d ' ') ABI files populated"
 
   log "Building TypeScript dependencies..."
   (cd "$PALADIN_DIR/sdk/typescript" && npm install --silent && npm run build)
