@@ -129,7 +129,14 @@ ENV CC=gcc
 # - Installing gradle with the wrapper
 # - Compiling the groovy buildSrc
 # - Installing a bunch of base Go pre-reqs
-RUN gradle --no-daemon --parallel :toolkit:go:assemble :solidity:compile
+#
+# Retry on transient network failures: this step downloads Go modules, NPM
+# packages, and protoc binaries. ECONNRESET from the registry is common on
+# flaky connections; a single retry recovers without losing cache.
+RUN for i in 1 2 3; do \
+      gradle --no-daemon --parallel :toolkit:go:assemble :solidity:compile && break; \
+      echo "gradle attempt $i failed, retrying in 10s..." && sleep 10; \
+    done
 
 # Stage 2... Full build - currently core/zeto/noto/core are all cop-req'd together
 # (If we untangle this we can get more parallelism and less re-build in our docker build)
@@ -162,7 +169,16 @@ COPY paladin/perf/go.mod perf/go.mod
 # locked to the exact versions in zeto/solidity/package-lock.json. Loose
 # semver on ^5.0.2 resolved to 5.6.1 in fresh installs, which removed the
 # __UUPSUpgradeable_init() helper that factory_upgradeable.sol still calls.
-RUN cd /zeto/solidity && npm ci --no-audit --no-fund && npx hardhat compile
+#
+# Retry on transient network failures: this step downloads ~1000 npm
+# packages including native Solidity analyzer binaries; ECONNRESET from
+# the registry is common on flaky connections.
+RUN cd /zeto/solidity && \
+    for i in 1 2 3; do \
+      npm ci --no-audit --no-fund && break; \
+      echo "npm ci attempt $i failed, retrying in 10s..." && sleep 10; \
+    done && \
+    npx hardhat compile
 
 RUN gradle --no-daemon --parallel assemble
 
