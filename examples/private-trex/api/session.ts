@@ -367,6 +367,22 @@ export class DemoSession {
       return this.addTx("PUBLIC_TRANSFER", from, from, to, amount, "PUBLIC", summary("public"), receipt.transactionHash);
     }
 
+    // Pre-check private balance before dispatching to Paladin. Without this,
+    // an account whose notes were previously consumed by a clawback can
+    // trigger a "state not found" loop inside Paladin's sequencer assembler
+    // (the stale commitment hash is still indexed for the owner even after
+    // the underlying state has been marked spent). The loop eventually gives
+    // up with a confusing message after several seconds. Failing fast here
+    // gives the user a clear "Insufficient private balance" instead.
+    const senderBal = Number(
+      (await this.zeto!.using(this.paladin).balanceOf(fromV, { account: fromV.lookup })).totalBalance,
+    );
+    if (senderBal < amount) {
+      const reason = `Insufficient private balance (have ${senderBal.toLocaleString()}, need ${amount.toLocaleString()})`;
+      const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", reason, null, "FAILED");
+      throw Object.assign(new Error(reason), { transaction: tx });
+    }
+
     const receipt = await this.zeto!.using(this.paladin)
       .transfer(fromV, { transfers: [{ to: toV, amount, data: "0x" }] })
       .waitForReceipt(LONG_POLL_TIMEOUT);
