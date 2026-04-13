@@ -16,8 +16,8 @@ export const SEPOLIA_RPC_URL = process.env.ALCHEMY_API_KEY
   : undefined;
 
 // Sepolia: 12s blocks + indexer latency. Besu: instant blocks.
-export const POLL_TIMEOUT = IS_SEPOLIA ? 120_000 : BASE_POLL;
-export const LONG_POLL_TIMEOUT = IS_SEPOLIA ? 300_000 : BASE_LONG_POLL;
+export const POLL_TIMEOUT = IS_SEPOLIA ? 300_000 : BASE_POLL;
+export const LONG_POLL_TIMEOUT = IS_SEPOLIA ? 600_000 : BASE_LONG_POLL;
 
 const ETHERSCAN = "https://sepolia.etherscan.io";
 export const etherscanTx = (hash: string) => `${ETHERSCAN}/tx/${hash}`;
