@@ -537,6 +537,8 @@ export class DemoSession {
       return this.addTx("PUBLIC_TRANSFER", from, from, to, amount, "PUBLIC", summary("public"), receipt.transactionHash);
     }
 
+    await this.ensureSubmitKeyFunded();
+
     // Pre-check private balance before dispatching to Paladin. Without this,
     // an account whose notes were previously consumed by a clawback can
     // trigger a "state not found" loop inside Paladin's sequencer assembler
@@ -567,8 +569,7 @@ export class DemoSession {
     }
     const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", summary("private"), receipt?.transactionHash);
     if (receipt?.transactionHash) this.trackNote(receipt.transactionHash, to);
-    // Best-effort: fund the domain submit key now that it exists
-    this.autoFundSubmitKey();
+    this.ensureSubmitKeyFunded().catch(() => {});
     return tx;
   }
 
@@ -611,6 +612,7 @@ export class DemoSession {
   async clawback(actor: string): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
+    await this.ensureSubmitKeyFunded();
     this.requireIdentity(actor);
     if (!this._investorStatuses[actor]?.frozen) throw new Error(`${actor} is not frozen — freeze first`);
 
@@ -778,12 +780,16 @@ export class DemoSession {
   }
 
 
-  /** Best-effort top-up of the domain submit key after private transfers. Fire-and-forget. */
-  private autoFundSubmitKey(): void {
+  /** Ensure the domain submit key has gas before a private transaction. */
+  private async ensureSubmitKeyFunded(): Promise<void> {
     if (!IS_SEPOLIA || !SEPOLIA_RPC_URL || !this.zeto) return;
-    fundDomainSubmitKey(SEPOLIA_RPC_URL, this.zeto.address).catch((e: unknown) => {
-      console.log(`[session] Submit key top-up: ${e instanceof Error ? e.message : e}`);
-    });
+    try {
+      await fundDomainSubmitKey(SEPOLIA_RPC_URL, this.zeto.address);
+    } catch {
+      // Key may not exist yet (first private tx). Log and continue — Paladin
+      // creates it lazily and subsequent calls will fund it.
+      console.log("[session] Submit key not found yet, will fund after first transfer");
+    }
   }
 
   private ensureSetup(): void {

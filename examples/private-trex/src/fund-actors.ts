@@ -31,7 +31,7 @@ export interface ActorFundingRequest {
 // Paladin assigns these keys dynamically as new Zeto contracts are deployed,
 // so we query Paladin's Postgres directly to find the current active keys
 // rather than brute-forcing a BIP32 index range.
-const DOMAIN_KEY_AMOUNT = "0.15";
+const DOMAIN_KEY_AMOUNT = "0.5";
 
 function getSeedHex(): string {
   const raw = process.env.WALLET_SEED;
