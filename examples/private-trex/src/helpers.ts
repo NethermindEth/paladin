@@ -16,6 +16,7 @@
 import PaladinClient, {
   PaladinVerifier,
   TransactionType,
+  ITransactionReceipt,
   algorithmZetoSnarkBJJ,
   IDEN3_PUBKEY_BABYJUBJUB_COMPRESSED_0X,
 } from "@lfdecentralizedtrust/paladin-sdk";
@@ -37,7 +38,7 @@ async function sendTx(
   abi: any[],
   fn: string,
   data: Record<string, any>,
-): Promise<void> {
+): Promise<ITransactionReceipt> {
   const txId = await paladin.ptx.sendTransaction({
     type: TransactionType.PUBLIC,
     from: from.lookup,
@@ -50,6 +51,7 @@ async function sendTx(
   if (!checkReceipt(receipt)) {
     throw new Error(`Transaction ${fn} failed (txId=${txId})`);
   }
+  return receipt!;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,8 +171,8 @@ export async function setComplianceRoot(
   zetoAddr: string,
   root: string,
   data: string = "0x",
-): Promise<void> {
-  await sendTx(paladin, owner, zetoAddr, complianceRootAbi.abi, "setComplianceRoot", {
+): Promise<ITransactionReceipt> {
+  return sendTx(paladin, owner, zetoAddr, complianceRootAbi.abi, "setComplianceRoot", {
     newRoot: root,
     data,
   });
