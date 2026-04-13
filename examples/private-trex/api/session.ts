@@ -84,8 +84,8 @@ const ROLE_MAP: Record<string, string> = {
 const DYNAMIC_NAMES = ["dave", "eve", "frank", "grace", "heidi", "ivan", "judy", "karl", "liam", "mia"];
 
 const uid = () => Math.random().toString(36).substring(2, 10);
+const SESSION_FILE = path.resolve(__dirname, "../data/session.json");
 
-/** Wraps a promise with a timeout. Rejects with a clear error if the operation takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s. Restart the Paladin node if this persists.`)), ms);
@@ -96,13 +96,57 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-/** Timeout for private transfers (ZK proof gen + Sepolia confirmation). */
-const TRANSFER_TIMEOUT = IS_SEPOLIA ? 120_000 : 60_000;
+const TRANSFER_TIMEOUT = IS_SEPOLIA ? 180_000 : 60_000;
 
-// No persistence. Every setup() deploys T-REX and Zeto fresh.
-// See SUBMIT_KEY_POSTMORTEM.md for why cross-session contract reuse is
-// currently deferred (Paladin's internal compliance SMT + missing batch
-// circuit wasm + submit-key funding chicken-and-egg).
+
+// Session persistence — survives API server restarts without redeploying
+
+
+interface PersistedSession {
+  runId: string;
+  trexSuite: trex.TREXSuite;
+  zetoAddress: string;
+  arbiterPrivKey: string;
+  arbiterPubKey: string[];
+  investorStatuses: Record<string, InvestorStatus>;
+  dynamicInvestors: string[];
+  complianceLeaves: Array<{ x: string; y: string; status: string }>;
+}
+
+function saveSessionFile(data: PersistedSession): void {
+  const dir = path.dirname(SESSION_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(data, null, 2));
+  console.log("[session] State persisted to disk");
+}
+
+function loadSessionFile(): PersistedSession | null {
+  if (!fs.existsSync(SESSION_FILE)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8"));
+  } catch {
+    console.warn("[session] Corrupt session file, ignoring");
+    return null;
+  }
+}
+
+
+// Paladin health check — retry with backoff on connection failure
+
+
+async function ensurePaladinReady(paladin: PaladinClient, maxAttempts = 5): Promise<void> {
+  for (let i = 1; i <= maxAttempts; i++) {
+    try {
+      await paladin.ptx.getTransactionReceipt("00000000-0000-0000-0000-000000000000");
+      return; // connected — the 404/null response is fine, we just need the RPC to respond
+    } catch {
+      if (i === maxAttempts) throw new Error("Paladin node not responding after multiple retries");
+      const delay = Math.min(2000 * i, 10000);
+      console.warn(`[session] Paladin not ready (attempt ${i}/${maxAttempts}), retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
 
 /**
  * Paladin returns verbose multi-line errors with circuit revert data
@@ -114,7 +158,8 @@ function parseError(raw: string): string {
     return "Insufficient Sepolia ETH — top up the funder wallet (0xF9D5...aDaC6)";
   if (raw.includes("Insufficient funds") || raw.includes("available=0")) return "Insufficient private balance";
   if (raw.includes("Kyc") || raw.includes("KYC") || raw.includes("CheckSMTProof")) return "Receiver is not KYC verified";
-  if (raw.includes("frozen") || raw.includes("revert data")) return "Account is frozen — transfers blocked";
+  if (raw.includes("frozen")) return "Account is frozen — transfers blocked";
+  if (raw.includes("Unable to decode revert data")) return "Transaction reverted on-chain (no revert reason available)";
   if (raw.includes("socket hang up")) return "Paladin connection lost — restart the node";
   if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out — restart the Paladin node if this persists";
   const first = raw.split(/[.\n]/)[0].replace(/^PD\d+:\s*/, "").trim();
@@ -133,7 +178,7 @@ async function publicCallWithReceipt(
   return receipt!;
 }
 
-// ---------------------------------------------------------------------------
+
 
 export class DemoSession {
   private paladin: PaladinClient;
@@ -161,6 +206,8 @@ export class DemoSession {
   private _pendingRequests: PendingRequest[] = [];
   setupComplete = false;
 
+  loadPersistedSession(): PersistedSession | null { return loadSessionFile(); }
+
   get transactions() { return this._transactions; }
   get shieldedNotes() { return this._shieldedNotes; }
   get investorStatuses(): Readonly<Record<string, InvestorStatus>> { return this._investorStatuses; }
@@ -178,19 +225,12 @@ export class DemoSession {
     this.deployData = JSON.parse(fs.readFileSync(deployPath, "utf-8"));
   }
 
-  // --- Lifecycle ---
 
   /**
-   * Full fresh deploy. Used by both /setup and /restart (via restart()).
-   *
-   * Nothing is persisted across sessions — T-REX and Zeto are deployed
-   * from scratch every time. See SUBMIT_KEY_POSTMORTEM.md for the full
-   * history of why we tried and abandoned a persistence layer (short
-   * version: Paladin's internal compliance SMT, the missing batch circuit
-   * wasm, and the domain-submit-key funding race all conspired against us,
-   * and we chose to defer rather than ship a fragile optimization).
-   *
-   * Runs in ~12-15 min on Sepolia. Not fast, but reliable.
+   * Full fresh deploy (~12 min on Sepolia). Deploys T-REX + Zeto, registers
+   * actors, posts compliance root, mints tokens, deposits to the pool.
+   * Persists to data/session.json on completion so subsequent API server
+   * restarts use the fast restore() path instead.
    */
   async setup(): Promise<void> {
     console.log(`[session] Setup started (runId=${this.runId})`);
@@ -200,8 +240,8 @@ export class DemoSession {
     if (IS_SEPOLIA && SEPOLIA_RPC_URL) {
       try {
         await fundActors(this.paladin, SEPOLIA_RPC_URL, defaultFundingList(this.nodeId, this.runId));
-      } catch (e: any) {
-        throw new Error(parseError(e.message));
+      } catch (e: unknown) {
+        throw new Error(parseError(e instanceof Error ? e.message : String(e)));
       }
     }
 
@@ -292,13 +332,92 @@ export class DemoSession {
     if (IS_SEPOLIA && SEPOLIA_RPC_URL) {
       try {
         await fundDomainSubmitKey(SEPOLIA_RPC_URL, this.zeto.address);
-      } catch (e: any) {
-        console.warn(`[session] Domain submit key not yet funded (${e.message}). First private transfer may need manual top-up.`);
+      } catch (e: unknown) {
+        console.warn(`[session] Domain submit key not yet funded (${e instanceof Error ? e.message : e}). First private transfer may need manual top-up.`);
       }
     }
 
     this.setupComplete = true;
+    this.persist();
     console.log("[session] Setup complete");
+  }
+
+  /**
+   * Restore a session from disk. Skips all contract deployment — only
+   * resolves actors and rebuilds in-memory state from the persisted file.
+   * Takes ~5 seconds instead of ~12 minutes.
+   */
+  async restore(saved: PersistedSession): Promise<void> {
+    console.log(`[session] Restoring session (runId=${saved.runId})`);
+    this.runId = saved.runId;
+
+    await ensurePaladinReady(this.paladin);
+    await this.resolveActors();
+
+    // Restore dynamic investors
+    this._dynamicInvestors = saved.dynamicInvestors;
+    for (const name of saved.dynamicInvestors) {
+      const identifier = `${name}-${this.runId}@${this.nodeId}`;
+      const v = this.paladin.getVerifiers(identifier)[0];
+      this.verifiers[name] = v;
+      this.identities[name] = await resolveActorIdentity(this.getDisplayName(name), v);
+      this.pubkeyToName.set(this.identities[name].babyjubPubKey[0], name);
+    }
+
+    // Restore T-REX suite
+    this.trexSuite = saved.trexSuite;
+
+    // Restore Zeto — reconnect to existing deployed contract
+    this.zeto = new ZetoInstance(this.paladin, saved.zetoAddress);
+
+    // Restore arbiter key
+    this.arbiterPrivKey = BigInt(saved.arbiterPrivKey);
+    this.arbiterPubKey = saved.arbiterPubKey;
+
+    // Restore compliance SMT from saved leaves
+    await this.complianceSmt.init();
+    for (const leaf of saved.complianceLeaves) {
+      await this.complianceSmt.setStatus(leaf.x, leaf.y, BigInt(leaf.status));
+    }
+
+    // Restore investor statuses
+    this._investorStatuses = saved.investorStatuses;
+
+    this.setupComplete = true;
+    console.log("[session] Session restored from disk");
+  }
+
+  /** Persist session state to disk so API server restarts don't require redeployment. */
+  private persist(): void {
+    if (!this.trexSuite || !this.zeto) return;
+    try {
+      saveSessionFile({
+        runId: this.runId,
+        trexSuite: this.trexSuite,
+        zetoAddress: this.zeto.address,
+        arbiterPrivKey: this.arbiterPrivKey.toString(),
+        arbiterPubKey: this.arbiterPubKey,
+        investorStatuses: { ...this._investorStatuses },
+        dynamicInvestors: [...this._dynamicInvestors],
+        complianceLeaves: this.getComplianceLeaves(),
+      });
+    } catch (e: unknown) {
+      console.warn(`[session] Failed to persist: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  private getComplianceLeaves(): Array<{ x: string; y: string; status: string }> {
+    const leaves: Array<{ x: string; y: string; status: string }> = [];
+    for (const [name, id] of Object.entries(this.identities)) {
+      // Persistent actors (issuer, bank, regulator) are always KYC'd (status=1)
+      // Investors derive status from _investorStatuses
+      const investorStatus = this._investorStatuses[name];
+      const smtStatus = investorStatus
+        ? (investorStatus.frozen ? "2" : investorStatus.kyc ? "1" : "0")
+        : "1"; // persistent actors default to KYC'd
+      leaves.push({ x: id.babyjubPubKey[0], y: id.babyjubPubKey[1], status: smtStatus });
+    }
+    return leaves;
   }
 
   /**
@@ -380,10 +499,10 @@ export class DemoSession {
     return Object.fromEntries(entries);
   }
 
-  // --- Actions ---
 
   async transfer(from: string, to: string, amount: number, mode: Visibility): Promise<TransactionRecord> {
     this.ensureSetup();
+    await ensurePaladinReady(this.paladin);
     const fromV = this.verifiers[from], toV = this.verifiers[to];
     const toI = this.identities[to];
     if (!fromV || !toV || !toI) throw new Error(`Unknown actor: ${from} or ${to}`);
@@ -426,11 +545,14 @@ export class DemoSession {
     }
     const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", summary("private"), receipt?.transactionHash);
     if (receipt?.transactionHash) this.trackNote(receipt.transactionHash, to);
+    // Best-effort: fund the domain submit key now that it exists
+    this.autoFundSubmitKey();
     return tx;
   }
 
   async approveKyc(actor: string): Promise<void> {
     this.ensureSetup();
+    await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
     if (this._investorStatuses[actor]?.kyc) throw new Error(`${actor} is already KYC'd`);
 
@@ -443,10 +565,12 @@ export class DemoSession {
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], kyc: true };
     this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC",
       `KYC approved for ${this.getDisplayName(actor)}`, receipt.transactionHash);
+    this.persist();
   }
 
   async setFrozen(actor: string, frozen: boolean): Promise<void> {
     this.ensureSetup();
+    await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
 
     await trex.setAddressFrozen(this.paladin, this.verifiers.bank, this.trexSuite!.token, id.evmAddress, frozen);
@@ -457,10 +581,12 @@ export class DemoSession {
     const label = frozen ? "frozen" : "unfrozen";
     this.addTx(frozen ? "FREEZE" : "UNFREEZE", "bank", null, actor, null, "PUBLIC",
       `${this.getDisplayName(actor)} account ${label}`, receipt.transactionHash);
+    this.persist();
   }
 
   async clawback(actor: string): Promise<TransactionRecord> {
     this.ensureSetup();
+    await ensurePaladinReady(this.paladin);
     this.requireIdentity(actor);
     if (!this._investorStatuses[actor]?.frozen) throw new Error(`${actor} is not frozen — freeze first`);
 
@@ -520,6 +646,7 @@ export class DemoSession {
     this._dynamicInvestors.push(name);
     const displayName = this.getDisplayName(name);
     console.log(`[session] Added investor ${displayName} (${name})`);
+    this.persist();
     return { name, displayName };
   }
 
@@ -599,7 +726,6 @@ export class DemoSession {
     return results;
   }
 
-  // --- Requests ---
 
   submitRequest(type: "KYC" | "TRANSFER", actor: string, details?: { to?: string; amount?: number; mode?: Visibility }): PendingRequest {
     const req: PendingRequest = {
@@ -627,7 +753,14 @@ export class DemoSession {
     this._pendingRequests.splice(idx, 1);
   }
 
-  // --- Private ---
+
+  /** Best-effort top-up of the domain submit key after private transfers. Fire-and-forget. */
+  private autoFundSubmitKey(): void {
+    if (!IS_SEPOLIA || !SEPOLIA_RPC_URL || !this.zeto) return;
+    fundDomainSubmitKey(SEPOLIA_RPC_URL, this.zeto.address).catch((e: unknown) => {
+      console.log(`[session] Submit key top-up: ${e instanceof Error ? e.message : e}`);
+    });
+  }
 
   private ensureSetup(): void {
     if (!this.setupComplete || !this.trexSuite || !this.zeto)

@@ -28,11 +28,12 @@ export function autoWarmIfPersisted(): Promise<void> {
   if (warmupInFlight) return warmupInFlight;
   const s = new DemoSession();
   session = s;
-  warmupInFlight = s.setup()
-    .then(
-      () => { console.log("[api] Auto-warm complete — session ready"); },
-      (err) => { session = null; throw err; },
-    )
+  const saved = s.loadPersistedSession();
+  const work = saved
+    ? s.restore(saved).then(() => { console.log("[api] Restored from disk — session ready in seconds"); })
+    : s.setup().then(() => { console.log("[api] Full setup complete — session ready"); });
+  warmupInFlight = work
+    .catch((err) => { session = null; throw err; })
     .finally(() => { warmupInFlight = null; });
   return warmupInFlight;
 }
@@ -167,14 +168,18 @@ router.post("/remove-investor/:name", requireToken, wrap(async (req, res) => {
  *     in-flight warmup instead of starting a second one.
  */
 router.post("/setup", wrap(async (_req, res) => {
-  // Join an in-flight auto-warm rather than starting a second one.
   if (warmupInFlight) await warmupInFlight;
 
-  // Already warmed? Just return the state — setup() is idempotent but
-  // re-running it would churn on-chain for no benefit.
   if (!session?.setupComplete) {
     session = new DemoSession();
-    warmupInFlight = session.setup().finally(() => { warmupInFlight = null; });
+    const saved = session.loadPersistedSession();
+    if (saved) {
+      // Fast path: restore from disk (~5s)
+      warmupInFlight = session.restore(saved).finally(() => { warmupInFlight = null; });
+    } else {
+      // Slow path: full deploy (~12 min)
+      warmupInFlight = session.setup().finally(() => { warmupInFlight = null; });
+    }
     await warmupInFlight;
   }
   sessionToken = crypto.randomBytes(16).toString("hex");
