@@ -16,7 +16,21 @@ const wrap = (fn: AsyncHandler): AsyncHandler => (req, res, next) => fn(req, res
 
 let session: DemoSession | null = null;
 let sessionToken: string | null = null;
+let tokenExpiresAt: number = 0;
 let warmupInFlight: Promise<void> | null = null;
+
+const TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+function issueToken(): string {
+  sessionToken = crypto.randomBytes(16).toString("hex");
+  tokenExpiresAt = Date.now() + TOKEN_TTL_MS;
+  return sessionToken!;
+}
+
+function revokeToken(): void {
+  sessionToken = null;
+  tokenExpiresAt = 0;
+}
 
 /**
  * Called from server.ts on startup when a persisted session file is found.
@@ -49,8 +63,15 @@ function getSession(): DemoSession {
  * but the resource is locked by an active demo session they don't own.
  */
 function requireToken(req: Request, res: Response, next: NextFunction): void {
+  // No token issued — open access
   if (!sessionToken) return next();
-  if (req.headers["x-session-token"] === sessionToken) return next();
+  // Token expired — auto-revoke and allow
+  if (Date.now() > tokenExpiresAt) { revokeToken(); return next(); }
+  // Valid token — extend TTL (heartbeat)
+  if (req.headers["x-session-token"] === sessionToken) {
+    tokenExpiresAt = Date.now() + TOKEN_TTL_MS;
+    return next();
+  }
   res.status(423).json({ error: "Demo in progress. Only the presenter can perform this action." });
 }
 
@@ -59,11 +80,13 @@ const router = Router();
 // --- READ ---
 
 router.get("/health", (_req, res) => {
+  const tokenActive = !!sessionToken && Date.now() < tokenExpiresAt;
   res.json({
     status: "ok",
     sessionActive: session?.setupComplete ?? false,
     warming: !!warmupInFlight && !session?.setupComplete,
-    locked: !!sessionToken,
+    locked: tokenActive,
+    tokenExpiresIn: tokenActive ? Math.round((tokenExpiresAt - Date.now()) / 1000) : null,
   });
 });
 
@@ -182,7 +205,7 @@ router.post("/setup", wrap(async (_req, res) => {
     }
     await warmupInFlight;
   }
-  sessionToken = crypto.randomBytes(16).toString("hex");
+  issueToken();
   res.json({ ...session!.getState(), balances: await session!.getBalances(), sessionToken });
 }));
 
@@ -196,7 +219,7 @@ router.post("/start", wrap(async (_req, res) => {
     res.status(400).json({ error: "No active session — run setup from the CLI first" });
     return;
   }
-  sessionToken = crypto.randomBytes(16).toString("hex");
+  issueToken();
   res.json({ ...session.getState(), balances: await session.getBalances(), sessionToken });
 }));
 
@@ -211,8 +234,17 @@ router.post("/restart", requireToken, wrap(async (_req, res) => {
     return;
   }
   await session.restart();
-  sessionToken = crypto.randomBytes(16).toString("hex");
+  issueToken();
   res.json({ ...session.getState(), balances: await session.getBalances(), sessionToken });
 }));
+
+/**
+ * Revoke the presenter token. Callable from terminal or UI "End Demo".
+ * After this, write endpoints are open until someone calls /start again.
+ */
+router.post("/release", (_req, res) => {
+  revokeToken();
+  res.json({ released: true });
+});
 
 export default router;
