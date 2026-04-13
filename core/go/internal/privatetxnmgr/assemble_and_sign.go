@@ -45,7 +45,9 @@ func isDeterministicSigningError(err error) bool {
 		strings.Contains(msg, "failed to calculate the witness") ||
 		strings.Contains(msg, "Failed to decode") ||
 		strings.Contains(msg, "Failed to parse") ||
-		strings.Contains(msg, "failed to assemble private inputs")
+		strings.Contains(msg, "failed to assemble private inputs") ||
+		strings.Contains(msg, "Failed to generate merkle proofs") ||
+		strings.Contains(msg, "Failed to format proving request")
 }
 
 // assemble a transaction that we are not coordinating, using the provided state locks

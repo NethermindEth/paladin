@@ -98,6 +98,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 const TRANSFER_TIMEOUT = IS_SEPOLIA ? 180_000 : 60_000;
 
+/**
+ * After posting a compliance root on-chain, Paladin's block indexer needs
+ * to process the event before the updated SMT is available for proof
+ * generation. On Sepolia (~12s blocks), we wait for 2 blocks to ensure
+ * the indexer has caught up. Without this, transfers immediately after
+ * KYC/freeze fail with "Failed to query the smt DB for leaf node".
+ */
+const INDEXER_SETTLE_MS = IS_SEPOLIA ? 30_000 : 2_000;
+async function waitForIndexerSettle(): Promise<void> {
+  if (INDEXER_SETTLE_MS > 0) {
+    console.log(`[session] Waiting ${INDEXER_SETTLE_MS / 1000}s for block indexer to settle...`);
+    await new Promise((r) => setTimeout(r, INDEXER_SETTLE_MS));
+  }
+}
+
 
 // Session persistence — survives API server restarts without redeploying
 
@@ -301,6 +316,7 @@ export class DemoSession {
       await this.complianceSmt.setStatus(a.babyjubPubKey[0], a.babyjubPubKey[1], 1n);
     }
     await postComplianceRoot(this.paladin, bank, this.zeto.address, this.complianceSmt);
+    await waitForIndexerSettle();
     console.log("[session] KYC complete");
 
     this._investorStatuses = {
@@ -561,6 +577,7 @@ export class DemoSession {
     await registerZetoKyc(this.paladin, this.verifiers.bank, this.zeto!.address, id.babyjubPubKey);
     await this.complianceSmt.setStatus(id.babyjubPubKey[0], id.babyjubPubKey[1], 1n);
     const receipt = await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
+    await waitForIndexerSettle();
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], kyc: true };
     this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC",
@@ -576,6 +593,7 @@ export class DemoSession {
     await trex.setAddressFrozen(this.paladin, this.verifiers.bank, this.trexSuite!.token, id.evmAddress, frozen);
     await this.complianceSmt.setStatus(id.babyjubPubKey[0], id.babyjubPubKey[1], frozen ? 2n : 1n);
     const receipt = await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
+    await waitForIndexerSettle();
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], frozen };
     const label = frozen ? "frozen" : "unfrozen";
