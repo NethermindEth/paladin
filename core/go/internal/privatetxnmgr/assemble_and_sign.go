@@ -33,6 +33,8 @@ import (
 // deterministic failure that will never succeed on retry. This includes:
 //   - ZK circuit constraint violations ("Assert Failed" from WASM witness calculators)
 //   - Proof generation failures from invalid witness inputs
+//   - Malformed extras data (corrupt SMT roots, unparseable salts, bad merkle proofs)
+//   - Missing or invalid witness assembly inputs
 //
 // These errors should cause the transaction to REVERT rather than retry
 // indefinitely. Transient errors (network, DB, resource exhaustion) do NOT
@@ -40,7 +42,10 @@ import (
 func isDeterministicSigningError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "Assert Failed") ||
-		strings.Contains(msg, "failed to calculate the witness")
+		strings.Contains(msg, "failed to calculate the witness") ||
+		strings.Contains(msg, "Failed to decode") ||
+		strings.Contains(msg, "Failed to parse") ||
+		strings.Contains(msg, "failed to assemble private inputs")
 }
 
 // assemble a transaction that we are not coordinating, using the provided state locks
