@@ -135,6 +135,28 @@ router.post("/decrypt", requireToken, wrap(async (req, res) => {
   res.json({ decrypted, notes: s.getNotes(investor) });
 }));
 
+router.post("/add-investor", requireToken, wrap(async (_req, res) => {
+  const s = getSession();
+  const { name, displayName } = await s.addInvestor();
+  res.json({
+    success: true, name, displayName,
+    actors: s.getActors(),
+    investorStatuses: s.investorStatuses,
+    balances: await s.getBalances(),
+  });
+}));
+
+router.post("/remove-investor/:name", requireToken, wrap(async (req, res) => {
+  const s = getSession();
+  s.removeInvestor(req.params.name as string);
+  res.json({
+    success: true,
+    actors: s.getActors(),
+    investorStatuses: s.investorStatuses,
+    balances: await s.getBalances(),
+  });
+}));
+
 // --- ADMIN ---
 
 /**

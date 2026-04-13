@@ -91,6 +91,42 @@ function poseidonDecrypt(
   return message.slice(0, length);
 }
 
+/**
+ * Poseidon-based stream encryption — inverse of poseidonDecrypt above.
+ * Ported from zeto/zkp/js/lib/util.js:45-83.
+ */
+function poseidonEncrypt(msg: bigint[], key: bigint[], nonce: bigint): bigint[] {
+  if (key.length !== 2) throw new Error("Key must be [x, y]");
+
+  // Pad plaintext to a multiple of 3
+  const message = [...msg];
+  while (message.length % 3 > 0) message.push(0n);
+
+  // Initial state: S = (0, key[0], key[1], nonce + length * 2^128)
+  let state: bigint[] = [0n, key[0], key[1], nonce + BigInt(msg.length) * TWO_128];
+  const ciphertext: bigint[] = [];
+
+  const n = Math.floor(message.length / 3);
+  for (let i = 0; i < n; i++) {
+    state = poseidon4(state, 4) as unknown as bigint[];
+
+    // Add plaintext to state (mod F) — the inverse of decryption's subtraction
+    state[1] = addMod(message[i * 3], state[1]);
+    state[2] = addMod(message[i * 3 + 1], state[2]);
+    state[3] = addMod(message[i * 3 + 2], state[3]);
+
+    ciphertext.push(state[1]);
+    ciphertext.push(state[2]);
+    ciphertext.push(state[3]);
+  }
+
+  // Final permutation — append integrity tag
+  state = poseidon4(state, 4) as unknown as bigint[];
+  ciphertext.push(state[1]);
+
+  return ciphertext;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -106,6 +142,23 @@ export interface DecryptedTransfer {
   senderPubKey: [string, string];
   inputs: Array<{ value: bigint; salt: bigint }>;
   outputs: Array<{ ownerPubKey: [string, string]; value: bigint; salt: bigint; commitment?: bigint }>;
+}
+
+export interface ProofBundle {
+  txHash: string;
+  onChainCiphertext: string[];
+  onChainOutputCommitments: string[];
+  ecdhPublicKey: [string, string];
+  encryptionNonce: string;
+  ecdhSharedSecret: [string, string];
+  decryptedPlaintext: string[];
+  reEncryptedCiphertext: string[];
+  computedCommitments: Array<{
+    outputIndex: number;
+    value: string; salt: string;
+    ownerPubKeyX: string; ownerPubKeyY: string;
+    hash: string;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +224,68 @@ export class AuthorityNoteIndexer {
           salt: plaintext[13],
         },
       ],
+    };
+  }
+
+  /**
+   * Decrypts + builds a verifiable proof bundle for independent client-side verification.
+   *
+   * The bundle contains the ECDH shared secret (safe to reveal per-tx — ephemeral,
+   * doesn't leak the arbiter private key). Anyone with the bundle can re-encrypt
+   * the plaintext and compare against on-chain ciphertext, or hash the plaintext
+   * fields and compare against on-chain output commitments.
+   */
+  buildProofBundle(
+    ciphertext: bigint[],
+    authorityPrivKey: bigint,
+    ecdhPublicKey: bigint[],
+    encryptionNonce: bigint,
+    onChainOutputCommitments: bigint[],
+    txHash: string,
+  ): { transfer: DecryptedTransfer; proof: ProofBundle } {
+    const shared = genEcdhSharedKey(authorityPrivKey, ecdhPublicKey as [bigint, bigint]);
+    const plaintext = poseidonDecrypt(ciphertext, shared, encryptionNonce, 14);
+
+    const transfer: DecryptedTransfer = {
+      senderPubKey: [plaintext[0].toString(), plaintext[1].toString()],
+      inputs: [
+        { value: plaintext[2], salt: plaintext[3] },
+        { value: plaintext[4], salt: plaintext[5] },
+      ],
+      outputs: [
+        { ownerPubKey: [plaintext[6].toString(), plaintext[7].toString()], value: plaintext[10], salt: plaintext[11] },
+        { ownerPubKey: [plaintext[8].toString(), plaintext[9].toString()], value: plaintext[12], salt: plaintext[13] },
+      ],
+    };
+
+    // Re-encrypt plaintext → should match on-chain ciphertext exactly
+    const reEncrypted = poseidonEncrypt(plaintext, shared, encryptionNonce);
+
+    // Compute output commitments: Poseidon4([value, salt, ownerPubKeyX, ownerPubKeyY])
+    const computedCommitments = transfer.outputs
+      .filter((o) => o.value > 0n)
+      .map((o, i) => ({
+        outputIndex: i,
+        value: o.value.toString(),
+        salt: o.salt.toString(),
+        ownerPubKeyX: o.ownerPubKey[0],
+        ownerPubKeyY: o.ownerPubKey[1],
+        hash: poseidon4([o.value, o.salt, BigInt(o.ownerPubKey[0]), BigInt(o.ownerPubKey[1])]).toString(),
+      }));
+
+    return {
+      transfer,
+      proof: {
+        txHash,
+        onChainCiphertext: ciphertext.map(String),
+        onChainOutputCommitments: onChainOutputCommitments.map(String),
+        ecdhPublicKey: [ecdhPublicKey[0].toString(), ecdhPublicKey[1].toString()],
+        encryptionNonce: encryptionNonce.toString(),
+        ecdhSharedSecret: [shared[0].toString(), shared[1].toString()],
+        decryptedPlaintext: plaintext.map(String),
+        reEncryptedCiphertext: reEncrypted.map(String),
+        computedCommitments,
+      },
     };
   }
 

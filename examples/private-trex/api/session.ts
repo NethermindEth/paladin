@@ -27,7 +27,7 @@ import * as trex from "../src/trex";
 import { setArbiter, setEnforcer, setCodec, setTransferFacet, registerZetoKyc } from "../src/helpers";
 import { resolveActorIdentity, postComplianceRoot, ActorIdentity } from "../src/identity";
 import { ComplianceSmtManager } from "../src/complianceSmt";
-import { AuthorityNoteIndexer } from "../src/authorityIndexer";
+import { AuthorityNoteIndexer, ProofBundle } from "../src/authorityIndexer";
 import { fundActors, fundDomainSubmitKey, defaultFundingList, ACTOR_FUNDING } from "../src/fund-actors";
 import { IS_SEPOLIA, SEPOLIA_RPC_URL, POLL_TIMEOUT, LONG_POLL_TIMEOUT } from "../src/sepolia";
 import enforcedAbi from "../src/zeto-abis/IZetoEnforced.json";
@@ -57,6 +57,7 @@ export interface ShieldedNote {
 export interface DecryptedNotePayload {
   amount: number; ownerName: string; ownerAddress: string;
   counterpartyName: string | null; counterpartyAddress: string | null; createdAt: string;
+  proofBundle: ProofBundle | null;
 }
 
 export interface InvestorStatus { kyc: boolean; frozen: boolean; }
@@ -79,8 +80,24 @@ const ROLE_MAP: Record<string, string> = {
   issuer: "bank", bank: "bank", regulator: "regulator",
   alice: "investor", bob: "investor", charlie: "investor",
 };
+/** Names for dynamically-added investors (beyond alice/bob/charlie). */
+const DYNAMIC_NAMES = ["dave", "eve", "frank", "grace", "heidi", "ivan", "judy", "karl", "liam", "mia"];
 
 const uid = () => Math.random().toString(36).substring(2, 10);
+
+/** Wraps a promise with a timeout. Rejects with a clear error if the operation takes too long. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s. Restart the Paladin node if this persists.`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/** Timeout for private transfers (ZK proof gen + Sepolia confirmation). */
+const TRANSFER_TIMEOUT = IS_SEPOLIA ? 120_000 : 60_000;
 
 // No persistence. Every setup() deploys T-REX and Zeto fresh.
 // See SUBMIT_KEY_POSTMORTEM.md for why cross-session contract reuse is
@@ -99,7 +116,7 @@ function parseError(raw: string): string {
   if (raw.includes("Kyc") || raw.includes("KYC") || raw.includes("CheckSMTProof")) return "Receiver is not KYC verified";
   if (raw.includes("frozen") || raw.includes("revert data")) return "Account is frozen — transfers blocked";
   if (raw.includes("socket hang up")) return "Paladin connection lost — restart the node";
-  if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out — try again";
+  if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out — restart the Paladin node if this persists";
   const first = raw.split(/[.\n]/)[0].replace(/^PD\d+:\s*/, "").trim();
   return first.length > 80 ? first.substring(0, 77) + "..." : first;
 }
@@ -132,6 +149,7 @@ export class DemoSession {
   private pubkeyToName = new Map<string, string>();
   private complianceSmt: ComplianceSmtManager;
   private noteIndexer = new AuthorityNoteIndexer();
+  private _dynamicInvestors: string[] = [];
 
   private _transactions: TransactionRecord[] = [];
   private _shieldedNotes: Record<string, ShieldedNote[]> = {};
@@ -257,7 +275,11 @@ export class DemoSession {
     this.addTx("MINT", "bank", null, null, TREASURY, "PUBLIC", `Minted ${TREASURY.toLocaleString()} DBT to Bank`);
 
     await trex.approve(this.paladin, bank, this.trexSuite.token, this.zeto.address, DEPOSIT);
-    const dr = await this.zeto.deposit(bank, { amount: DEPOSIT }).waitForReceipt(LONG_POLL_TIMEOUT);
+    const dr = await withTimeout(
+      this.zeto.deposit(bank, { amount: DEPOSIT }).waitForReceipt(LONG_POLL_TIMEOUT),
+      TRANSFER_TIMEOUT,
+      "Deposit to pool",
+    );
     if (!checkReceipt(dr)) throw new Error("Deposit failed");
     this.addTx("DEPOSIT_TO_POOL", "bank", "bank", null, DEPOSIT, "PRIVATE",
       `Deposited ${DEPOSIT.toLocaleString()} DBT to Zeto pool`, dr?.transactionHash);
@@ -309,6 +331,7 @@ export class DemoSession {
     this._shieldedNotes = {};
     this._pendingRequests = [];
     this.noteIndexer = new AuthorityNoteIndexer();
+    this._dynamicInvestors = [];
     this._investorStatuses = {
       alice: { kyc: false, frozen: false },
       bob: { kyc: false, frozen: false },
@@ -320,15 +343,19 @@ export class DemoSession {
     console.log(`[session] Restart complete (prev=${prevRunId}, new=${this.runId})`);
   }
 
+  getActors(): Record<string, { name: string; displayName: string; evmAddress: string; babyjubPubKey: string[]; nodeId: number; role: string }> {
+    return Object.fromEntries(Object.entries(this.identities).map(([name, id]) => [name, {
+      name, displayName: this.getDisplayName(name),
+      evmAddress: id.evmAddress, babyjubPubKey: id.babyjubPubKey,
+      nodeId: 1, role: ROLE_MAP[name] ?? "investor",
+    }]));
+  }
+
   getState() {
     return {
       setupComplete: this.setupComplete,
       runId: this.runId,
-      actors: Object.fromEntries(Object.entries(this.identities).map(([name, id]) => [name, {
-        name, displayName: DISPLAY_NAMES[name as ActorName],
-        evmAddress: id.evmAddress, babyjubPubKey: id.babyjubPubKey,
-        nodeId: 1, role: ROLE_MAP[name],
-      }])),
+      actors: this.getActors(),
       contracts: this.trexSuite && this.zeto ? { trex: { ...this.trexSuite }, zeto: { address: this.zeto.address } } : null,
       balances: {},
       investorStatuses: { ...this._investorStatuses },
@@ -340,15 +367,17 @@ export class DemoSession {
 
   async getBalances(): Promise<Record<string, { public: number; private: number }>> {
     if (!this.trexSuite || !this.zeto) return {};
-    const result: Record<string, { public: number; private: number }> = {};
-    for (const name of [...INVESTOR_NAMES, "bank"] as ActorName[]) {
+    const names = [...INVESTOR_NAMES, ...this._dynamicInvestors, "bank"]
+      .filter((n) => this.verifiers[n] && this.identities[n]);
+    const entries = await Promise.all(names.map(async (name) => {
       const v = this.verifiers[name], id = this.identities[name];
-      if (!v || !id) continue;
-      const pub = Number(await trex.balanceOf(this.paladin, v, this.trexSuite.token, id.evmAddress));
-      const priv = Number((await this.zeto.using(this.paladin).balanceOf(v, { account: v.lookup })).totalBalance);
-      result[name] = { public: pub, private: priv };
-    }
-    return result;
+      const [pub, privResult] = await Promise.all([
+        trex.balanceOf(this.paladin, v, this.trexSuite!.token, id.evmAddress),
+        this.zeto!.using(this.paladin).balanceOf(v, { account: v.lookup }),
+      ]);
+      return [name, { public: Number(pub), private: Number(privResult.totalBalance) }] as const;
+    }));
+    return Object.fromEntries(entries);
   }
 
   // --- Actions ---
@@ -359,7 +388,7 @@ export class DemoSession {
     const toI = this.identities[to];
     if (!fromV || !toV || !toI) throw new Error(`Unknown actor: ${from} or ${to}`);
     const summary = (vis: string) =>
-      `${DISPLAY_NAMES[from as ActorName]} sent ${amount.toLocaleString()} DBT to ${DISPLAY_NAMES[to as ActorName]} (${vis})`;
+      `${this.getDisplayName(from)} sent ${amount.toLocaleString()} DBT to ${this.getDisplayName(to)} (${vis})`;
 
     if (mode === "PUBLIC") {
       const receipt = await publicCallWithReceipt(this.paladin, fromV, this.trexSuite!.token, TokenABI,
@@ -383,9 +412,13 @@ export class DemoSession {
       throw Object.assign(new Error(reason), { transaction: tx });
     }
 
-    const receipt = await this.zeto!.using(this.paladin)
-      .transfer(fromV, { transfers: [{ to: toV, amount, data: "0x" }] })
-      .waitForReceipt(LONG_POLL_TIMEOUT);
+    const receipt = await withTimeout(
+      this.zeto!.using(this.paladin)
+        .transfer(fromV, { transfers: [{ to: toV, amount, data: "0x" }] })
+        .waitForReceipt(LONG_POLL_TIMEOUT),
+      TRANSFER_TIMEOUT,
+      "Private transfer",
+    );
     if (!checkReceipt(receipt)) {
       const reason = parseError((receipt as any)?.failureMessage ?? "Transfer failed");
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", reason, null, "FAILED");
@@ -405,10 +438,11 @@ export class DemoSession {
       this.trexSuite!.dummyIdentity, id.evmAddress, 756);
     await registerZetoKyc(this.paladin, this.verifiers.bank, this.zeto!.address, id.babyjubPubKey);
     await this.complianceSmt.setStatus(id.babyjubPubKey[0], id.babyjubPubKey[1], 1n);
-    await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
+    const receipt = await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], kyc: true };
-    this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC", `KYC approved for ${DISPLAY_NAMES[actor as ActorName]}`);
+    this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC",
+      `KYC approved for ${this.getDisplayName(actor)}`, receipt.transactionHash);
   }
 
   async setFrozen(actor: string, frozen: boolean): Promise<void> {
@@ -417,12 +451,12 @@ export class DemoSession {
 
     await trex.setAddressFrozen(this.paladin, this.verifiers.bank, this.trexSuite!.token, id.evmAddress, frozen);
     await this.complianceSmt.setStatus(id.babyjubPubKey[0], id.babyjubPubKey[1], frozen ? 2n : 1n);
-    await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
+    const receipt = await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], frozen };
     const label = frozen ? "frozen" : "unfrozen";
     this.addTx(frozen ? "FREEZE" : "UNFREEZE", "bank", null, actor, null, "PUBLIC",
-      `${DISPLAY_NAMES[actor as ActorName]} account ${label}`);
+      `${this.getDisplayName(actor)} account ${label}`, receipt.transactionHash);
   }
 
   async clawback(actor: string): Promise<TransactionRecord> {
@@ -434,14 +468,88 @@ export class DemoSession {
       this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
     if (bal <= 0) throw new Error(`${actor} has no private balance to claw back`);
 
-    const receipt = await this.zeto!.forcedTransfer(this.verifiers.bank, {
-      seizedOwner: this.verifiers[actor].lookup,
-      transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
-    }).waitForReceipt(LONG_POLL_TIMEOUT);
+    const receipt = await withTimeout(
+      this.zeto!.forcedTransfer(this.verifiers.bank, {
+        seizedOwner: this.verifiers[actor].lookup,
+        transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
+      }).waitForReceipt(LONG_POLL_TIMEOUT),
+      TRANSFER_TIMEOUT,
+      "Clawback",
+    );
     if (!checkReceipt(receipt)) throw new Error(parseError((receipt as any)?.failureMessage ?? "Clawback failed"));
 
     return this.addTx("CLAWBACK", "bank", actor, "bank", bal, "PRIVATE",
-      `Clawback: ${bal.toLocaleString()} DBT seized from ${DISPLAY_NAMES[actor as ActorName]}`, receipt?.transactionHash);
+      `Clawback: ${bal.toLocaleString()} DBT seized from ${this.getDisplayName(actor)}`, receipt?.transactionHash);
+  }
+
+  private getDisplayName(actor: string): string {
+    if (actor in DISPLAY_NAMES) return DISPLAY_NAMES[actor as ActorName];
+    return actor.charAt(0).toUpperCase() + actor.slice(1);
+  }
+
+  /**
+   * Add a fresh un-KYC'd investor on demand. The new investor is:
+   *  - Resolved as a Paladin identity (fresh BIP32 key)
+   *  - Funded on Sepolia for gas
+   *  - NOT registered on T-REX IR or Zeto KYC tree (approveKyc handles both)
+   *
+   * This lets the presenter demonstrate the KYC approval flow multiple times
+   * without a full redeploy.
+   */
+  async addInvestor(): Promise<{ name: string; displayName: string }> {
+    this.ensureSetup();
+
+    const idx = this._dynamicInvestors.length;
+    const name = idx < DYNAMIC_NAMES.length
+      ? DYNAMIC_NAMES[idx]
+      : `investor${idx - DYNAMIC_NAMES.length + 1}`;
+    const identifier = `${name}-${this.runId}@${this.nodeId}`;
+
+    const v = this.paladin.getVerifiers(identifier)[0];
+    this.verifiers[name] = v;
+    this.identities[name] = await resolveActorIdentity(this.getDisplayName(name), v);
+    this.pubkeyToName.set(this.identities[name].babyjubPubKey[0], name);
+
+    if (IS_SEPOLIA && SEPOLIA_RPC_URL) {
+      await fundActors(this.paladin, SEPOLIA_RPC_URL, [
+        { label: name, identifier, amountEth: "0.1" },
+      ]);
+    }
+
+    this._investorStatuses[name] = { kyc: false, frozen: false };
+    this._dynamicInvestors.push(name);
+    const displayName = this.getDisplayName(name);
+    console.log(`[session] Added investor ${displayName} (${name})`);
+    return { name, displayName };
+  }
+
+  /**
+   * Remove an investor from the dashboard. Purely cosmetic: on-chain state
+   * (T-REX IR registration, Zeto KYC, any held tokens) is immutable and
+   * stays forever. This just hides the actor from the UI so the presenter
+   * can clean up after demonstrating a flow.
+   *
+   * Static investors (alice, bob, charlie) cannot be removed.
+   */
+  removeInvestor(name: string): void {
+    this.ensureSetup();
+    if ((INVESTOR_NAMES as string[]).includes(name)) {
+      throw new Error(`Cannot remove ${name}: static investors cannot be removed`);
+    }
+    if (!this._dynamicInvestors.includes(name)) {
+      throw new Error(`Unknown dynamic investor: ${name}`);
+    }
+
+    this._dynamicInvestors = this._dynamicInvestors.filter((n) => n !== name);
+    delete this.verifiers[name];
+    delete this.identities[name];
+    delete this._investorStatuses[name];
+    delete this._shieldedNotes[name];
+    // Remove from pubkey→name map
+    for (const [key, val] of this.pubkeyToName) {
+      if (val === name) { this.pubkeyToName.delete(key); break; }
+    }
+    console.log(`[session] Removed investor ${this.getDisplayName(name)} (${name})`);
   }
 
   getNotes(investor: string): ShieldedNote[] { return this._shieldedNotes[investor] ?? []; }
@@ -463,11 +571,13 @@ export class DemoSession {
       const data = evt.data as Record<string, unknown>;
       if (!data?.encryptedValuesForArbiter || !data?.ecdhPublicKey || !data?.encryptionNonce) continue;
 
-      const decrypted = this.noteIndexer.decryptTransfer(
-        (data.encryptedValuesForArbiter as string[]).map(BigInt),
-        this.arbiterPrivKey,
-        (data.ecdhPublicKey as string[]).map(BigInt),
-        BigInt(data.encryptionNonce as string),
+      const ciphertext = (data.encryptedValuesForArbiter as string[]).map(BigInt);
+      const ecdhPubKey = (data.ecdhPublicKey as string[]).map(BigInt);
+      const nonce = BigInt(data.encryptionNonce as string);
+      const onChainOutputs = (data.outputs as string[] ?? []).map(BigInt);
+
+      const { transfer: decrypted, proof } = this.noteIndexer.buildProofBundle(
+        ciphertext, this.arbiterPrivKey, ecdhPubKey, nonce, onChainOutputs, note.createdTxHash,
       );
 
       for (const out of decrypted.outputs) {
@@ -481,6 +591,7 @@ export class DemoSession {
           counterpartyName: senderName,
           counterpartyAddress: this.identities[senderName]?.evmAddress ?? null,
           createdAt: new Date().toISOString(),
+          proofBundle: proof,
         };
         results.push(note.decrypted);
       }
@@ -545,12 +656,12 @@ export class DemoSession {
     for (const name of PERSISTENT_NAMES) {
       const v = this.paladin.getVerifiers(`${name}@${this.nodeId}`)[0];
       this.verifiers[name] = v;
-      this.identities[name] = await resolveActorIdentity(DISPLAY_NAMES[name], v);
+      this.identities[name] = await resolveActorIdentity(this.getDisplayName(name), v);
     }
     for (const name of INVESTOR_NAMES) {
       const v = this.paladin.getVerifiers(`${name}-${this.runId}@${this.nodeId}`)[0];
       this.verifiers[name] = v;
-      this.identities[name] = await resolveActorIdentity(DISPLAY_NAMES[name], v);
+      this.identities[name] = await resolveActorIdentity(this.getDisplayName(name), v);
     }
     this.pubkeyToName.clear();
     for (const [name, id] of Object.entries(this.identities))
