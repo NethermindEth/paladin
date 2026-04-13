@@ -340,6 +340,12 @@ export class DemoSession {
     this.addTx("DEPOSIT_TO_POOL", "bank", "bank", null, DEPOSIT, "PRIVATE",
       `Deposited ${DEPOSIT.toLocaleString()} DBT to Zeto pool`, dr?.transactionHash);
 
+    // Wait for the deposit's UTXO output to be indexed by Paladin.
+    // Without this, the first private transfer after setup fails with
+    // "Failed to query the smt DB for leaf node" because the bank's
+    // coins haven't been added to the UTXO tree yet.
+    await waitForIndexerSettle();
+
     // Best-effort fund the per-Zeto domain submit key. The row may not
     // exist yet (see SUBMIT_KEY_POSTMORTEM.md §3.2). When it's missing,
     // we log a warning and let Paladin allocate it lazily on the first
