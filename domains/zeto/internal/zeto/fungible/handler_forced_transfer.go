@@ -143,7 +143,7 @@ func (h *forcedTransferHandler) Assemble(ctx context.Context, tx *types.ParsedTr
 		return nil, i18n.NewError(ctx, msgs.MsgErrorResolveVerifier, params.SeizedOwner)
 	}
 
-	useNullifiers := common.UseNullifierAvailability(tx.DomainConfig.TokenName)
+	useNullifiers := common.IsNullifiersToken(tx.DomainConfig.TokenName)
 	inputStates, expectedTotal, revert, err := prepareInputsForTransfer(ctx, h.callbacks, h.stateSchemas.CoinSchema, useNullifiers, req.StateQueryContext, resolvedSeizedOwner.Verifier, params.Transfers)
 	if err != nil {
 		if revert {

@@ -159,11 +159,9 @@ func IsEnforcedToken(tokenName string) bool {
 	return tokenName == constants.TOKEN_ANON_ENC_NULLIFIER_KYC_NON_REPUDIATION_ENFORCED
 }
 
-// UseNullifierAvailability returns whether state availability should use nullifier-based
-// tracking. All nullifier tokens (including enforced) must use this path because the
-// on-chain transfer events emit nullifier values as the "inputs" parameter, not
-// commitment hashes. Without nullifier-based tracking, spent coins are never matched
-// and balances inflate after every transfer.
+// UseNullifierAvailability was intended for forcedTransfer's SpentCommitments path
+// but should NOT be used for balanceOf or coin selection — those must use
+// IsNullifiersToken directly. Kept for backward compatibility with tests.
 func UseNullifierAvailability(tokenName string) bool {
 	return IsNullifiersToken(tokenName)
 }

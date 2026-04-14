@@ -85,7 +85,7 @@ func (h *balanceOfHandler) ExecCall(ctx context.Context, tx *types.ParsedTransac
 	if resolvedAccount == nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorResolveVerifier, param.Account)
 	}
-	useNullifiers := common.UseNullifierAvailability(tx.DomainConfig.TokenName)
+	useNullifiers := common.IsNullifiersToken(tx.DomainConfig.TokenName)
 	totalStates, totalBalance, overflow, err := getAccountBalance(ctx, h.callbacks, h.stateSchemas.CoinSchema, useNullifiers, req.StateQueryContext, resolvedAccount.Verifier)
 	if err != nil {
 		return nil, i18n.WrapError(ctx, err, msgs.MsgErrorGetAccountBalance, param.Account)
