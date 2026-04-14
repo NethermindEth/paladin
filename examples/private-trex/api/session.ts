@@ -480,6 +480,11 @@ export class DemoSession {
     };
     this.setupComplete = false;
 
+    // Wipe Paladin's state DB and restart the node to clear all ghost states.
+    // Without this, coins from previous sessions pollute the new session's
+    // balance queries and coin selection.
+    await this.resetPaladinState();
+
     await this.setup();
     console.log(`[session] Restart complete (prev=${prevRunId}, new=${this.runId})`);
   }
@@ -798,6 +803,20 @@ export class DemoSession {
       // Key may not exist yet (first private tx). Log and continue — Paladin
       // creates it lazily and subsequent calls will fund it.
       console.log("[session] Submit key not found yet, will fund after first transfer");
+    }
+  }
+
+  private async resetPaladinState(): Promise<void> {
+    const { execSync } = require("child_process");
+    try {
+      console.log("[session] Wiping Paladin state DB...");
+      execSync('docker exec paladin-postgres psql -U postgres -d paladin_demo -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"', { timeout: 10000 });
+      console.log("[session] Restarting Paladin node...");
+      execSync("docker restart paladin-node1", { timeout: 30000 });
+      await ensurePaladinReady(this.paladin, 10);
+      console.log("[session] Paladin restarted with clean state");
+    } catch (e: unknown) {
+      console.warn(`[session] resetPaladinState failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 
