@@ -134,15 +134,15 @@ router.post("/request/:id/reject", requireToken, wrap(async (req, res) => {
 
 router.post("/kyc/:actor", requireToken, wrap(async (req, res) => {
   const s = getSession();
-  await s.approveKyc(req.params.actor as string);
-  res.json({ success: true, investorStatuses: s.investorStatuses, balances: await s.getBalances() });
+  const tx = await s.approveKyc(req.params.actor as string);
+  res.json({ success: true, transaction: tx, investorStatuses: s.investorStatuses, balances: await s.getBalances() });
 }));
 
 router.post("/freeze/:actor", requireToken, wrap(async (req, res) => {
   const s = getSession();
   const actor = req.params.actor as string;
-  await s.setFrozen(actor, !s.investorStatuses[actor]?.frozen);
-  res.json({ success: true, investorStatuses: s.investorStatuses });
+  const tx = await s.setFrozen(actor, !s.investorStatuses[actor]?.frozen);
+  res.json({ success: true, transaction: tx, investorStatuses: s.investorStatuses });
 }));
 
 router.post("/clawback/:actor", requireToken, wrap(async (req, res) => {

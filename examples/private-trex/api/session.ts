@@ -578,7 +578,7 @@ export class DemoSession {
     return tx;
   }
 
-  async approveKyc(actor: string): Promise<void> {
+  async approveKyc(actor: string): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
@@ -592,12 +592,13 @@ export class DemoSession {
     await waitForIndexerSettle();
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], kyc: true };
-    this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC",
+    const tx = this.addTx("KYC_UPDATE", "bank", null, null, null, "PUBLIC",
       `KYC approved for ${this.getDisplayName(actor)}`, receipt.transactionHash);
     this.persist();
+    return tx;
   }
 
-  async setFrozen(actor: string, frozen: boolean): Promise<void> {
+  async setFrozen(actor: string, frozen: boolean): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
@@ -609,9 +610,10 @@ export class DemoSession {
 
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], frozen };
     const label = frozen ? "frozen" : "unfrozen";
-    this.addTx(frozen ? "FREEZE" : "UNFREEZE", "bank", null, actor, null, "PUBLIC",
+    const tx = this.addTx(frozen ? "FREEZE" : "UNFREEZE", "bank", null, actor, null, "PUBLIC",
       `${this.getDisplayName(actor)} account ${label}`, receipt.transactionHash);
     this.persist();
+    return tx;
   }
 
   async clawback(actor: string): Promise<TransactionRecord> {
