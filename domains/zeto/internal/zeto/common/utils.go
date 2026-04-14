@@ -160,9 +160,12 @@ func IsEnforcedToken(tokenName string) bool {
 }
 
 // UseNullifierAvailability returns whether state availability should use nullifier-based
-// tracking. Enforced tokens use state_spend_records instead (for forcedTransfer tracking).
+// tracking. All nullifier tokens (including enforced) must use this path because the
+// on-chain transfer events emit nullifier values as the "inputs" parameter, not
+// commitment hashes. Without nullifier-based tracking, spent coins are never matched
+// and balances inflate after every transfer.
 func UseNullifierAvailability(tokenName string) bool {
-	return IsNullifiersToken(tokenName) && !IsEnforcedToken(tokenName)
+	return IsNullifiersToken(tokenName)
 }
 
 // the Zeto implementations support two input/output sizes for the circuits: 2 and 10,
