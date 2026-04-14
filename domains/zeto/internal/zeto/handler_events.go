@@ -259,6 +259,8 @@ func (z *Zeto) handleTransferNonRepudiationEnforcedEvent(ctx context.Context, sm
 			return nil
 		}
 		z.recordTransactionInfo(ev, txData, res)
+		log.L(ctx).Infof("[ZETO-DBG] AENKNR-E transfer event token=%s tx=%s inputs=%v outputs=%v enfNullifiers=%v useNullifiers=%v",
+			tokenName, txData.TransactionID.String(), transfer.Inputs, transfer.Outputs, transfer.EnforcementNullifiers, common.IsNullifiersToken(tokenName))
 		res.SpentStates = append(res.SpentStates, parseStatesFromEvent(txData.TransactionID, transfer.Inputs)...)
 		res.ConfirmedStates = append(res.ConfirmedStates, parseStatesFromEvent(txData.TransactionID, transfer.Outputs)...)
 		if common.IsNullifiersToken(tokenName) {

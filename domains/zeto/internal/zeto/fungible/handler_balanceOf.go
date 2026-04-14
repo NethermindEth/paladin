@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
+	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/zeto/common"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/types"
@@ -86,6 +87,8 @@ func (h *balanceOfHandler) ExecCall(ctx context.Context, tx *types.ParsedTransac
 		return nil, i18n.NewError(ctx, msgs.MsgErrorResolveVerifier, param.Account)
 	}
 	useNullifiers := common.IsNullifiersToken(tx.DomainConfig.TokenName)
+	log.L(ctx).Infof("[ZETO-DBG] balanceOf token=%s account=%s useNullifiers=%v",
+		tx.DomainConfig.TokenName, param.Account, useNullifiers)
 	totalStates, totalBalance, overflow, err := getAccountBalance(ctx, h.callbacks, h.stateSchemas.CoinSchema, useNullifiers, req.StateQueryContext, resolvedAccount.Verifier)
 	if err != nil {
 		return nil, i18n.WrapError(ctx, err, msgs.MsgErrorGetAccountBalance, param.Account)
