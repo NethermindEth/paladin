@@ -630,6 +630,15 @@ export class DemoSession {
     );
     if (!checkReceipt(receipt)) throw new Error(parseError((receipt as any)?.failureMessage ?? "Clawback failed"));
 
+    // Mark all of the actor's notes as SPENT
+    const actorNotes = this._shieldedNotes[actor] ?? [];
+    for (const note of actorNotes) {
+      if (note.status === "UNSPENT") {
+        note.status = "SPENT";
+        note.spentTxHash = receipt?.transactionHash ?? null;
+      }
+    }
+
     return this.addTx("CLAWBACK", "bank", actor, "bank", bal, "PRIVATE",
       `Clawback: ${bal.toLocaleString()} DBT seized from ${this.getDisplayName(actor)}`, receipt?.transactionHash);
   }
