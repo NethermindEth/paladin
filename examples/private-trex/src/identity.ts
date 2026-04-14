@@ -13,7 +13,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import PaladinClient, { PaladinVerifier } from "@lfdecentralizedtrust/paladin-sdk";
+import PaladinClient, { PaladinVerifier, ITransactionReceipt } from "@lfdecentralizedtrust/paladin-sdk";
 import { getBabyjubPublicKey, setComplianceRoot } from "./helpers";
 import { ComplianceSmtManager } from "./complianceSmt";
 
@@ -42,6 +42,6 @@ export async function postComplianceRoot(
   agent: PaladinVerifier,
   zetoAddr: string,
   complianceSmt: ComplianceSmtManager,
-): Promise<void> {
-  await setComplianceRoot(paladin, agent, zetoAddr, await complianceSmt.getRoot());
+): Promise<ITransactionReceipt> {
+  return setComplianceRoot(paladin, agent, zetoAddr, await complianceSmt.getRoot());
 }
