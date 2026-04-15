@@ -60,6 +60,13 @@ export interface ZetoTransfer {
 export interface ZetoForcedTransferParams {
   seizedOwner: string;
   transfers: ZetoTransfer[];
+  /**
+   * Currently-frozen identities other than seizedOwner. Required on the
+   * enforced (AENKNR-E) token so the prover's compliance tree matches the
+   * on-chain root — the contract stores only the root, not individual leaf
+   * statuses, so the submitter must supply the complete frozen set.
+   */
+  frozenAccounts?: string[];
 }
 
 export interface ZetoDepositParams {
@@ -171,6 +178,7 @@ export class ZetoInstance {
         data: {
           seizedOwner: data.seizedOwner,
           transfers: data.transfers.map((t) => ({ ...t, to: t.to.lookup })),
+          frozenAccounts: data.frozenAccounts ?? [],
         },
       })
     );

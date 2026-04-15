@@ -26,7 +26,9 @@ import (
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/zeto/common"
 	corepb "github.com/LFDT-Paladin/paladin/domains/zeto/pkg/proto"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/types"
+	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner/zetosignerapi"
+	"github.com/iden3/go-iden3-crypto/poseidon"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
@@ -132,6 +134,18 @@ func (h *forcedTransferHandler) Init(ctx context.Context, tx *types.ParsedTransa
 			VerifierType: zetosignerapi.IDEN3_PUBKEY_BABYJUBJUB_COMPRESSED_0X,
 		})
 	}
+	// Resolve each additionally-frozen identity so Assemble can hash their
+	// pubkeys and apply FROZEN status when building the compliance proof.
+	for _, frozen := range params.FrozenAccounts {
+		if frozen == "" || frozen == params.SeizedOwner {
+			continue
+		}
+		res.RequiredVerifiers = append(res.RequiredVerifiers, &pb.ResolveVerifierRequest{
+			Lookup:       frozen,
+			Algorithm:    h.getAlgoZetoSnarkBJJ(),
+			VerifierType: zetosignerapi.IDEN3_PUBKEY_BABYJUBJUB_COMPRESSED_0X,
+		})
+	}
 	return res, nil
 }
 
@@ -192,8 +206,16 @@ func (h *forcedTransferHandler) Assemble(ctx context.Context, tx *types.ParsedTr
 		return nil, i18n.NewError(ctx, msgs.MsgErrorDecodeContractAddress, err)
 	}
 
+	// Collect pubkey hashes of additionally-frozen identities so the prover's
+	// compliance tree matches the on-chain root (which has FROZEN for all of
+	// them, not just the seized owner).
+	frozenKeyHashes, err := resolveFrozenKeyHashes(ctx, params.FrozenAccounts, params.SeizedOwner, req.ResolvedVerifiers, h.getAlgoZetoSnarkBJJ())
+	if err != nil {
+		return nil, err
+	}
+
 	circuit := (*tx.DomainConfig.Circuits)[types.METHOD_FORCED_TRANSFER]
-	payloadBytes, err := h.formatProvingRequest(ctx, inputStates.coins, outputCoins, circuit, tx.DomainConfig.TokenName, req.StateQueryContext, contractAddress)
+	payloadBytes, err := h.formatProvingRequest(ctx, inputStates.coins, outputCoins, circuit, tx.DomainConfig.TokenName, req.StateQueryContext, contractAddress, frozenKeyHashes)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorFormatProvingReq, err)
 	}
@@ -300,7 +322,10 @@ func (h *forcedTransferHandler) Prepare(ctx context.Context, tx *types.ParsedTra
 }
 
 // formatProvingRequest builds a ProvingRequest with NonRepudiationEnforced extras.
-func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputCoins, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress) ([]byte, error) {
+// frozenKeyHashes is the set of Poseidon2(pubKeyX, pubKeyY) values for
+// identities other than the seized owner that are currently FROZEN — used to
+// ensure the prover's reconstructed compliance tree matches the on-chain root.
+func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputCoins, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress, frozenKeyHashes map[string]struct{}) ([]byte, error) {
 	inputSize := common.GetInputSize(len(inputCoins))
 	inputCommitments := make([]string, inputSize)
 	inputValueInts := make([]uint64, inputSize)
@@ -348,10 +373,13 @@ func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputC
 		return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 	}
 
-	// Compliance SMT proof: build a fresh tree with seized owner FROZEN, others ACTIVE.
-	// The forced transfer circuit verifies the seized owner has FROZEN status (2).
+	// Compliance SMT proof: build a fresh tree with the seized owner and any
+	// additionally-supplied FrozenAccounts at status=FROZEN, everyone else at
+	// status=ACTIVE. The forced-transfer circuit verifies the reconstructed
+	// root matches the on-chain compliance root, so the submitter MUST supply
+	// the full frozen set — the on-chain contract stores only the root.
 	identities := h.keyProvider.GetComplianceIdentities(contractAddress.String())
-	smtComplianceProof, err := smtProofForForcedTransferCompliance(ctx, identities, inputOwner, inputOwner, outputCoins, inputSize+1)
+	smtComplianceProof, err := smtProofForForcedTransferCompliance(ctx, identities, inputOwner, frozenKeyHashes, inputOwner, outputCoins, inputSize+1)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 	}
@@ -389,4 +417,33 @@ func (h *forcedTransferHandler) formatProvingRequest(ctx context.Context, inputC
 		Extras: extras,
 	}
 	return proto.Marshal(payload)
+}
+
+// resolveFrozenKeyHashes converts the FrozenAccounts list into a set of
+// Poseidon2(pubKeyX, pubKeyY) keyHash strings. The seized owner is skipped
+// (it's already FROZEN in the reconstructed tree via seizedKeyHash).
+// Resolved verifiers for every frozen account are expected to be present;
+// an empty string keyHash or missing verifier is an error the caller
+// should surface.
+func resolveFrozenKeyHashes(ctx context.Context, frozenAccounts []string, seizedOwner string, resolvedVerifiers []*pb.ResolvedVerifier, algo string) (map[string]struct{}, error) {
+	out := make(map[string]struct{}, len(frozenAccounts))
+	for _, frozen := range frozenAccounts {
+		if frozen == "" || frozen == seizedOwner {
+			continue
+		}
+		verifier := domain.FindVerifier(frozen, algo, zetosignerapi.IDEN3_PUBKEY_BABYJUBJUB_COMPRESSED_0X, resolvedVerifiers)
+		if verifier == nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorResolveVerifier, frozen)
+		}
+		pub, err := zetosigner.DecodeBabyJubJubPublicKey(verifier.Verifier)
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorLoadOwnerPubKey, err)
+		}
+		keyHash, err := poseidon.Hash([]*big.Int{pub.X, pub.Y})
+		if err != nil {
+			return nil, err
+		}
+		out[keyHash.Text(10)] = struct{}{}
+	}
+	return out, nil
 }

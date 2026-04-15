@@ -203,6 +203,36 @@ S=$(jq_field "$BODY" '["success"]')
 assert_balance "$BODY" charlie private 3000   "  Charlie.private"
 assert_balance "$BODY" bank    private 495000 "  Bank.private (=498000 post-clawback − 3000 to charlie)"
 
+# 11a. Second clawback while another investor is ALSO frozen.
+# Regression check for the smtProofForForcedTransferCompliance bug where
+# the prover's reconstructed compliance tree only marked the seized owner
+# FROZEN, producing a root that diverged from the on-chain root and
+# causing "Invalid proof" on the verifier.
+echo ""
+echo "--- Test 11b: Freeze Charlie + Freeze Bob, Clawback Bob (regression) ---"
+RESP=$(call POST /freeze/charlie)
+CODE=$(echo "$RESP" | tail -1)
+[ "$CODE" -lt 300 ] && green "Freeze charlie" || red "Freeze charlie (HTTP $CODE)"
+
+RESP=$(call POST /freeze/bob)
+CODE=$(echo "$RESP" | tail -1)
+[ "$CODE" -lt 300 ] && green "Freeze bob" || red "Freeze bob (HTTP $CODE)"
+
+RESP=$(call POST /clawback/bob)
+CODE=$(echo "$RESP" | tail -1)
+BODY=$(echo "$RESP" | sed '$d')
+if [ "$CODE" -lt 300 ]; then
+  green "Clawback bob with charlie also frozen"
+  assert_balance "$BODY" bob  private 0      "  Bob.private → 0 after clawback"
+  assert_balance "$BODY" bank private 497000 "  Bank.private += seized 2000"
+else
+  red "Clawback bob failed (HTTP $CODE): $(jq_field "$BODY" '["error"]')"
+fi
+
+# Clean up: unfreeze both so downstream tests behave normally.
+call POST /freeze/charlie > /dev/null
+call POST /freeze/bob > /dev/null
+
 # 15. Add dynamic investor
 echo ""
 echo "--- Test 12: Add New Investor ---"

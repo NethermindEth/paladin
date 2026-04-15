@@ -413,8 +413,16 @@ func smtProofForCompliance(ctx context.Context, callbacks plugintk.DomainCallbac
 }
 
 // smtProofForForcedTransferCompliance builds a fresh compliance tree with the
-// seized owner FROZEN (status=2) and all others ACTIVE (status=1).
-func smtProofForForcedTransferCompliance(ctx context.Context, identities []common.ComplianceIdentity, seizedOwner string, inputOwner string, outputCoins []*types.ZetoCoin, targetSize int) (*corepb.MerkleProofObject, error) {
+// seized owner and any additionally-frozen identities at FROZEN (status=2),
+// everyone else at ACTIVE (status=1). The reconstructed root must match the
+// on-chain compliance root or the forced-transfer circuit rejects the proof
+// with "Invalid proof" during verification.
+//
+// frozenKeyHashes is a set of Poseidon2(pubKeyX, pubKeyY) decimal strings for
+// identities other than the seized owner that are currently frozen. The
+// submitter (enforcer) is responsible for supplying this set because the
+// on-chain contract only stores the root, not individual leaf statuses.
+func smtProofForForcedTransferCompliance(ctx context.Context, identities []common.ComplianceIdentity, seizedOwner string, frozenKeyHashes map[string]struct{}, inputOwner string, outputCoins []*types.ZetoCoin, targetSize int) (*corepb.MerkleProofObject, error) {
 	seizedPubKey, err := zetosigner.DecodeBabyJubJubPublicKey(seizedOwner)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorLoadOwnerPubKey, err)
@@ -439,10 +447,13 @@ func smtProofForForcedTransferCompliance(ctx context.Context, identities []commo
 		if err != nil {
 			return nil, err
 		}
-		// FROZEN (2) for seized owner, ACTIVE (1) for everyone else
 		status := big.NewInt(1)
 		if keyHash.Cmp(seizedKeyHash) == 0 {
 			status = big.NewInt(2)
+		} else if frozenKeyHashes != nil {
+			if _, frozen := frozenKeyHashes[keyHash.Text(10)]; frozen {
+				status = big.NewInt(2)
+			}
 		}
 		value, err := poseidon.Hash([]*big.Int{id.PubKeyX, id.PubKeyY, status})
 		if err != nil {

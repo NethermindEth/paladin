@@ -109,8 +109,15 @@ type WithdrawParams struct {
 }
 
 type ForcedTransferParams struct {
-	SeizedOwner string                        `json:"seizedOwner"` // identity of the frozen owner whose notes are seized
-	Transfers   []*FungibleTransferParamEntry `json:"transfers"`   // output recipients
+	SeizedOwner string                        `json:"seizedOwner"`               // identity of the frozen owner whose notes are seized
+	Transfers   []*FungibleTransferParamEntry `json:"transfers"`                 // output recipients
+	// FrozenAccounts lists all currently-frozen identities other than SeizedOwner.
+	// Required by the enforced (AENKNR-E) compliance circuit so the prover's
+	// reconstructed tree matches the on-chain compliance root. The submitter
+	// (the enforcer) is the only party that knows the full set of frozen
+	// identities — the on-chain contract stores only the root. Empty or
+	// omitted on non-enforced variants.
+	FrozenAccounts []string `json:"frozenAccounts,omitempty"`
 }
 
 type FungibleBalanceOfParam struct {

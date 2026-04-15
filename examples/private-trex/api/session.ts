@@ -716,9 +716,19 @@ export class DemoSession {
       ? this.ledger.getLiveForOwner(actorId.babyjubPubKey[0], actorId.babyjubPubKey[1]).map(e => e.commitment)
       : [];
 
+    // Every currently-frozen identity other than the seized owner must be
+    // declared so Paladin's prover applies FROZEN status to each of them when
+    // reconstructing the compliance tree. Without this the root diverges from
+    // the on-chain compliance root and the circuit rejects with "Invalid
+    // proof" — see smtProofForForcedTransferCompliance.
+    const frozenAccounts = Object.entries(this._investorStatuses)
+      .filter(([name, status]) => status.frozen && name !== actor && !!this.verifiers[name])
+      .map(([name]) => this.verifiers[name].lookup);
+
     const txFuture = this.zeto!.forcedTransfer(this.verifiers.bank, {
       seizedOwner: this.verifiers[actor].lookup,
       transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
+      frozenAccounts,
     });
     const txID = await txFuture.id;
     const receipt = await withTimeout(
