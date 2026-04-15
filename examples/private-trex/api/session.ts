@@ -582,10 +582,11 @@ export class DemoSession {
       throw Object.assign(new Error(reason), { transaction: tx });
     }
 
+    const xferFuture = this.zeto!.using(this.paladin)
+      .transfer(fromV, { transfers: [{ to: toV, amount, data: "0x" }] });
+    const xferTxID = await xferFuture.id;
     const receipt = await withTimeout(
-      this.zeto!.using(this.paladin)
-        .transfer(fromV, { transfers: [{ to: toV, amount, data: "0x" }] })
-        .waitForReceipt(LONG_POLL_TIMEOUT),
+      xferFuture.waitForReceipt(LONG_POLL_TIMEOUT),
       TRANSFER_TIMEOUT,
       "Private transfer",
     );
@@ -596,7 +597,7 @@ export class DemoSession {
     }
     // Same indexer-lag guard as clawback(). Without this, a fast shielded
     // transfer can return stale balances to the UI.
-    await waitForIndexerSettle();
+    await this.waitForStateReceipt(xferTxID, "Private transfer");
 
     const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", summary("private"), receipt?.transactionHash);
     if (receipt?.transactionHash) this.trackNote(receipt.transactionHash, to);
@@ -653,22 +654,26 @@ export class DemoSession {
       this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
     if (bal <= 0) throw new Error(`${actor} has no private balance to claw back`);
 
+    const txFuture = this.zeto!.forcedTransfer(this.verifiers.bank, {
+      seizedOwner: this.verifiers[actor].lookup,
+      transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
+    });
+    const txID = await txFuture.id;
     const receipt = await withTimeout(
-      this.zeto!.forcedTransfer(this.verifiers.bank, {
-        seizedOwner: this.verifiers[actor].lookup,
-        transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
-      }).waitForReceipt(LONG_POLL_TIMEOUT),
+      txFuture.waitForReceipt(LONG_POLL_TIMEOUT),
       TRANSFER_TIMEOUT,
       "Clawback",
     );
     if (!checkReceipt(receipt)) throw new Error(parseError((receipt as any)?.failureMessage ?? "Clawback failed"));
 
-    // Poll balanceOf until the block indexer applies UTXOForcedTransferEnforced
-    // to the domain state store. A fixed sleep is unreliable: the SMT updates
-    // inside the event handler can take longer than the default settle window,
-    // and the response would otherwise return the pre-clawback balance — the UI
-    // would then leave the Clawback button clickable for a second seizure.
-    await this.waitForBalanceDrop(actor, bal);
+    // waitForReceipt returns as soon as the chain confirms the tx, but the
+    // Zeto domain plugin's HandleEventBatch (which applies SpentStates /
+    // ConfirmedStates to Paladin's state store) runs asynchronously off the
+    // block indexer. Without waiting for that to land, getBalances() below
+    // returns the pre-seizure balance and the UI leaves the Clawback button
+    // clickable. Poll ptx_getStateReceipt for THIS transaction until the
+    // domain reports the Spent/Confirmed transitions.
+    await this.waitForStateReceipt(txID, "Clawback");
 
     // Mark all of the actor's notes as SPENT
     const actorNotes = this._shieldedNotes[actor] ?? [];
@@ -684,24 +689,36 @@ export class DemoSession {
   }
 
   /**
-   * Poll Paladin's balanceOf for `actor` until it drops below `previousBalance`
-   * or we hit the deadline. Used after clawback so the response payload
-   * reflects the post-seizure state instead of the indexer's stale view.
+   * Poll ptx_getStateReceipt for a specific Paladin transaction until the
+   * domain plugin's HandleEventBatch has applied its Spent/Confirmed state
+   * transitions. Needed after waitForReceipt because waitForReceipt only
+   * guarantees chain confirmation, not that the domain state store has
+   * caught up — and getBalances() reads that state store.
    */
-  private async waitForBalanceDrop(actor: string, previousBalance: number): Promise<void> {
+  private async waitForStateReceipt(txID: string, label: string): Promise<void> {
     const deadline = Date.now() + 30_000;
+    const start = Date.now();
     let attempts = 0;
     while (Date.now() < deadline) {
       attempts++;
-      const current = Number((await this.zeto!.using(this.paladin).balanceOf(
-        this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
-      if (current < previousBalance) {
-        console.log(`[session] balance for ${actor} dropped from ${previousBalance} to ${current} after ${attempts} poll(s)`);
-        return;
+      try {
+        const states = await this.paladin.getStateReceipt(txID);
+        // `none: true` means the state manager has not yet seen this tx.
+        // Otherwise, any Spent/Confirmed entries mean the domain processed it.
+        if (states && states.none !== true &&
+            ((states.spent && states.spent.length > 0) ||
+             (states.confirmed && states.confirmed.length > 0))) {
+          const elapsed = Date.now() - start;
+          console.log(`[session] ${label} state receipt indexed for tx ${txID.slice(0, 10)} in ${elapsed}ms (${attempts} poll(s))`);
+          return;
+        }
+      } catch (e: unknown) {
+        // getStateReceipt can transiently 404 before the tx is registered.
+        // Keep polling.
       }
       await new Promise(r => setTimeout(r, 500));
     }
-    console.warn(`[session] balance for ${actor} never dropped below ${previousBalance} within 30s — indexer may be stuck`);
+    console.warn(`[session] ${label} state receipt never landed for tx ${txID.slice(0, 10)} within 30s — indexer may be stuck, response will show stale balances`);
   }
 
   private getDisplayName(actor: string): string {
