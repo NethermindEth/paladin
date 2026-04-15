@@ -130,6 +130,11 @@ interface PersistedSession {
   investorStatuses: Record<string, InvestorStatus>;
   dynamicInvestors: string[];
   complianceLeaves: Array<{ x: string; y: string; status: string }>;
+  // v1 addition: transaction log. Restored on startup so the regulator
+  // view + UTXO ledger can be rebuilt from history rather than starting
+  // blank. Optional for backwards-compatibility with sessions persisted
+  // before this field existed.
+  transactions?: TransactionRecord[];
 }
 
 function saveSessionFile(data: PersistedSession): void {
@@ -450,6 +455,11 @@ export class DemoSession {
     // Restore investor statuses
     this._investorStatuses = saved.investorStatuses;
 
+    // Restore the transaction log before rebuilding the ledger so the
+    // regulator view survives an API process restart. Older session files
+    // won't have this field — treat missing as empty.
+    this._transactions = saved.transactions ? [...saved.transactions] : [];
+
     this.setupComplete = true;
 
     // Rebuild the UTXO ledger by replaying every confirmed shielded tx from
@@ -506,6 +516,7 @@ export class DemoSession {
         investorStatuses: { ...this._investorStatuses },
         dynamicInvestors: [...this._dynamicInvestors],
         complianceLeaves: this.getComplianceLeaves(),
+        transactions: [...this._transactions],
       });
     } catch (e: unknown) {
       console.warn(`[session] Failed to persist: ${e instanceof Error ? e.message : e}`);
@@ -1141,6 +1152,11 @@ export class DemoSession {
       amount, visibility, uiSummary: summary,
     };
     this._transactions.unshift(tx);
+    // Persist on every append so the regulator view survives an API
+    // process restart — rebuildLedgerFromHistory replays this log on
+    // restore(). Skipped during setup() / restart() when trexSuite/zeto
+    // are still being constructed; persist() no-ops in that case.
+    this.persist();
     return tx;
   }
 
