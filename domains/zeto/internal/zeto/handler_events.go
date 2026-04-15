@@ -275,7 +275,7 @@ func (z *Zeto) handleTransferNonRepudiationEnforcedEvent(ctx context.Context, sm
 	return nil
 }
 
-func (z *Zeto) handleForcedTransferEnforcedEvent(ctx context.Context, smtTree *common.MerkleTreeSpec, ev *prototk.OnChainEvent, tokenName string, res *prototk.HandleEventBatchResponse) error {
+func (z *Zeto) handleForcedTransferEnforcedEvent(ctx context.Context, smtTree *common.MerkleTreeSpec, ev *prototk.OnChainEvent, tokenName string, res *prototk.HandleEventBatchResponse, stateQueryContext string) error {
 	var transfer ForcedTransferEnforcedEvent
 	if err := json.Unmarshal([]byte(ev.DataJson), &transfer); err == nil {
 		txData, err := decodeTransactionData(ctx, transfer.Data)
@@ -284,7 +284,16 @@ func (z *Zeto) handleForcedTransferEnforcedEvent(ctx context.Context, smtTree *c
 			return nil
 		}
 		z.recordTransactionInfo(ev, txData, res)
-		// Mark seized UTXOs as spent using commitment hashes embedded in the data field.
+		log.L(ctx).Infof("[ZETO-FORCED-DBG] event token=%s tx=%s spentCommitments=%v outputs=%v enforcementNullifiers=%v",
+			tokenName, txData.TransactionID.String(), txData.SpentCommitments, transfer.Outputs, transfer.EnforcementNullifiers)
+
+		// The SpentCommitments are commitment hashes (state IDs) embedded in
+		// tx data. Writing them to SpentStates populates state_spend_records
+		// keyed by state.id, which makes State.Spent join work. For
+		// nullifier-based availability (used by balanceOf on AENKNR-E), the
+		// availability query must also treat a state with State.Spent as
+		// unavailable — see the matching change in statemgr/state.go
+		// (FindAvailableNullifiers additionally joins State.Spent).
 		if len(txData.SpentCommitments) > 0 {
 			res.SpentStates = append(res.SpentStates, parseStatesFromEvent(txData.TransactionID, txData.SpentCommitments)...)
 		}

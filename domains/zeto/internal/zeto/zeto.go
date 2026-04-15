@@ -665,7 +665,7 @@ func (z *Zeto) HandleEventBatch(ctx context.Context, req *prototk.HandleEventBat
 		case z.events.transferNonRepudiationEnforced:
 			err = z.handleTransferNonRepudiationEnforcedEvent(ctx, smtForStates, ev, domainConfig.TokenName, &res)
 		case z.events.forcedTransferEnforced:
-			err = z.handleForcedTransferEnforcedEvent(ctx, smtForStates, ev, domainConfig.TokenName, &res)
+			err = z.handleForcedTransferEnforcedEvent(ctx, smtForStates, ev, domainConfig.TokenName, &res, req.StateQueryContext)
 		case z.events.arbiterUpdated:
 			z.handleArbiterUpdatedEvent(ctx, ev, contractAddress)
 		case z.events.enforcerSet:

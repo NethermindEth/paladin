@@ -335,6 +335,7 @@ func (ss *stateManager) findNullifiers(
 			q = q.Joins("Confirmed", dbTX.DB().Select("transaction")).
 				Joins("Nullifier", dbTX.DB().Select(`"Nullifier"."id"`)).
 				Joins("Nullifier.Spent", dbTX.DB().Select("transaction")).
+				Joins("Spent", dbTX.DB().Select("transaction")).
 				Where(hasNullifier)
 
 			if len(spendingStates) > 0 {
@@ -344,8 +345,14 @@ func (ss *stateManager) findNullifiers(
 				q = q.Not(`"Nullifier"."id" IN(?)`, spendingNullifiers)
 			}
 
-			// Scope to only unspent
-			q = q.Where(whereClause)
+			// Scope to only unspent — a state is unavailable if its nullifier
+			// is marked spent OR the state itself is marked spent. The second
+			// condition catches force-transfer events which record the spend
+			// against the state id (commitment hash) because the submitter
+			// (enforcer) does not know the owner's nullifier to record it
+			// against instead.
+			q = q.Where(whereClause).
+				Where(`"Spent"."transaction" IS NULL`)
 			return q
 		})
 	}
