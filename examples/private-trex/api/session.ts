@@ -96,7 +96,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-const TRANSFER_TIMEOUT = IS_SEPOLIA ? 180_000 : 60_000;
+const TRANSFER_TIMEOUT = 180_000;
 
 /**
  * After posting a compliance root on-chain, Paladin's block indexer needs
@@ -533,6 +533,28 @@ export class DemoSession {
     const fromV = this.verifiers[from], toV = this.verifiers[to];
     const toI = this.identities[to];
     if (!fromV || !toV || !toI) throw new Error(`Unknown actor: ${from} or ${to}`);
+
+    // Pre-check compliance: recipient must be KYC'd and not frozen. Zeto's
+    // enforced-circuit would otherwise reject with a generic "Invalid proof"
+    // which is confusing in the UI.
+    const toStatus = this._investorStatuses[to];
+    if (!toStatus?.kyc) {
+      const reason = `${this.getDisplayName(to)} is not KYC verified`;
+      const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
+      throw Object.assign(new Error(reason), { transaction: tx });
+    }
+    if (toStatus?.frozen) {
+      const reason = `${this.getDisplayName(to)} account is frozen — transfers blocked`;
+      const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
+      throw Object.assign(new Error(reason), { transaction: tx });
+    }
+    const fromStatus = this._investorStatuses[from];
+    if (fromStatus?.frozen) {
+      const reason = `${this.getDisplayName(from)} account is frozen — cannot send`;
+      const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
+      throw Object.assign(new Error(reason), { transaction: tx });
+    }
+
     const summary = (vis: string) =>
       `${this.getDisplayName(from)} sent ${amount.toLocaleString()} DBT to ${this.getDisplayName(to)} (${vis})`;
 
@@ -572,6 +594,10 @@ export class DemoSession {
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", reason, null, "FAILED");
       throw Object.assign(new Error(reason), { transaction: tx });
     }
+    // Same indexer-lag guard as clawback(). Without this, a fast shielded
+    // transfer can return stale balances to the UI.
+    await waitForIndexerSettle();
+
     const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", summary("private"), receipt?.transactionHash);
     if (receipt?.transactionHash) this.trackNote(receipt.transactionHash, to);
     this.ensureSubmitKeyFunded().catch(() => {});
@@ -636,6 +662,12 @@ export class DemoSession {
       "Clawback",
     );
     if (!checkReceipt(receipt)) throw new Error(parseError((receipt as any)?.failureMessage ?? "Clawback failed"));
+
+    // Let the block indexer apply UTXOForcedTransferEnforced to the domain
+    // state store before the caller reads getBalances(). Without this, the
+    // response returns the pre-clawback balance and the Clawback button stays
+    // clickable on the bank dashboard.
+    await waitForIndexerSettle();
 
     // Mark all of the actor's notes as SPENT
     const actorNotes = this._shieldedNotes[actor] ?? [];
