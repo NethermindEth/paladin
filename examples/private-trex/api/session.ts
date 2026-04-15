@@ -191,13 +191,24 @@ function parseError(raw: string): string {
     return "Insufficient gas funds. Contact the operator.";
   if (raw.includes("Insufficient funds") || raw.includes("available=0")) return "Insufficient private balance.";
   if (raw.includes("Kyc") || raw.includes("KYC") || raw.includes("CheckSMTProof")) return "Receiver is not KYC verified.";
-  if (raw.includes("frozen")) return "Account is frozen. Transfers blocked.";
-  if (raw.includes("Invalid proof")) return "Transaction reverted on-chain. Verify freeze statuses and retry.";
+  if (raw.includes("EnforcementNullifierAlreadySpent")) return "This UTXO was already consumed in a prior transaction.";
+  if (raw.includes("frozen") || raw.includes("Frozen")) return "Account is frozen. Transfers blocked.";
+  if (raw.includes("Invalid proof")) return "Transaction reverted on-chain. Verify compliance state and retry.";
   if (raw.includes("Unable to decode revert data")) return "Transaction reverted on-chain.";
-  if (raw.includes("socket hang up")) return "Paladin node connection lost. Please try again.";
+  if (raw.includes("execution reverted")) return "Transaction reverted on-chain.";
+  if (raw.includes("nonce too low") || raw.includes("nonce has already been used")) return "Transaction nonce conflict. Please try again.";
+  if (raw.includes("socket hang up") || raw.includes("ECONNREFUSED") || raw.includes("ECONNRESET"))
+    return "Paladin node connection lost. Please try again.";
   if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out. Please try again.";
+  if (raw.includes("PD012216")) return "Transaction reverted on-chain.";
+  if (raw.includes("PD011816")) return "Failed to sign transaction. Please try again.";
   const first = raw.split(/[.\n]/)[0].replace(/^PD\d+:\s*/, "").trim();
   if (first.length === 0) return "Transaction failed. Please try again.";
+  // Catch-all: the raw first-line may still be technical. If it looks
+  // like Paladin/domain internals, show a generic message instead.
+  if (first.startsWith("Unexpected signature") || first.startsWith("Failed to assemble")) {
+    return "Transaction failed. Please try again.";
+  }
   return first.length > 80 ? first.substring(0, 77) + "..." : first;
 }
 
