@@ -232,6 +232,38 @@ export class DemoSession {
 
   loadPersistedSession(): PersistedSession | null { return loadSessionFile(); }
 
+  /**
+   * FIFO async mutex. Serializes write operations that touch Paladin
+   * contracts or compliance state so we don't interleave setFrozen /
+   * approveKyc / transfer / clawback — an interleave can post a compliance
+   * root computed against a partially-applied local tree, or let two
+   * addInvestor calls race on DYNAMIC_NAMES indexing.
+   *
+   * Scope:
+   *   - Wrapped: transfer, clawback, setFrozen, approveKyc, addInvestor.
+   *   - Not wrapped: reads (balanceOf, getNotes, decryptNotes), setup(),
+   *     restart(), restore(). The lifecycle methods call the wrapped
+   *     ones internally, so locking them too would deadlock.
+   *
+   * Implementation: single `writeTail` Promise. Each runExclusive creates
+   * a new tail that this call will release, awaits the previous tail,
+   * runs, then releases in finally so a rejection in one call does not
+   * poison subsequent waiters.
+   */
+  private writeTail: Promise<void> = Promise.resolve();
+
+  private async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.writeTail;
+    let release!: () => void;
+    this.writeTail = new Promise<void>((r) => { release = r; });
+    try {
+      await prev;
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   get transactions() { return this._transactions; }
   get shieldedNotes() {
     const out: Record<string, ShieldedNote[]> = {};
@@ -581,6 +613,10 @@ export class DemoSession {
 
 
   async transfer(from: string, to: string, amount: number, mode: Visibility): Promise<TransactionRecord> {
+    return this.runExclusive(() => this.transferImpl(from, to, amount, mode));
+  }
+
+  private async transferImpl(from: string, to: string, amount: number, mode: Visibility): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const fromV = this.verifiers[from], toV = this.verifiers[to];
@@ -662,6 +698,10 @@ export class DemoSession {
   }
 
   async approveKyc(actor: string): Promise<TransactionRecord> {
+    return this.runExclusive(() => this.approveKycImpl(actor));
+  }
+
+  private async approveKycImpl(actor: string): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
@@ -682,6 +722,10 @@ export class DemoSession {
   }
 
   async setFrozen(actor: string, frozen: boolean): Promise<TransactionRecord> {
+    return this.runExclusive(() => this.setFrozenImpl(actor, frozen));
+  }
+
+  private async setFrozenImpl(actor: string, frozen: boolean): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
@@ -700,6 +744,10 @@ export class DemoSession {
   }
 
   async clawback(actor: string): Promise<TransactionRecord> {
+    return this.runExclusive(() => this.clawbackImpl(actor));
+  }
+
+  private async clawbackImpl(actor: string): Promise<TransactionRecord> {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     await this.ensureSubmitKeyFunded();
@@ -806,6 +854,10 @@ export class DemoSession {
    * without a full redeploy.
    */
   async addInvestor(): Promise<{ name: string; displayName: string }> {
+    return this.runExclusive(() => this.addInvestorImpl());
+  }
+
+  private async addInvestorImpl(): Promise<{ name: string; displayName: string }> {
     this.ensureSetup();
 
     const idx = this._dynamicInvestors.length;
