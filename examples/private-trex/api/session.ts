@@ -1046,6 +1046,19 @@ export class DemoSession {
    * produces fresh investor identities.
    */
   private async resolveActors() {
+    // Wipe identity state before re-resolving. Without this a restart()
+    // leaks dynamic investors (dave/eve added in the previous session)
+    // into this.identities; getActors() then surfaces them in the UI,
+    // and their stale pubkeys (derived from the previous runId) will not
+    // match anything on the freshly-deployed identity registry, so a
+    // later KYC/transfer for them fails with a cryptic error. Clearing
+    // here makes resolveActors idempotent regardless of prior state.
+    // restore() will re-populate dynamic investors from the persisted
+    // list immediately after calling this helper.
+    this.verifiers = {};
+    this.identities = {};
+    this.pubkeyToName.clear();
+
     for (const name of PERSISTENT_NAMES) {
       const v = this.paladin.getVerifiers(`${name}@${this.nodeId}`)[0];
       this.verifiers[name] = v;
@@ -1056,7 +1069,6 @@ export class DemoSession {
       this.verifiers[name] = v;
       this.identities[name] = await resolveActorIdentity(this.getDisplayName(name), v);
     }
-    this.pubkeyToName.clear();
     for (const [name, id] of Object.entries(this.identities))
       this.pubkeyToName.set(id.babyjubPubKey[0], name);
     console.log("[session] Actors resolved");
