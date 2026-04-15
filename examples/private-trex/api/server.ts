@@ -28,8 +28,8 @@ app.use(express.json());
 // trigger on-chain transactions (~12s each on Sepolia). Admin ops deploy contracts
 // (~4 min). Limits prevent accidental DOS during a live demo presentation.
 const readLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests" } });
-const writeLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — slow down" } });
-const adminLimiter = rateLimit({ windowMs: 60_000, max: 2, standardHeaders: true, legacyHeaders: false, message: { error: "Setup/reset rate limited — wait 1 minute" } });
+const writeLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests. Please wait a moment." } });
+const adminLimiter = rateLimit({ windowMs: 60_000, max: 2, standardHeaders: true, legacyHeaders: false, message: { error: "Setup rate limited. Please wait 1 minute." } });
 
 app.use("/api/health", readLimiter);
 app.use("/api/state", readLimiter);
@@ -61,9 +61,9 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   const rpcError = err.response?.data?.error;
   if (rpcError) message = typeof rpcError === "string" ? rpcError : rpcError.message ?? JSON.stringify(rpcError);
   else if (err.code === "INSUFFICIENT_FUNDS" || message.includes("insufficient funds"))
-    message = "Insufficient Sepolia ETH — top up the funder wallet";
+    message = "Insufficient gas funds. Contact the operator.";
   else if (message.includes("socket hang up") || message.includes("ECONNREFUSED"))
-    message = "Paladin node not responding — restart with ./start-sepolia.sh --start";
+    message = "Paladin node not responding. Please try again.";
 
   console.error(`[api] Error (${status}): ${message}`);
   if (status === 500) console.error(err.stack ?? err);

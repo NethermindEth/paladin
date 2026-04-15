@@ -92,7 +92,7 @@ const SESSION_FILE = path.resolve(__dirname, "../data/session.json");
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s. Restart the Paladin node if this persists.`)), ms);
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s. Please try again.`)), ms);
     promise.then(
       (v) => { clearTimeout(timer); resolve(v); },
       (e) => { clearTimeout(timer); reject(e); },
@@ -174,14 +174,16 @@ async function ensurePaladinReady(paladin: PaladinClient, maxAttempts = 5): Prom
  */
 function parseError(raw: string): string {
   if (raw.includes("insufficient funds for gas") || raw.includes("INSUFFICIENT_FUNDS"))
-    return "Insufficient Sepolia ETH — top up the funder wallet (0xF9D5...aDaC6)";
-  if (raw.includes("Insufficient funds") || raw.includes("available=0")) return "Insufficient private balance";
-  if (raw.includes("Kyc") || raw.includes("KYC") || raw.includes("CheckSMTProof")) return "Receiver is not KYC verified";
-  if (raw.includes("frozen")) return "Account is frozen — transfers blocked";
-  if (raw.includes("Unable to decode revert data")) return "Transaction reverted on-chain (no revert reason available)";
-  if (raw.includes("socket hang up")) return "Paladin connection lost — restart the node";
-  if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out — restart the Paladin node if this persists";
+    return "Insufficient gas funds. Contact the operator.";
+  if (raw.includes("Insufficient funds") || raw.includes("available=0")) return "Insufficient private balance.";
+  if (raw.includes("Kyc") || raw.includes("KYC") || raw.includes("CheckSMTProof")) return "Receiver is not KYC verified.";
+  if (raw.includes("frozen")) return "Account is frozen. Transfers blocked.";
+  if (raw.includes("Invalid proof")) return "Transaction reverted on-chain. Verify freeze statuses and retry.";
+  if (raw.includes("Unable to decode revert data")) return "Transaction reverted on-chain.";
+  if (raw.includes("socket hang up")) return "Paladin node connection lost. Please try again.";
+  if (raw.includes("timed out") || raw.includes("TIMEOUT")) return "Transaction timed out. Please try again.";
   const first = raw.split(/[.\n]/)[0].replace(/^PD\d+:\s*/, "").trim();
+  if (first.length === 0) return "Transaction failed. Please try again.";
   return first.length > 80 ? first.substring(0, 77) + "..." : first;
 }
 
@@ -503,7 +505,7 @@ export class DemoSession {
    */
   async restart(): Promise<void> {
     if (!this.setupComplete) {
-      throw new Error("Cannot restart — no active session. Run /api/setup first.");
+      throw new Error("Cannot restart. No active session. Run /api/setup first.");
     }
     const prevRunId = this.runId;
     console.log(`[session] Restart started (prev runId=${prevRunId})`);
@@ -595,13 +597,13 @@ export class DemoSession {
       throw Object.assign(new Error(reason), { transaction: tx });
     }
     if (toStatus?.frozen) {
-      const reason = `${this.getDisplayName(to)}'s account is frozen — transfers blocked`;
+      const reason = `${this.getDisplayName(to)}'s account is frozen. Transfers blocked.`;
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
       throw Object.assign(new Error(reason), { transaction: tx });
     }
     const fromStatus = this._investorStatuses[from];
     if (fromStatus?.frozen) {
-      const reason = `${this.getDisplayName(from)}'s account is frozen — cannot send`;
+      const reason = `${this.getDisplayName(from)}'s account is frozen. Cannot send.`;
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
       throw Object.assign(new Error(reason), { transaction: tx });
     }
@@ -663,7 +665,7 @@ export class DemoSession {
     this.ensureSetup();
     await ensurePaladinReady(this.paladin);
     const id = this.requireIdentity(actor);
-    if (this._investorStatuses[actor]?.kyc) throw new Error(`${actor} is already KYC'd`);
+    if (this._investorStatuses[actor]?.kyc) throw new Error(`${this.getDisplayName(actor)} is already KYC verified.`);
 
     await trex.registerIdentity(this.paladin, this.verifiers.issuer, this.trexSuite!.identityRegistry,
       this.trexSuite!.dummyIdentity, id.evmAddress, 756);
@@ -702,11 +704,11 @@ export class DemoSession {
     await ensurePaladinReady(this.paladin);
     await this.ensureSubmitKeyFunded();
     this.requireIdentity(actor);
-    if (!this._investorStatuses[actor]?.frozen) throw new Error(`${actor} is not frozen — freeze first`);
+    if (!this._investorStatuses[actor]?.frozen) throw new Error(`${this.getDisplayName(actor)} is not frozen. Freeze the account first.`);
 
     const bal = Number((await this.zeto!.using(this.paladin).balanceOf(
       this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
-    if (bal <= 0) throw new Error(`${actor} has no private balance to claw back`);
+    if (bal <= 0) throw new Error(`${this.getDisplayName(actor)} has no private balance to claw back.`);
 
     // Snapshot the seized owner's live UTXOs before dispatch — the enforcer
     // can't derive owner nullifiers from the event plaintext, so we rely on
@@ -1024,7 +1026,7 @@ export class DemoSession {
 
   private ensureSetup(): void {
     if (!this.setupComplete || !this.trexSuite || !this.zeto)
-      throw new Error("Session not set up — call POST /api/setup first");
+      throw new Error("Session not set up. Call POST /api/setup first.");
   }
 
   private requireIdentity(actor: string): ActorIdentity {

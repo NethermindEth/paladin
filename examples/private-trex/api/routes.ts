@@ -53,7 +53,7 @@ export function autoWarmIfPersisted(): Promise<void> {
 }
 
 function getSession(): DemoSession {
-  if (!session?.setupComplete) throw Object.assign(new Error("No active session — call POST /api/setup first"), { status: 400 });
+  if (!session?.setupComplete) throw Object.assign(new Error("No active session. Call POST /api/setup first."), { status: 400 });
   return session;
 }
 
@@ -216,7 +216,7 @@ router.post("/setup", wrap(async (_req, res) => {
  */
 router.post("/start", wrap(async (_req, res) => {
   if (!session?.setupComplete) {
-    res.status(400).json({ error: "No active session — run setup from the CLI first" });
+    res.status(400).json({ error: "No active session. Run setup from the CLI first." });
     return;
   }
   issueToken();
@@ -230,7 +230,7 @@ router.post("/start", wrap(async (_req, res) => {
  */
 router.post("/restart", requireToken, wrap(async (_req, res) => {
   if (!session?.setupComplete) {
-    res.status(400).json({ error: "No active session — run setup from the CLI first" });
+    res.status(400).json({ error: "No active session. Run setup from the CLI first." });
     return;
   }
   await session.restart();
