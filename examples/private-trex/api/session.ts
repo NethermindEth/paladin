@@ -726,9 +726,23 @@ export class DemoSession {
     const id = this.requireIdentity(actor);
     if (this._investorStatuses[actor]?.kyc) throw new Error(`${this.getDisplayName(actor)} is already KYC verified.`);
 
-    await trex.registerIdentity(this.paladin, this.verifiers.issuer, this.trexSuite!.identityRegistry,
-      this.trexSuite!.dummyIdentity, id.evmAddress, 756);
-    await registerZetoKyc(this.paladin, this.verifiers.bank, this.zeto!.address, id.babyjubPubKey);
+    // approveKyc is a four-step on-chain flow (T-REX register -> Zeto
+    // register -> compliance SMT update -> post compliance root). If a
+    // previous attempt succeeded at step 1 or 2 but failed later, the
+    // actor's local kyc flag stays false, so the user retries. Without
+    // idempotent handling the retry's step 1 reverts with "already
+    // stored" or the Zeto register reverts "already registered", and the
+    // user is stuck. Swallow those specific reverts and continue — any
+    // other error bubbles up.
+    await tolerateAlreadyRegistered(
+      () => trex.registerIdentity(this.paladin, this.verifiers.issuer, this.trexSuite!.identityRegistry,
+        this.trexSuite!.dummyIdentity, id.evmAddress, 756),
+      `T-REX registerIdentity for ${actor}`,
+    );
+    await tolerateAlreadyRegistered(
+      () => registerZetoKyc(this.paladin, this.verifiers.bank, this.zeto!.address, id.babyjubPubKey),
+      `Zeto registerKyc for ${actor}`,
+    );
     await this.complianceSmt.setStatus(id.babyjubPubKey[0], id.babyjubPubKey[1], 1n);
     const receipt = await postComplianceRoot(this.paladin, this.verifiers.bank, this.zeto!.address, this.complianceSmt);
     await waitForIndexerSettle();
@@ -1175,4 +1189,28 @@ export class DemoSession {
 
 function errStr(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Runs a registration step and swallows the "already registered" revert
+ * path so approveKyc can retry safely when an earlier attempt partially
+ * succeeded. T-REX and Zeto each use different wording for this case,
+ * so match a broad union. Any other failure propagates unchanged.
+ */
+async function tolerateAlreadyRegistered<T>(fn: () => Promise<T>, label: string): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = errStr(e).toLowerCase();
+    const alreadyRegistered =
+      msg.includes("already registered") ||
+      msg.includes("already stored") ||
+      msg.includes("identity already") ||
+      msg.includes("already in compliance") ||
+      msg.includes("already in kyc") ||
+      msg.includes("already exists");
+    if (!alreadyRegistered) throw e;
+    console.log(`[session] ${label}: already registered on-chain, skipping`);
+    return undefined;
+  }
 }
