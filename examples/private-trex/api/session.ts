@@ -51,6 +51,15 @@ export interface TransactionRecord {
   txId: string; type: TransactionType; timestamp: string; txHash: string | null;
   status: TransactionStatus; actorName: string; fromName: string | null;
   toName: string | null; amount: number | null; visibility: Visibility; uiSummary: string;
+  /**
+   * Seized commitment hashes on type==="CLAWBACK". Captured from the
+   * AuthorityLedger at dispatch time because the enforcer has no way to
+   * derive them from the on-chain event (the forced-transfer event emits
+   * enforcement nullifiers, not owner commitments). Stored so a history
+   * replay on restore can accurately re-mark them spent; without this,
+   * a restored session would show seized notes as still live.
+   */
+  seizedCommitments?: string[];
 }
 
 export interface ShieldedNote {
@@ -476,9 +485,6 @@ export class DemoSession {
    * fresh sessions the ledger is built incrementally as txs execute.
    */
   private async rebuildLedgerFromHistory(): Promise<void> {
-    // Persisted _transactions is not yet populated here (restore() doesn't
-    // carry the log on disk — _transactions is cleared on every restart).
-    // Nothing to replay unless future work persists the tx log explicitly.
     if (this._transactions.length === 0) {
       console.log("[session] No historical transactions to replay into ledger");
       return;
@@ -491,10 +497,12 @@ export class DemoSession {
         if (tx.type === "SHIELDED_TRANSFER") {
           await this.indexTransferEvent(tx.txHash);
         } else if (tx.type === "CLAWBACK") {
-          // We no longer have the pre-seizure snapshot post-restart. Best-
-          // effort: leave seized commitments empty; outputs will still be
-          // added. A follow-up audit scan can reconcile.
-          await this.indexForcedTransferEvent(tx.txHash, []);
+          // Use the seizedCommitments snapshot captured at dispatch time
+          // (see addTx in clawbackImpl). This lets the ledger correctly
+          // re-mark seized UTXOs as spent after a restore — without it
+          // the event handler would only add outputs, leaving the seized
+          // notes visible as still-live in the regulator view.
+          await this.indexForcedTransferEvent(tx.txHash, tx.seizedCommitments ?? []);
         }
       } catch (e) {
         console.warn(`[session] replay of ${tx.txHash} failed: ${errStr(e)}`);
@@ -814,7 +822,8 @@ export class DemoSession {
     }
 
     return this.addTx("CLAWBACK", "bank", actor, "bank", bal, "PRIVATE",
-      `Clawback: ${bal.toLocaleString()} DBT seized from ${this.getDisplayName(actor)}`, receipt?.transactionHash);
+      `Clawback: ${bal.toLocaleString()} DBT seized from ${this.getDisplayName(actor)}`,
+      receipt?.transactionHash, undefined, seizedCommitments);
   }
 
   /**
@@ -1144,12 +1153,14 @@ export class DemoSession {
     type: TransactionType, actor: string, from: string | null, to: string | null,
     amount: number | null, visibility: Visibility, summary: string,
     hash?: string | null, status?: TransactionStatus,
+    seizedCommitments?: string[],
   ): TransactionRecord {
     const tx: TransactionRecord = {
       txId: uid(), type, timestamp: new Date().toISOString(),
       txHash: hash ?? null, status: status ?? "CONFIRMED",
       actorName: actor, fromName: from, toName: to,
       amount, visibility, uiSummary: summary,
+      ...(seizedCommitments && seizedCommitments.length > 0 ? { seizedCommitments } : {}),
     };
     this._transactions.unshift(tx);
     // Persist on every append so the regulator view survives an API
