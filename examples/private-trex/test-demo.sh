@@ -19,6 +19,32 @@ call() {
 
 jq_field() { echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d$2)" 2>/dev/null; }
 
+# Assert response.balances.<actor>.<kind> equals expected; body is the response JSON.
+assert_balance() {
+  local body=$1 actor=$2 kind=$3 expected=$4 label=$5
+  local got
+  got=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['balances']['$actor']['$kind'])" 2>/dev/null)
+  if [ "$got" = "$expected" ]; then
+    green "$label ($actor.$kind=$got)"
+  else
+    red "$label ($actor.$kind expected=$expected got=$got)"
+  fi
+}
+
+# Fetch full state and assert a balance — used after endpoints that don't return
+# balances in their response (freeze, unfreeze).
+assert_balance_via_state() {
+  local actor=$1 kind=$2 expected=$3 label=$4
+  local body got
+  body=$(call GET /state | sed '$d')
+  got=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['balances']['$actor']['$kind'])" 2>/dev/null)
+  if [ "$got" = "$expected" ]; then
+    green "$label ($actor.$kind=$got)"
+  else
+    red "$label ($actor.$kind expected=$expected got=$got)"
+  fi
+}
+
 echo "============================================"
 echo "  Private ERC-3643 Demo -- Integration Tests"
 echo "============================================"
@@ -61,6 +87,8 @@ RESP=$(call POST /transfer '{"from":"bank","to":"alice","amount":10000,"mode":"P
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Public transfer" || red "Public transfer (success=$S)"
+assert_balance "$BODY" alice public 10000 "  Alice.public"
+assert_balance "$BODY" bank  public 490000 "  Bank.public"
 
 # 5. Private transfer bank -> alice
 echo ""
@@ -69,6 +97,8 @@ RESP=$(call POST /transfer '{"from":"bank","to":"alice","amount":5000,"mode":"PR
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Private transfer bank->alice" || red "Private transfer bank->alice (success=$S)"
+assert_balance "$BODY" alice private 5000  "  Alice.private"
+assert_balance "$BODY" bank  private 495000 "  Bank.private"
 
 # 6. Private transfer alice -> bob
 echo ""
@@ -77,6 +107,8 @@ RESP=$(call POST /transfer '{"from":"alice","to":"bob","amount":2000,"mode":"PRI
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Private transfer alice->bob" || red "Private transfer alice->bob (success=$S)"
+assert_balance "$BODY" alice private 3000 "  Alice.private (post-send)"
+assert_balance "$BODY" bob   private 2000 "  Bob.private"
 
 # 7. Freeze alice
 echo ""
@@ -92,6 +124,8 @@ RESP=$(call POST /transfer '{"from":"alice","to":"bob","amount":500,"mode":"PRIV
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "False" ] && green "Frozen transfer correctly rejected" || red "Frozen transfer should fail (success=$S)"
+# Alice's balance must be untouched by the failed transfer attempt.
+assert_balance_via_state alice private 3000 "  Alice.private (unchanged after failed send)"
 
 # 9. Clawback alice
 echo ""
@@ -100,6 +134,11 @@ RESP=$(call POST /clawback/alice)
 CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 [ "$CODE" -lt 300 ] && green "Clawback alice" || red "Clawback alice (HTTP $CODE): $(jq_field "$BODY" '["error"]')"
+# This is the critical check the prior version of this script was missing —
+# response must reflect post-seizure state so the UI doesn't leave the Clawback
+# button clickable. See waitForBalanceDrop in session.ts.
+assert_balance "$BODY" alice private 0      "  Alice.private → 0 after clawback"
+assert_balance "$BODY" bank  private 498000 "  Bank.private += seized 3000"
 
 # 10. Transfer from zero-balance alice should fail
 echo ""
@@ -123,6 +162,7 @@ RESP=$(call POST /transfer '{"from":"bank","to":"alice","amount":1000,"mode":"PU
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Transfer to unfrozen alice" || red "Transfer to unfrozen alice (success=$S)"
+assert_balance "$BODY" alice public 11000 "  Alice.public"
 
 # 13. KYC charlie
 echo ""
@@ -138,6 +178,8 @@ RESP=$(call POST /transfer '{"from":"bank","to":"charlie","amount":3000,"mode":"
 BODY=$(echo "$RESP" | sed '$d')
 S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Private transfer bank->charlie" || red "Private transfer bank->charlie (success=$S)"
+assert_balance "$BODY" charlie private 3000   "  Charlie.private"
+assert_balance "$BODY" bank    private 495000 "  Bank.private (=498000 post-clawback − 3000 to charlie)"
 
 # 15. Add dynamic investor
 echo ""
