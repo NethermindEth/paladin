@@ -339,3 +339,196 @@ export class AuthorityNoteIndexer {
     return undefined;
   }
 }
+
+// ---------------------------------------------------------------------------
+// AuthorityLedger — canonical per-UTXO view for the regulator
+//
+// Event-driven. Every shielded transfer decrypts to a 14-element plaintext
+// that identifies the sender's inputs (as (value, salt) with senderPubKey as
+// owner) and the recipient's outputs (with explicit ownerPubKey, value,
+// salt). From those, both ends of each UTXO's life cycle — creation and
+// spend — are derivable without any hand-maintained map.
+// ---------------------------------------------------------------------------
+
+export interface LedgerEntry {
+  commitment: string;          // decimal string (matches event field encoding)
+  value: bigint;
+  salt: bigint;
+  ownerPubKey: [string, string];
+  ownerKeyHash: string;        // Poseidon2 of pubkey — stable owner identifier
+  senderPubKey: [string, string] | null;
+  createdTxHash: string;
+  createdAt: string;           // ISO timestamp
+  spentTxHash: string | null;
+  spentAt: string | null;
+}
+
+function ownerHashOf(pubKeyX: string, pubKeyY: string): string {
+  return poseidon2([BigInt(pubKeyX), BigInt(pubKeyY)]).toString();
+}
+
+function computeCommitment(value: bigint, salt: bigint, ownerX: string, ownerY: string): string {
+  return poseidon4([value, salt, BigInt(ownerX), BigInt(ownerY)]).toString();
+}
+
+export class AuthorityLedger {
+  private byCommitment = new Map<string, LedgerEntry>();
+
+  size(): number { return this.byCommitment.size; }
+
+  clear(): void { this.byCommitment.clear(); }
+
+  get(commitment: string): LedgerEntry | undefined {
+    return this.byCommitment.get(commitment);
+  }
+
+  upsertOutput(entry: Omit<LedgerEntry, "spentTxHash" | "spentAt">): void {
+    const existing = this.byCommitment.get(entry.commitment);
+    if (existing) return;      // idempotent — keep first-seen authoritative record
+    this.byCommitment.set(entry.commitment, { ...entry, spentTxHash: null, spentAt: null });
+  }
+
+  markSpent(commitment: string, spentTxHash: string, spentAt: string): void {
+    const entry = this.byCommitment.get(commitment);
+    if (!entry || entry.spentTxHash) return;
+    entry.spentTxHash = spentTxHash;
+    entry.spentAt = spentAt;
+  }
+
+  getLiveForOwner(pubKeyX: string, pubKeyY: string): LedgerEntry[] {
+    const keyHash = ownerHashOf(pubKeyX, pubKeyY);
+    const out: LedgerEntry[] = [];
+    for (const e of this.byCommitment.values()) {
+      if (e.ownerKeyHash === keyHash && !e.spentTxHash) out.push(e);
+    }
+    return out;
+  }
+
+  getAllForOwner(pubKeyX: string, pubKeyY: string): LedgerEntry[] {
+    const keyHash = ownerHashOf(pubKeyX, pubKeyY);
+    const out: LedgerEntry[] = [];
+    for (const e of this.byCommitment.values()) {
+      if (e.ownerKeyHash === keyHash) out.push(e);
+    }
+    return out;
+  }
+}
+
+/** Arguments for ingesting a UTXOTransferNonRepudiationEnforced event. */
+export interface TransferEventPayload {
+  encryptedValuesForArbiter: bigint[];
+  ecdhPublicKey: bigint[];
+  encryptionNonce: bigint;
+  /** On-chain output commitments, in slot order; used to match decrypted outputs. */
+  outputs: bigint[];
+}
+
+/** Arguments for ingesting a UTXOForcedTransferEnforced event. */
+export interface ForcedTransferEventPayload extends TransferEventPayload {
+  /** Commitment hashes of the seized UTXOs — from ZetoTransactionData_V0.SpentCommitments or a pre-call snapshot. */
+  spentCommitments: string[];
+}
+
+/**
+ * Ingest a normal shielded transfer event into the ledger.
+ *
+ * The arbiter ciphertext's 14-element plaintext includes the sender's pubkey
+ * and each input's (value, salt). Because the sender is the owner of every
+ * input in a normal transfer, we can reconstruct each input commitment as
+ * Poseidon4(value, salt, senderX, senderY) and mark it spent without needing
+ * the owner's secret key.
+ */
+export function ingestTransferEvent(
+  ledger: AuthorityLedger,
+  indexer: AuthorityNoteIndexer,
+  event: TransferEventPayload,
+  authorityPrivKey: bigint,
+  txHash: string,
+  timestamp: string,
+): DecryptedTransfer {
+  const decrypted = indexer.decryptTransfer(
+    event.encryptedValuesForArbiter,
+    authorityPrivKey,
+    event.ecdhPublicKey,
+    event.encryptionNonce,
+  );
+
+  // Mark inputs spent. Sender is the owner of every input in a normal transfer.
+  const senderX = decrypted.senderPubKey[0];
+  const senderY = decrypted.senderPubKey[1];
+  for (const input of decrypted.inputs) {
+    if (input.value === 0n) continue;              // padding slot
+    const commitment = computeCommitment(input.value, input.salt, senderX, senderY);
+    ledger.markSpent(commitment, txHash, timestamp);
+  }
+
+  // Add each non-zero output. Prefer the on-chain commitment if it matches
+  // slot order; otherwise recompute to keep the ledger consistent.
+  for (let i = 0; i < decrypted.outputs.length; i++) {
+    const out = decrypted.outputs[i];
+    if (out.value === 0n) continue;
+    const onChain = i < event.outputs.length && event.outputs[i] !== 0n
+      ? event.outputs[i].toString()
+      : computeCommitment(out.value, out.salt, out.ownerPubKey[0], out.ownerPubKey[1]);
+    ledger.upsertOutput({
+      commitment: onChain,
+      value: out.value,
+      salt: out.salt,
+      ownerPubKey: out.ownerPubKey,
+      ownerKeyHash: ownerHashOf(out.ownerPubKey[0], out.ownerPubKey[1]),
+      senderPubKey: decrypted.senderPubKey,
+      createdTxHash: txHash,
+      createdAt: timestamp,
+    });
+  }
+
+  return decrypted;
+}
+
+/**
+ * Ingest a forced-transfer (clawback) event. Unlike a normal transfer, the
+ * seized owner's secret is unknown to the enforcer, so we cannot reconstruct
+ * the seized commitments from the plaintext — they must be supplied by the
+ * caller (either from a pre-call snapshot of the seized owner's live notes
+ * or from the ABI-decoded bytes data field).
+ */
+export function ingestForcedTransferEvent(
+  ledger: AuthorityLedger,
+  indexer: AuthorityNoteIndexer,
+  event: ForcedTransferEventPayload,
+  authorityPrivKey: bigint,
+  txHash: string,
+  timestamp: string,
+): DecryptedTransfer {
+  const decrypted = indexer.decryptTransfer(
+    event.encryptedValuesForArbiter,
+    authorityPrivKey,
+    event.ecdhPublicKey,
+    event.encryptionNonce,
+  );
+
+  for (const commitment of event.spentCommitments) {
+    if (!commitment || commitment === "0") continue;
+    ledger.markSpent(commitment, txHash, timestamp);
+  }
+
+  for (let i = 0; i < decrypted.outputs.length; i++) {
+    const out = decrypted.outputs[i];
+    if (out.value === 0n) continue;
+    const onChain = i < event.outputs.length && event.outputs[i] !== 0n
+      ? event.outputs[i].toString()
+      : computeCommitment(out.value, out.salt, out.ownerPubKey[0], out.ownerPubKey[1]);
+    ledger.upsertOutput({
+      commitment: onChain,
+      value: out.value,
+      salt: out.salt,
+      ownerPubKey: out.ownerPubKey,
+      ownerKeyHash: ownerHashOf(out.ownerPubKey[0], out.ownerPubKey[1]),
+      senderPubKey: decrypted.senderPubKey,
+      createdTxHash: txHash,
+      createdAt: timestamp,
+    });
+  }
+
+  return decrypted;
+}

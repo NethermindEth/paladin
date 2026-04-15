@@ -27,7 +27,11 @@ import * as trex from "../src/trex";
 import { setArbiter, setEnforcer, setCodec, setTransferFacet, registerZetoKyc } from "../src/helpers";
 import { resolveActorIdentity, postComplianceRoot, ActorIdentity } from "../src/identity";
 import { ComplianceSmtManager } from "../src/complianceSmt";
-import { AuthorityNoteIndexer, ProofBundle } from "../src/authorityIndexer";
+import {
+  AuthorityLedger, AuthorityNoteIndexer, ProofBundle,
+  ingestTransferEvent, ingestForcedTransferEvent,
+  TransferEventPayload, ForcedTransferEventPayload,
+} from "../src/authorityIndexer";
 import { fundActors, fundDomainSubmitKey, defaultFundingList, ACTOR_FUNDING } from "../src/fund-actors";
 import { IS_SEPOLIA, SEPOLIA_RPC_URL, POLL_TIMEOUT, LONG_POLL_TIMEOUT } from "../src/sepolia";
 import enforcedAbi from "../src/zeto-abis/IZetoEnforced.json";
@@ -209,10 +213,13 @@ export class DemoSession {
   private pubkeyToName = new Map<string, string>();
   private complianceSmt: ComplianceSmtManager;
   private noteIndexer = new AuthorityNoteIndexer();
+  private ledger = new AuthorityLedger();
+  // Memoised decryption results keyed by (investor, commitment) — populated
+  // on demand by decryptNotes() and cleared on session restart.
+  private _decryptedCache = new Map<string, DecryptedNotePayload>();
   private _dynamicInvestors: string[] = [];
 
   private _transactions: TransactionRecord[] = [];
-  private _shieldedNotes: Record<string, ShieldedNote[]> = {};
   private _investorStatuses: Record<string, InvestorStatus> = {
     alice: { kyc: false, frozen: false },
     bob: { kyc: false, frozen: false },
@@ -224,7 +231,11 @@ export class DemoSession {
   loadPersistedSession(): PersistedSession | null { return loadSessionFile(); }
 
   get transactions() { return this._transactions; }
-  get shieldedNotes() { return this._shieldedNotes; }
+  get shieldedNotes() {
+    const out: Record<string, ShieldedNote[]> = {};
+    for (const [name] of Object.entries(this.identities)) out[name] = this.getNotes(name);
+    return out;
+  }
   get investorStatuses(): Readonly<Record<string, InvestorStatus>> { return this._investorStatuses; }
   get pendingRequests() { return this._pendingRequests; }
 
@@ -406,7 +417,46 @@ export class DemoSession {
     this._investorStatuses = saved.investorStatuses;
 
     this.setupComplete = true;
+
+    // Rebuild the UTXO ledger by replaying every confirmed shielded tx from
+    // the persisted transaction log. Cheap (~one RPC per tx) and means a
+    // restored session has a complete regulator view without extra calls.
+    await this.rebuildLedgerFromHistory();
+
     console.log("[session] Session restored from disk");
+  }
+
+  /**
+   * Walk every persisted SHIELDED_TRANSFER / CLAWBACK in _transactions and
+   * feed its event to the ledger. Idempotent. Invoked only on restore — for
+   * fresh sessions the ledger is built incrementally as txs execute.
+   */
+  private async rebuildLedgerFromHistory(): Promise<void> {
+    // Persisted _transactions is not yet populated here (restore() doesn't
+    // carry the log on disk — _transactions is cleared on every restart).
+    // Nothing to replay unless future work persists the tx log explicitly.
+    if (this._transactions.length === 0) {
+      console.log("[session] No historical transactions to replay into ledger");
+      return;
+    }
+    // Oldest first: the log is prepended (unshift), so iterate reversed.
+    const ordered = [...this._transactions].reverse();
+    for (const tx of ordered) {
+      if (tx.status !== "CONFIRMED" || !tx.txHash) continue;
+      try {
+        if (tx.type === "SHIELDED_TRANSFER") {
+          await this.indexTransferEvent(tx.txHash);
+        } else if (tx.type === "CLAWBACK") {
+          // We no longer have the pre-seizure snapshot post-restart. Best-
+          // effort: leave seized commitments empty; outputs will still be
+          // added. A follow-up audit scan can reconcile.
+          await this.indexForcedTransferEvent(tx.txHash, []);
+        }
+      } catch (e) {
+        console.warn(`[session] replay of ${tx.txHash} failed: ${errStr(e)}`);
+      }
+    }
+    console.log(`[session] Ledger replay complete (entries=${this.ledger.size()})`);
   }
 
   /** Persist session state to disk so API server restarts don't require redeployment. */
@@ -469,9 +519,10 @@ export class DemoSession {
     this.arbiterPubKey = [];
     this.complianceSmt = new ComplianceSmtManager();
     this._transactions = [];
-    this._shieldedNotes = {};
     this._pendingRequests = [];
     this.noteIndexer = new AuthorityNoteIndexer();
+    this.ledger = new AuthorityLedger();
+    this._decryptedCache.clear();
     this._dynamicInvestors = [];
     this._investorStatuses = {
       alice: { kyc: false, frozen: false },
@@ -507,7 +558,7 @@ export class DemoSession {
       investorStatuses: { ...this._investorStatuses },
       transactions: [...this._transactions],
       pendingRequests: [...this._pendingRequests],
-      shieldedNotes: { ...this._shieldedNotes },
+      shieldedNotes: this.shieldedNotes,
     };
   }
 
@@ -600,7 +651,10 @@ export class DemoSession {
     await this.waitForStateReceipt(xferTxID, "Private transfer");
 
     const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, "PRIVATE", summary("private"), receipt?.transactionHash);
-    if (receipt?.transactionHash) this.trackNote(receipt.transactionHash, to);
+    if (receipt?.transactionHash) {
+      try { await this.indexTransferEvent(receipt.transactionHash); }
+      catch (e) { console.warn(`[session] failed to index transfer event ${receipt.transactionHash}: ${errStr(e)}`); }
+    }
     this.ensureSubmitKeyFunded().catch(() => {});
     return tx;
   }
@@ -654,6 +708,14 @@ export class DemoSession {
       this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
     if (bal <= 0) throw new Error(`${actor} has no private balance to claw back`);
 
+    // Snapshot the seized owner's live UTXOs before dispatch — the enforcer
+    // can't derive owner nullifiers from the event plaintext, so we rely on
+    // this pre-call snapshot to mark them spent post-receipt.
+    const actorId = this.identities[actor];
+    const seizedCommitments = actorId
+      ? this.ledger.getLiveForOwner(actorId.babyjubPubKey[0], actorId.babyjubPubKey[1]).map(e => e.commitment)
+      : [];
+
     const txFuture = this.zeto!.forcedTransfer(this.verifiers.bank, {
       seizedOwner: this.verifiers[actor].lookup,
       transfers: [{ to: this.verifiers.bank, amount: bal, data: "0x" }],
@@ -675,13 +737,9 @@ export class DemoSession {
     // domain reports the Spent/Confirmed transitions.
     await this.waitForStateReceipt(txID, "Clawback");
 
-    // Mark all of the actor's notes as SPENT
-    const actorNotes = this._shieldedNotes[actor] ?? [];
-    for (const note of actorNotes) {
-      if (note.status === "UNSPENT") {
-        note.status = "SPENT";
-        note.spentTxHash = receipt?.transactionHash ?? null;
-      }
+    if (receipt?.transactionHash) {
+      try { await this.indexForcedTransferEvent(receipt.transactionHash, seizedCommitments); }
+      catch (e) { console.warn(`[session] failed to index forced transfer event ${receipt.transactionHash}: ${errStr(e)}`); }
     }
 
     return this.addTx("CLAWBACK", "bank", actor, "bank", bal, "PRIVATE",
@@ -784,30 +842,59 @@ export class DemoSession {
     delete this.verifiers[name];
     delete this.identities[name];
     delete this._investorStatuses[name];
-    delete this._shieldedNotes[name];
-    // Remove from pubkey→name map
+    // Ledger entries keyed by pubkey remain in memory but become unreachable
+    // via shieldedNotes (no identities[name] to look up); left in place to
+    // keep historical audit trail if the name is re-added.
     for (const [key, val] of this.pubkeyToName) {
       if (val === name) { this.pubkeyToName.delete(key); break; }
     }
     console.log(`[session] Removed investor ${this.getDisplayName(name)} (${name})`);
   }
 
-  getNotes(investor: string): ShieldedNote[] { return this._shieldedNotes[investor] ?? []; }
+  /** Convert a LedgerEntry to the wire-format ShieldedNote the UI expects. */
+  private toShieldedNote(entry: { commitment: string; createdTxHash: string; spentTxHash: string | null }, ownerName: string): ShieldedNote {
+    const noteId = entry.commitment.length > 18 ? entry.commitment.substring(0, 18) : entry.commitment;
+    const cached = this._decryptedCache.get(`${ownerName}:${entry.commitment}`) ?? null;
+    return {
+      noteId,
+      ownerName,
+      status: entry.spentTxHash ? "SPENT" : "UNSPENT",
+      createdTxHash: entry.createdTxHash,
+      spentTxHash: entry.spentTxHash,
+      decrypted: cached,
+    };
+  }
+
+  getNotes(investor: string): ShieldedNote[] {
+    const id = this.identities[investor];
+    if (!id) return [];
+    const entries = this.ledger.getAllForOwner(id.babyjubPubKey[0], id.babyjubPubKey[1]);
+    return entries.map(e => this.toShieldedNote(e, investor));
+  }
 
   async decryptNotes(investor: string, noteIds: string[]): Promise<DecryptedNotePayload[]> {
     this.ensureSetup();
-    const notes = this._shieldedNotes[investor] ?? [];
+    const id = this.identities[investor];
+    if (!id) return [];
+    const entries = this.ledger.getAllForOwner(id.babyjubPubKey[0], id.babyjubPubKey[1]);
     const results: DecryptedNotePayload[] = [];
 
-    for (const noteId of noteIds) {
-      const note = notes.find(n => n.noteId === noteId);
-      if (!note || note.decrypted) continue;
+    for (const requested of noteIds) {
+      const entry = entries.find(e =>
+        (e.commitment.length > 18 ? e.commitment.substring(0, 18) : e.commitment) === requested
+        || e.commitment === requested);
+      if (!entry) continue;
+      const cacheKey = `${investor}:${entry.commitment}`;
+      const cached = this._decryptedCache.get(cacheKey);
+      if (cached) { results.push(cached); continue; }
 
-      const events = await this.paladin.bidx.decodeTransactionEvents(note.createdTxHash, enforcedAbi.abi, "");
+      // We already know value/salt/owner from ingestion; build the proof bundle
+      // off the on-chain event so the regulator can independently verify.
+      const events = await this.paladin.bidx.decodeTransactionEvents(entry.createdTxHash, enforcedAbi.abi, "");
       const evt = events?.find((e: { soliditySignature?: string }) =>
-        e.soliditySignature?.includes("UTXOTransferNonRepudiationEnforced"));
+        e.soliditySignature?.includes("UTXOTransferNonRepudiationEnforced")
+        || e.soliditySignature?.includes("UTXOForcedTransferEnforced"));
       if (!evt) continue;
-
       const data = evt.data as Record<string, unknown>;
       if (!data?.encryptedValuesForArbiter || !data?.ecdhPublicKey || !data?.encryptionNonce) continue;
 
@@ -817,26 +904,58 @@ export class DemoSession {
       const onChainOutputs = (data.outputs as string[] ?? []).map(BigInt);
 
       const { transfer: decrypted, proof } = this.noteIndexer.buildProofBundle(
-        ciphertext, this.arbiterPrivKey, ecdhPubKey, nonce, onChainOutputs, note.createdTxHash,
+        ciphertext, this.arbiterPrivKey, ecdhPubKey, nonce, onChainOutputs, entry.createdTxHash,
       );
-
-      for (const out of decrypted.outputs) {
-        if (out.value === 0n) continue;
-        const ownerName = this.pubkeyToName.get(out.ownerPubKey[0]) ?? "unknown";
-        if (ownerName !== investor) continue;
-        const senderName = this.pubkeyToName.get(decrypted.senderPubKey[0]) ?? "unknown";
-        note.decrypted = {
-          amount: Number(out.value), ownerName,
-          ownerAddress: this.identities[ownerName]?.evmAddress ?? "",
-          counterpartyName: senderName,
-          counterpartyAddress: this.identities[senderName]?.evmAddress ?? null,
-          createdAt: new Date().toISOString(),
-          proofBundle: proof,
-        };
-        results.push(note.decrypted);
-      }
+      const senderName = this.pubkeyToName.get(decrypted.senderPubKey[0]) ?? "unknown";
+      const payload: DecryptedNotePayload = {
+        amount: Number(entry.value),
+        ownerName: investor,
+        ownerAddress: id.evmAddress,
+        counterpartyName: senderName,
+        counterpartyAddress: this.identities[senderName]?.evmAddress ?? null,
+        createdAt: entry.createdAt,
+        proofBundle: proof,
+      };
+      this._decryptedCache.set(cacheKey, payload);
+      results.push(payload);
     }
     return results;
+  }
+
+  /**
+   * Fetch the transfer event for the given txHash and feed it to the ledger.
+   * Safe to call multiple times — ledger upserts are idempotent.
+   */
+  private async indexTransferEvent(txHash: string): Promise<void> {
+    const events = await this.paladin.bidx.decodeTransactionEvents(txHash, enforcedAbi.abi, "");
+    const evt = events?.find((e: { soliditySignature?: string }) =>
+      e.soliditySignature?.includes("UTXOTransferNonRepudiationEnforced"));
+    if (!evt) return;
+    const payload = this.eventToTransferPayload(evt);
+    if (!payload) return;
+    ingestTransferEvent(this.ledger, this.noteIndexer, payload, this.arbiterPrivKey, txHash, new Date().toISOString());
+  }
+
+  private async indexForcedTransferEvent(txHash: string, seizedCommitments: string[]): Promise<void> {
+    const events = await this.paladin.bidx.decodeTransactionEvents(txHash, enforcedAbi.abi, "");
+    const evt = events?.find((e: { soliditySignature?: string }) =>
+      e.soliditySignature?.includes("UTXOForcedTransferEnforced"));
+    if (!evt) return;
+    const base = this.eventToTransferPayload(evt);
+    if (!base) return;
+    const payload: ForcedTransferEventPayload = { ...base, spentCommitments: seizedCommitments };
+    ingestForcedTransferEvent(this.ledger, this.noteIndexer, payload, this.arbiterPrivKey, txHash, new Date().toISOString());
+  }
+
+  private eventToTransferPayload(evt: unknown): TransferEventPayload | null {
+    const data = (evt as { data?: Record<string, unknown> }).data;
+    if (!data?.encryptedValuesForArbiter || !data?.ecdhPublicKey || !data?.encryptionNonce) return null;
+    return {
+      encryptedValuesForArbiter: (data.encryptedValuesForArbiter as string[]).map(BigInt),
+      ecdhPublicKey: (data.ecdhPublicKey as string[]).map(BigInt),
+      encryptionNonce: BigInt(data.encryptionNonce as string),
+      outputs: (data.outputs as string[] ?? []).map(BigInt),
+    };
   }
 
 
@@ -949,12 +1068,8 @@ export class DemoSession {
     return tx;
   }
 
-  private trackNote(txHash: string, recipient: string): void {
-    const notes = this._shieldedNotes[recipient] ?? [];
-    notes.push({
-      noteId: txHash.substring(0, 18), ownerName: recipient, status: "UNSPENT",
-      createdTxHash: txHash, spentTxHash: null, decrypted: null,
-    });
-    this._shieldedNotes[recipient] = notes;
-  }
+}
+
+function errStr(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

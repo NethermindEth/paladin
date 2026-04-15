@@ -45,6 +45,20 @@ assert_balance_via_state() {
   fi
 }
 
+# Assert regulator-visible live note count for an investor (notes with
+# status=UNSPENT). Reads /state so it reflects the indexer ledger.
+assert_live_notes() {
+  local actor=$1 expected=$2 label=$3
+  local body got
+  body=$(call GET /state | sed '$d')
+  got=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); notes=d.get('shieldedNotes',{}).get('$actor',[]); print(sum(1 for n in notes if n.get('status')=='UNSPENT'))" 2>/dev/null)
+  if [ "$got" = "$expected" ]; then
+    green "$label ($actor live notes=$got)"
+  else
+    red "$label ($actor live notes expected=$expected got=$got)"
+  fi
+}
+
 echo "============================================"
 echo "  Private ERC-3643 Demo -- Integration Tests"
 echo "============================================"
@@ -99,6 +113,7 @@ S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Private transfer bank->alice" || red "Private transfer bank->alice (success=$S)"
 assert_balance "$BODY" alice private 5000  "  Alice.private"
 assert_balance "$BODY" bank  private 495000 "  Bank.private"
+assert_live_notes alice 1 "  Alice has 1 live note post-receive"
 
 # 6. Private transfer alice -> bob
 echo ""
@@ -109,6 +124,10 @@ S=$(jq_field "$BODY" '["success"]')
 [ "$S" = "True" ] && green "Private transfer alice->bob" || red "Private transfer alice->bob (success=$S)"
 assert_balance "$BODY" alice private 3000 "  Alice.private (post-send)"
 assert_balance "$BODY" bob   private 2000 "  Bob.private"
+# After Alice→Bob, Alice's original 5,000 note is spent; she has a 3,000 change note.
+# Bob has 1 new 2,000 note.
+assert_live_notes alice 1 "  Alice live notes after sending (change only)"
+assert_live_notes bob   1 "  Bob live notes after receive"
 
 # 7. Freeze alice
 echo ""
@@ -139,6 +158,9 @@ BODY=$(echo "$RESP" | sed '$d')
 # button clickable. See waitForBalanceDrop in session.ts.
 assert_balance "$BODY" alice private 0      "  Alice.private → 0 after clawback"
 assert_balance "$BODY" bank  private 498000 "  Bank.private += seized 3000"
+# Regulator view: Alice must have 0 live notes after seizure; Bob untouched.
+assert_live_notes alice 0 "  Alice live notes → 0 after clawback"
+assert_live_notes bob   1 "  Bob live notes unchanged"
 
 # 10. Transfer from zero-balance alice should fail
 echo ""
