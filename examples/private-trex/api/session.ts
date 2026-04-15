@@ -544,13 +544,13 @@ export class DemoSession {
       throw Object.assign(new Error(reason), { transaction: tx });
     }
     if (toStatus?.frozen) {
-      const reason = `${this.getDisplayName(to)} account is frozen — transfers blocked`;
+      const reason = `${this.getDisplayName(to)}'s account is frozen — transfers blocked`;
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
       throw Object.assign(new Error(reason), { transaction: tx });
     }
     const fromStatus = this._investorStatuses[from];
     if (fromStatus?.frozen) {
-      const reason = `${this.getDisplayName(from)} account is frozen — cannot send`;
+      const reason = `${this.getDisplayName(from)}'s account is frozen — cannot send`;
       const tx = this.addTx("SHIELDED_TRANSFER", from, from, to, amount, mode, reason, null, "FAILED");
       throw Object.assign(new Error(reason), { transaction: tx });
     }
@@ -637,7 +637,7 @@ export class DemoSession {
     this._investorStatuses[actor] = { ...this._investorStatuses[actor], frozen };
     const label = frozen ? "frozen" : "unfrozen";
     const tx = this.addTx(frozen ? "FREEZE" : "UNFREEZE", "bank", null, actor, null, "PUBLIC",
-      `${this.getDisplayName(actor)} account ${label}`, receipt.transactionHash);
+      `${this.getDisplayName(actor)}'s account ${label}`, receipt.transactionHash);
     this.persist();
     return tx;
   }
@@ -663,11 +663,12 @@ export class DemoSession {
     );
     if (!checkReceipt(receipt)) throw new Error(parseError((receipt as any)?.failureMessage ?? "Clawback failed"));
 
-    // Let the block indexer apply UTXOForcedTransferEnforced to the domain
-    // state store before the caller reads getBalances(). Without this, the
-    // response returns the pre-clawback balance and the Clawback button stays
-    // clickable on the bank dashboard.
-    await waitForIndexerSettle();
+    // Poll balanceOf until the block indexer applies UTXOForcedTransferEnforced
+    // to the domain state store. A fixed sleep is unreliable: the SMT updates
+    // inside the event handler can take longer than the default settle window,
+    // and the response would otherwise return the pre-clawback balance — the UI
+    // would then leave the Clawback button clickable for a second seizure.
+    await this.waitForBalanceDrop(actor, bal);
 
     // Mark all of the actor's notes as SPENT
     const actorNotes = this._shieldedNotes[actor] ?? [];
@@ -680,6 +681,27 @@ export class DemoSession {
 
     return this.addTx("CLAWBACK", "bank", actor, "bank", bal, "PRIVATE",
       `Clawback: ${bal.toLocaleString()} DBT seized from ${this.getDisplayName(actor)}`, receipt?.transactionHash);
+  }
+
+  /**
+   * Poll Paladin's balanceOf for `actor` until it drops below `previousBalance`
+   * or we hit the deadline. Used after clawback so the response payload
+   * reflects the post-seizure state instead of the indexer's stale view.
+   */
+  private async waitForBalanceDrop(actor: string, previousBalance: number): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    let attempts = 0;
+    while (Date.now() < deadline) {
+      attempts++;
+      const current = Number((await this.zeto!.using(this.paladin).balanceOf(
+        this.verifiers[actor], { account: this.verifiers[actor].lookup })).totalBalance);
+      if (current < previousBalance) {
+        console.log(`[session] balance for ${actor} dropped from ${previousBalance} to ${current} after ${attempts} poll(s)`);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.warn(`[session] balance for ${actor} never dropped below ${previousBalance} within 30s — indexer may be stuck`);
   }
 
   private getDisplayName(actor: string): string {
