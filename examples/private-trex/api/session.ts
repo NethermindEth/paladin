@@ -881,7 +881,16 @@ export class DemoSession {
       }
       await new Promise(r => setTimeout(r, 500));
     }
-    console.warn(`[session] ${label} state receipt never landed for tx ${txID.slice(0, 10)} within 30s — indexer may be stuck, response will show stale balances`);
+    // Promote to error rather than warn: if we return silently after
+    // the deadline the caller would respond to the client with stale
+    // balances, the regulator ledger would miss Spent/Confirmed
+    // transitions, and the UI would leave action buttons in an
+    // inconsistent state. Surface the indexer stall so the user can
+    // retry — route handlers map the error to 500 and the UI's
+    // error-recovery path re-hydrates full state via fetchState.
+    const msg = `${label} not indexed within 30s. Paladin's block indexer may be lagging. Please retry.`;
+    console.error(`[session] ${msg} (tx=${txID.slice(0, 10)})`);
+    throw new Error(msg);
   }
 
   private getDisplayName(actor: string): string {
