@@ -71,6 +71,12 @@ dc_explorer()  { docker compose "${CHAINLENS_COMPOSE[@]}" "$@"; }
 
 container_exists() { docker inspect "$1" >/dev/null 2>&1; }
 container_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
+cname() { docker inspect -f '{{.Name}}' "$1" 2>/dev/null | sed 's#^/##'; }
+
+# Compose containers are project-prefixed (testinfra-besu_free-1, docker-compose-api-1,
+# redis, ...). Resolve the actual container ids from compose rather than guessing names.
+besu_cid()      { dc_testinfra ps -aq "$BESU_SERVICE" 2>/dev/null | head -1; }
+explorer_cids() { dc_explorer ps -aq 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
 # status
@@ -80,16 +86,15 @@ cmd_status() {
   printf '%-26s %-12s %s\n' "PIECE" "STATE" "DETAIL"
   printf '%-26s %-12s %s\n' "-----" "-----" "------"
 
-  _row() { # name  running?  detail
+  _row() { # ref  label  detail
     local state; container_running "$1" && state="up" || { container_exists "$1" && state="stopped" || state="absent"; }
     printf '%-26s %-12s %s\n' "$2" "$state" "$3"
   }
-  _row "$BESU_SERVICE"      "Besu"              "$(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}}, OOMKilled={{.State.OOMKilled}})' "$BESU_SERVICE" 2>/dev/null || echo absent)"
+  local besu; besu="$(besu_cid)"
+  _row "${besu:-besu_free}" "Besu" "$(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}}, OOMKilled={{.State.OOMKilled}})' "${besu:-x}" 2>/dev/null || echo absent)"
   _row "$POSTGRES_CONTAINER" "Postgres"         ""
   _row "$PALADIN_CONTAINER"  "Paladin node"     ""
-  for s in mongodb redis ingestion api web nginx; do
-    local cn="docker-compose-${s}-1"; container_exists "$cn" && _row "$cn" "Explorer/$s" ""
-  done
+  for cid in $(explorer_cids); do _row "$cid" "Explorer/$(cname "$cid")" ""; done
 
   local api_state="down"
   if lsof -ti:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1 || ss -ltn 2>/dev/null | grep -q ":$API_PORT "; then api_state="up"; fi
@@ -110,20 +115,22 @@ cmd_status() {
 apply_hardening() {
   [ "${NO_HARDEN:-0}" = "1" ] && { log "Skipping hardening (NO_HARDEN=1)"; return 0; }
   log "Applying restart policy + memory limits..."
-  _update() { # container mem
+  _update() { # ref mem
     container_exists "$1" || return 0
+    local name; name="$(cname "$1")"; name="${name:-$1}"
     if docker update --restart unless-stopped --memory "$2" --memory-swap "$2" "$1" >/dev/null 2>&1; then
-      log "  $1: restart=unless-stopped mem=$2"
+      log "  $name: restart=unless-stopped mem=$2"
     else
-      warn "  $1: mem-limit update failed (kernel may lack swap accounting) — setting restart policy only"
+      warn "  $name: mem-limit update failed (kernel may lack swap accounting) — setting restart policy only"
       docker update --restart unless-stopped "$1" >/dev/null 2>&1 || true
     fi
   }
-  _update "$BESU_SERVICE"       "$BESU_MEM"
+  local besu; besu="$(besu_cid)"
+  [ -n "$besu" ] && _update "$besu" "$BESU_MEM"
   _update "$POSTGRES_CONTAINER" "$POSTGRES_MEM"
   _update "$PALADIN_CONTAINER"  "$PALADIN_MEM"
   if [ "${NO_EXPLORER:-0}" != "1" ]; then
-    for s in mongodb redis ingestion api web nginx; do _update "docker-compose-${s}-1" "$EXPLORER_MEM"; done
+    for cid in $(explorer_cids); do _update "$cid" "$EXPLORER_MEM"; done
   fi
 }
 
