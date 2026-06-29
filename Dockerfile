@@ -28,7 +28,9 @@ ARG WASMER_VERSION
 # Set environment variables
 ENV LANG=C.UTF-8
 
-# Install build dependencies
+# Install build dependencies. python3 is required by node-gyp when the
+# zeto/solidity npm install compiles native addons such as bufferutil
+# (a transitive dep of the hardhat toolbox).
 RUN apt-get update && apt-get install -y \
     curl \
     unzip \
@@ -40,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libgomp1 \
     xz-utils \
+    python3 \
     && apt-get clean
 
 # Install JDK
@@ -92,21 +95,31 @@ ENV PATH=$PATH:/usr/local/wasmer/bin
 WORKDIR /app
 
 # Initialize gradle and build tasks
-COPY build.gradle settings.gradle ./
-COPY buildSrc buildSrc
+# Context is monorepo root — all paladin paths prefixed with paladin/
+COPY paladin/build.gradle paladin/settings.gradle ./
+COPY paladin/buildSrc buildSrc
 RUN gradle --no-daemon --parallel :buildSrc:jar
 
-# Copy in a set of thing before the first gradle command that are less likely to change
-COPY solidity solidity
-COPY config config
-COPY common/go common/go
-COPY sdk/go sdk/go
-COPY toolkit/proto toolkit/proto
-COPY toolkit toolkit
-COPY go.work.sum ./
+# Copy in a set of things before the first gradle command that are less likely to change
+COPY paladin/solidity solidity
+COPY paladin/config config
+COPY paladin/common/go common/go
+COPY paladin/sdk/go sdk/go
+COPY paladin/toolkit/proto toolkit/proto
+COPY paladin/toolkit toolkit
+COPY paladin/go.work.sum ./
+
+# Copy zeto contracts (referenced by solidity/package.json as file:../../zeto/solidity)
+COPY zeto/solidity /zeto/solidity
+# Copy zeto go-sdk (referenced by domains/zeto/go.mod replace directive)
+COPY zeto/go-sdk /zeto/go-sdk
+# Copy zeto zkp/js — zeto/solidity/package.json references it via file:../zkp/js
+# and the hardhat compile step (run in the full-builder stage below) cannot
+# resolve the dependency without it.
+COPY zeto/zkp/js /zeto/zkp/js
 
 # We have to use a special minimal go.work for this
-COPY go.work.base go.work
+COPY paladin/go.work.base go.work
 
 # Set Go CGO environment variables
 ENV CGO_ENABLED=1
@@ -116,29 +129,73 @@ ENV CC=gcc
 # - Installing gradle with the wrapper
 # - Compiling the groovy buildSrc
 # - Installing a bunch of base Go pre-reqs
-RUN gradle --no-daemon --parallel :toolkit:go:assemble :solidity:compile
+#
+# Retry on transient network failures: this step downloads Go modules, NPM
+# packages, and protoc binaries. ECONNRESET from the registry is common on
+# flaky connections; a single retry recovers without losing cache.
+RUN for i in 1 2 3; do \
+      gradle --no-daemon --parallel :toolkit:go:assemble :solidity:compile && break; \
+      echo "gradle attempt $i failed, retrying in 10s..." && sleep 10; \
+    done
 
 # Stage 2... Full build - currently core/zeto/noto/core are all cop-req'd together
 # (If we untangle this we can get more parallelism and less re-build in our docker build)
 FROM base-builder AS full-builder
-COPY go.work go.work
-COPY core/go core/go
-COPY core/java core/java
-COPY toolkit/java toolkit/java
-COPY domains/pente domains/pente
-COPY domains/zeto domains/zeto
-COPY domains/noto domains/noto
-COPY domains/integration-test domains/integration-test
-COPY registries/static registries/static
-COPY registries/evm registries/evm
-COPY signingmodules/example signingmodules/example
-COPY transports/grpc transports/grpc
-COPY ui/client ui/client
-# No build of these three, but we need to go.mod to make the go.work valid
-COPY testinfra/go.mod testinfra/go.mod
-COPY operator/go.mod operator/go.mod
-COPY perf/go.mod perf/go.mod
+COPY paladin/go.work go.work
+COPY paladin/core/go core/go
+COPY paladin/core/java core/java
+COPY paladin/toolkit/java toolkit/java
+COPY paladin/domains/pente domains/pente
+COPY paladin/domains/zeto domains/zeto
+COPY paladin/domains/noto domains/noto
+COPY paladin/domains/integration-test domains/integration-test
+COPY paladin/registries/static registries/static
+COPY paladin/registries/evm registries/evm
+COPY paladin/signingmodules/example signingmodules/example
+COPY paladin/transports/grpc transports/grpc
+COPY paladin/ui/client ui/client
+# No build of these three, but we need go.mod to make the go.work valid
+COPY paladin/testinfra/go.mod testinfra/go.mod
+COPY paladin/operator/go.mod operator/go.mod
+COPY paladin/perf/go.mod perf/go.mod
+
+# Compile the Nethermind zeto Solidity sources locally so the domains/zeto
+# gradle build can consume the resulting ABIs (notably IZetoEnforced.json,
+# which is an AENKNR-E fork addition that upstream hyperledger-labs/zeto
+# never published). Produces /zeto/solidity/artifacts/contracts/** which
+# `extractZetoArtifacts` then copies into ${zkpOut}/artifacts/contracts.
+#
+# We use `npm ci` (not `npm install`) so OpenZeppelin and other deps are
+# locked to the exact versions in zeto/solidity/package-lock.json. Loose
+# semver on ^5.0.2 resolved to 5.6.1 in fresh installs, which removed the
+# __UUPSUpgradeable_init() helper that factory_upgradeable.sol still calls.
+#
+# Retry on transient network failures: this step downloads ~1000 npm
+# packages including native Solidity analyzer binaries; ECONNRESET from
+# the registry is common on flaky connections.
+RUN cd /zeto/solidity && \
+    for i in 1 2 3; do \
+      npm ci --no-audit --no-fund && break; \
+      echo "npm ci attempt $i failed, retrying in 10s..." && sleep 10; \
+    done && \
+    npx hardhat compile
+
 RUN gradle --no-daemon --parallel assemble
+
+# Copy AENKNR-E circuit artifacts from zeto repo into the build output
+# Each circuit needs: .zkey (proving key), -vkey.json (verification key), _js/ (WASM witness calculator)
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/anon_enc_nullifier_kyc_non_repudiation_enforced_js/ /app/build/domains/zeto/zkp/anon_enc_nullifier_kyc_non_repudiation_enforced_js/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/deposit_kyc_non_repudiation_enforced_js/ /app/build/domains/zeto/zkp/deposit_kyc_non_repudiation_enforced_js/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/withdraw_nullifier_kyc_enforced_js/ /app/build/domains/zeto/zkp/withdraw_nullifier_kyc_enforced_js/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced.zkey /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced-vkey.json /app/build/domains/zeto/zkp/
+COPY zeto/zkp/artifacts/forced_transfer_nullifier_kyc_enforced_js/ /app/build/domains/zeto/zkp/forced_transfer_nullifier_kyc_enforced_js/
 
 # Stage 3: Pull together runtime
 FROM ubuntu:24.04 AS runtime

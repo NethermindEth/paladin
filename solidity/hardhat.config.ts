@@ -8,9 +8,10 @@ const config: HardhatUserConfig = {
     version: "0.8.30",
     settings: {
       evmVersion: "shanghai",
+      viaIR: true,
       optimizer: {
-        enabled: false,
-        runs: 1000,
+        enabled: true,
+        runs: 200,
       },
     },
   },

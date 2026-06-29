@@ -72,6 +72,16 @@ type DomainInstanceConfig struct {
 	Circuits  *zetosignerapi.Circuits `json:"circuits"`
 }
 
+var circuitABIComponents = []*abi.Parameter{
+	{Type: "string", Name: "name"},
+	{Type: "string", Name: "type"},
+	{Type: "bool", Name: "usesEncryption"},
+	{Type: "bool", Name: "usesNullifiers"},
+	{Type: "bool", Name: "usesKyc"},
+	{Type: "bool", Name: "usesNonRepudiation"},
+	{Type: "bool", Name: "usesEnforcement"},
+}
+
 // DomainInstanceConfigABI is the ABI for the DomainInstanceConfig,
 // used to encode and decode the on-chain data for the domain config
 var DomainInstanceConfigABI = &abi.ParameterArray{
@@ -83,10 +93,11 @@ var DomainInstanceConfigABI = &abi.ParameterArray{
 		Type: "tuple",
 		Name: "circuits",
 		Components: []*abi.Parameter{
-			{Type: "tuple", Name: "deposit", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "withdraw", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "transfer", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
-			{Type: "tuple", Name: "transferLocked", Components: []*abi.Parameter{{Type: "string", Name: "name"}, {Type: "string", Name: "type"}, {Type: "bool", Name: "usesEncryption"}, {Type: "bool", Name: "usesNullifiers"}, {Type: "bool", Name: "usesKyc"}}},
+			{Type: "tuple", Name: "deposit", Components: circuitABIComponents},
+			{Type: "tuple", Name: "withdraw", Components: circuitABIComponents},
+			{Type: "tuple", Name: "transfer", Components: circuitABIComponents},
+			{Type: "tuple", Name: "transferLocked", Components: circuitABIComponents},
+			{Type: "tuple", Name: "forcedTransfer", Components: circuitABIComponents},
 		},
 	},
 }
@@ -95,13 +106,15 @@ var DomainInstanceConfigABI = &abi.ParameterArray{
 var ZetoTransactionDataID_V0 = ethtypes.MustNewHexBytes0xPrefix("0x00010000")
 
 type ZetoTransactionData_V0 struct {
-	TransactionID pldtypes.Bytes32   `json:"transactionId"`
-	InfoStates    []pldtypes.Bytes32 `json:"infoStates"`
+	TransactionID    pldtypes.Bytes32      `json:"transactionId"`
+	InfoStates       []pldtypes.Bytes32    `json:"infoStates"`
+	SpentCommitments []pldtypes.HexUint256 `json:"spentCommitments"`
 }
 
 var ZetoTransactionDataABI_V0 = &abi.ParameterArray{
 	{Name: "transactionId", Type: "bytes32"},
 	{Name: "infoStates", Type: "bytes32[]"},
+	{Name: "spentCommitments", Type: "uint256[]"},
 }
 
 type DomainHandler = domain.DomainHandler[DomainInstanceConfig]

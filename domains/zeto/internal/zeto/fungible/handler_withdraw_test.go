@@ -311,7 +311,7 @@ func TestWithdrawPrepare(t *testing.T) {
 	txSpec.TransactionId = "0x1234567890123456789012345678901234567890123456789012345678901234"
 	res, err := h.Prepare(ctx, tx, req)
 	assert.NoError(t, err)
-	assert.Equal(t, "{\"amount\":\"100\",\"data\":\"0x00010000123456789012345678901234567890123456789012345678901234567890123400000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000\",\"inputs\":[\"0x303eb034d22aacc5dff09647928d757017a35e64e696d48609a250a6505e5d5f\",\"0\"],\"output\":\"0x303eb034d22aacc5dff09647928d757017a35e64e696d48609a250a6505e5d5f\",\"proof\":{\"pA\":[\"0x1234567890\",\"0x1234567890\"],\"pB\":[[\"0x1234567890\",\"0x1234567890\"],[\"0x1234567890\",\"0x1234567890\"]],\"pC\":[\"0x1234567890\",\"0x1234567890\"]}}", res.Transaction.ParamsJson)
+	assertPrepareParamsJSON(t, res.Transaction.ParamsJson, "0x1234567890123456789012345678901234567890123456789012345678901234")
 
 	tx.DomainConfig.TokenName = constants.TOKEN_ANON_NULLIFIER
 	(*tx.DomainConfig.Circuits)["deposit"] = &zetosignerapi.Circuit{Name: "circuit-deposit"}
@@ -324,7 +324,7 @@ func TestWithdrawPrepare(t *testing.T) {
 	req.AttestationResult[0].Payload = payload
 	res, err = h.Prepare(ctx, tx, req)
 	assert.NoError(t, err)
-	assert.Equal(t, "{\"amount\":\"100\",\"data\":\"0x00010000123456789012345678901234567890123456789012345678901234567890123400000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000\",\"nullifiers\":[\"0x1234567890\",\"0x1234567890\"],\"output\":\"0x303eb034d22aacc5dff09647928d757017a35e64e696d48609a250a6505e5d5f\",\"proof\":{\"pA\":[\"0x1234567890\",\"0x1234567890\"],\"pB\":[[\"0x1234567890\",\"0x1234567890\"],[\"0x1234567890\",\"0x1234567890\"]],\"pC\":[\"0x1234567890\",\"0x1234567890\"]},\"root\":\"0x1234567890\"}", res.Transaction.ParamsJson)
+	assertPrepareParamsJSON(t, res.Transaction.ParamsJson, "0x1234567890123456789012345678901234567890123456789012345678901234")
 }
 func TestNewWithdrawHandler(t *testing.T) {
 	name := "testHandler"
@@ -333,7 +333,7 @@ func TestNewWithdrawHandler(t *testing.T) {
 	merkleTreeRootSchema := &prototk.StateSchema{Id: "merkle_tree_root"}
 	merkleTreeNodeSchema := &prototk.StateSchema{Id: "merkle_tree_node"}
 
-	handler := NewWithdrawHandler(name, callbacks, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema)
+	handler := NewWithdrawHandler(name, callbacks, nil, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema)
 
 	assert.Equal(t, name, handler.name)
 	assert.Equal(t, callbacks, handler.callbacks)

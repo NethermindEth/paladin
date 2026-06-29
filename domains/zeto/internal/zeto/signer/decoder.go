@@ -36,7 +36,16 @@ func decodeProvingRequest(ctx context.Context, payload []byte) (*pb.ProvingReque
 		return nil, nil, i18n.NewError(ctx, msgs.MsgErrorProvingReqCommonNil)
 	}
 
-	if inputs.Circuit.UsesEncryption {
+	if inputs.Circuit.UsesEnforcement {
+		var enforcedExtras pb.ProvingRequestExtras_NonRepudiationEnforced
+		if len(inputs.Extras) > 0 {
+			err := proto.Unmarshal(inputs.Extras, &enforcedExtras)
+			if err != nil {
+				return nil, nil, i18n.NewError(ctx, msgs.MsgErrorUnmarshalProvingReqExtras, inputs.Circuit.Name, err)
+			}
+		}
+		return &inputs, &enforcedExtras, nil
+	} else if inputs.Circuit.UsesEncryption {
 		encExtras := pb.ProvingRequestExtras_Encryption{
 			EncryptionNonce: "",
 		}

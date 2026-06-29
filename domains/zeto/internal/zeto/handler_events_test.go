@@ -114,7 +114,7 @@ func TestHandleMintEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleMintEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOMint event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -190,7 +190,7 @@ func TestHandleTransferEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleTransferEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransfer event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransfer event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -263,7 +263,7 @@ func TestHandleTransferWithEncryptionEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleTransferWithEncryptionEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransferWithEncryptedValues event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOTransferWithEncryptedValues event. PD210056: Failed to create new node index from hash. ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
 	storage = smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
 	merkleTree, err = smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
@@ -393,7 +393,7 @@ func TestHandleWithdrawEvent(t *testing.T) {
 	ev.DataJson = string(data)
 	res = &prototk.HandleEventBatchResponse{}
 	err = z.handleWithdrawEvent(ctx, smtSpec, ev, "Zeto_AnonNullifier", res)
-	assert.ErrorContains(t, err, "PD210061: Failed to update merkle tree for the UTXOWithdraw event. PD210056: Failed to create new node index from hash. 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	assert.NoError(t, err) // UTXO tree update errors are non-fatal (logged as warning)
 }
 
 func TestParseStatesFromEvent(t *testing.T) {
@@ -451,14 +451,14 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 
 	t.Run("valid data for the identity registered event", func(t *testing.T) {
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
 	t.Run("bad data for the identity registered event - should be logged and move on", func(t *testing.T) {
 		ev.DataJson = "bad json"
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
@@ -468,7 +468,7 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
 	})
 
@@ -479,7 +479,7 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, smtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.ErrorContains(t, err, "PD210020: Failed to handle events IdentityRegistered. inputs values not inside Finite Field")
 	})
 
@@ -490,7 +490,137 @@ func TestHandleIdentityRegisteredEvent(t *testing.T) {
 		})
 		ev.DataJson = string(data)
 		res := &prototk.HandleEventBatchResponse{}
-		err = z.handleIdentityRegisteredEvent(ctx, errSmtSpec, ev, "Zeto_AnonNullifierKyc", res)
+		err = z.handleIdentityRegisteredEvent(ctx, errSmtSpec, nil, ev, "Zeto_AnonNullifierKyc", nil, res)
 		assert.NoError(t, err)
+	})
+}
+
+func TestEncodeDecodeWithSpentCommitments(t *testing.T) {
+	ctx := context.Background()
+	commitment1 := pldtypes.MustParseHexUint256("0x1111111111111111111111111111111111111111111111111111111111111111")
+	commitment2 := pldtypes.MustParseHexUint256("0x2222222222222222222222222222222222222222222222222222222222222222")
+
+	encodedData, err := common.EncodeTransactionDataWithSpentCommitments(ctx, &prototk.TransactionSpecification{
+		TransactionId: "0x30e43028afbb41d6887444f4c2b4ed6d00000000000000000000000000000000",
+	}, nil, []pldtypes.HexUint256{*commitment1, *commitment2})
+	require.NoError(t, err)
+
+	decodedData, err := decodeTransactionData(ctx, encodedData)
+	require.NoError(t, err)
+	assert.Equal(t, "0x30e43028afbb41d6887444f4c2b4ed6d00000000000000000000000000000000", decodedData.TransactionID.String())
+	require.Len(t, decodedData.SpentCommitments, 2)
+	assert.Equal(t, commitment1.String(), decodedData.SpentCommitments[0].String())
+	assert.Equal(t, commitment2.String(), decodedData.SpentCommitments[1].String())
+}
+
+func TestEncodeDecodeEmptySpentCommitments(t *testing.T) {
+	ctx := context.Background()
+
+	// Standard EncodeTransactionData should produce empty SpentCommitments
+	encodedData, err := common.EncodeTransactionData(ctx, &prototk.TransactionSpecification{
+		TransactionId: "0x30e43028afbb41d6887444f4c2b4ed6d00000000000000000000000000000000",
+	}, nil)
+	require.NoError(t, err)
+
+	decodedData, err := decodeTransactionData(ctx, encodedData)
+	require.NoError(t, err)
+	assert.Equal(t, "0x30e43028afbb41d6887444f4c2b4ed6d00000000000000000000000000000000", decodedData.TransactionID.String())
+	assert.Empty(t, decodedData.SpentCommitments)
+}
+
+func TestHandleForcedTransferEnforcedEvent(t *testing.T) {
+	z, testCallbacks := newTestZeto()
+	storage := smt.NewStatesStorage(testCallbacks, "testToken1", "context1", "merkle_tree_root", "merkle_tree_node")
+	merkleTree, err := smt.NewSmt(storage, smt.SMT_HEIGHT_UTXO)
+	require.NoError(t, err)
+	ctx := context.Background()
+	smtSpec := &common.MerkleTreeSpec{Tree: merkleTree, Storage: storage}
+
+	ev := &prototk.OnChainEvent{
+		SoliditySignature: "event UTXOForcedTransferEnforced(uint256[] enforcementNullifiers, uint256[] outputs, uint256 encryptionNonce, uint256[2] ecdhPublicKey, uint256[] encryptedValuesForReceiver, uint256[] encryptedValuesForArbiter, uint256[] encryptedValuesForEnforcer, uint256 arbiterKeyId, address indexed submitter, bytes data)",
+	}
+
+	t.Run("bad json - should log and move on", func(t *testing.T) {
+		ev.DataJson = "bad json"
+		res := &prototk.HandleEventBatchResponse{}
+		err = z.handleForcedTransferEnforcedEvent(ctx, smtSpec, ev, "Zeto_AnonEncNullifierKycNonRepudiationEnforced", res)
+		assert.NoError(t, err)
+		assert.Empty(t, res.SpentStates)
+	})
+
+	t.Run("with spent commitments - marks states as spent", func(t *testing.T) {
+		commitment1 := pldtypes.MustParseHexUint256("0x1111111111111111111111111111111111111111111111111111111111111111")
+		commitment2 := pldtypes.MustParseHexUint256("0x2222222222222222222222222222222222222222222222222222222222222222")
+
+		encodedData, err := common.EncodeTransactionDataWithSpentCommitments(ctx, &prototk.TransactionSpecification{
+			TransactionId: "0xaaaa0000bbbb11112222333344445555aaaa0000bbbb111122223333444455aa",
+		}, nil, []pldtypes.HexUint256{*commitment1, *commitment2})
+		require.NoError(t, err)
+
+		output := pldtypes.MustParseHexUint256("0x119eda5a40724c3e976a8cfc74e1e853e2af34772a8cce1e5e1100afb5b6a8c5")
+		data, _ := json.Marshal(map[string]any{
+			"enforcementNullifiers":      []string{"123", "456"},
+			"outputs":                    []string{output.Int().Text(10)},
+			"encryptionNonce":            "0",
+			"ecdhPublicKey":              []string{"0", "0"},
+			"encryptedValuesForReceiver": []string{},
+			"encryptedValuesForArbiter":  []string{},
+			"encryptedValuesForEnforcer": []string{},
+			"arbiterKeyId":               "0",
+			"submitter":                  "0x74e71b05854ee819cb9397be01c82570a178d019",
+			"data":                       encodedData,
+		})
+		ev.DataJson = string(data)
+		res := &prototk.HandleEventBatchResponse{}
+		err = z.handleForcedTransferEnforcedEvent(ctx, smtSpec, ev, "Zeto_AnonEncNullifierKycNonRepudiationEnforced", res)
+		assert.NoError(t, err)
+
+		// Verify transaction completed
+		require.Len(t, res.TransactionsComplete, 1)
+		assert.Equal(t, "0xaaaa0000bbbb11112222333344445555aaaa0000bbbb111122223333444455aa", res.TransactionsComplete[0].TransactionId)
+
+		// Verify spent states from SpentCommitments
+		require.Len(t, res.SpentStates, 2)
+		assert.Equal(t, common.HexUint256To32ByteHexString(commitment1), res.SpentStates[0].Id)
+		assert.Equal(t, common.HexUint256To32ByteHexString(commitment2), res.SpentStates[1].Id)
+
+		// Verify confirmed states from outputs
+		require.Len(t, res.ConfirmedStates, 1)
+	})
+
+	t.Run("without spent commitments - no spent states", func(t *testing.T) {
+		// Fresh SMT to avoid "key already exists" from previous subtest
+		storage2 := smt.NewStatesStorage(testCallbacks, "testToken2", "context2", "merkle_tree_root", "merkle_tree_node")
+		merkleTree2, err := smt.NewSmt(storage2, smt.SMT_HEIGHT_UTXO)
+		require.NoError(t, err)
+		smtSpec = &common.MerkleTreeSpec{Tree: merkleTree2, Storage: storage2}
+
+		encodedData, err := common.EncodeTransactionData(ctx, &prototk.TransactionSpecification{
+			TransactionId: "0xbbbb0000cccc11112222333344445555bbbb0000cccc111122223333444455bb",
+		}, nil)
+		require.NoError(t, err)
+
+		output := pldtypes.MustParseHexUint256("0x119eda5a40724c3e976a8cfc74e1e853e2af34772a8cce1e5e1100afb5b6a8c5")
+		data, _ := json.Marshal(map[string]any{
+			"enforcementNullifiers":      []string{"789"},
+			"outputs":                    []string{output.Int().Text(10)},
+			"encryptionNonce":            "0",
+			"ecdhPublicKey":              []string{"0", "0"},
+			"encryptedValuesForReceiver": []string{},
+			"encryptedValuesForArbiter":  []string{},
+			"encryptedValuesForEnforcer": []string{},
+			"arbiterKeyId":               "0",
+			"submitter":                  "0x74e71b05854ee819cb9397be01c82570a178d019",
+			"data":                       encodedData,
+		})
+		ev.DataJson = string(data)
+		res := &prototk.HandleEventBatchResponse{}
+		err = z.handleForcedTransferEnforcedEvent(ctx, smtSpec, ev, "Zeto_AnonEncNullifierKycNonRepudiationEnforced", res)
+		assert.NoError(t, err)
+
+		// No spent states when SpentCommitments is empty
+		assert.Empty(t, res.SpentStates)
+		// But outputs are still confirmed
+		require.Len(t, res.ConfirmedStates, 1)
 	})
 }

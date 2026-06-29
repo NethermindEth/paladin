@@ -18,6 +18,7 @@ package integrationtest
 import (
 	"context"
 	_ "embed"
+	"os"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/core/pkg/testbed"
@@ -58,7 +59,11 @@ func (s *zetoDomainTestSuite) SetupSuite() {
 	ctx := context.Background()
 	domainName := "zeto_" + pldtypes.RandHex(8)
 	log.L(ctx).Infof("Domain name = %s", domainName)
-	config := helpers.PrepareZetoConfig(s.T(), s.deployedContracts, "../zeto/zkp")
+	zkpDir := os.Getenv("ZETO_ZKP_DIR")
+	if zkpDir == "" {
+		zkpDir = "../zeto/zkp"
+	}
+	config := helpers.PrepareZetoConfig(s.T(), s.deployedContracts, zkpDir)
 	waitForZeto, zetoTestbed := newZetoDomain(s.T(), config, domainContracts.FactoryAddress)
 	done, _, tb, rpc, _ := newTestbed(s.T(), s.hdWalletSeed, map[string]*testbed.TestbedDomain{
 		domainName: zetoTestbed,

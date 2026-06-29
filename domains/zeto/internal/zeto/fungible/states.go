@@ -22,6 +22,7 @@ import (
 	"math/rand/v2"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
+	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/zeto/common"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/types"
@@ -239,12 +240,15 @@ func getAccountBalance(
 		return 0, nil, false, i18n.NewError(ctx, msgs.MsgErrorQueryAvailCoins, err)
 	}
 
-	for _, state := range states {
+	log.L(ctx).Infof("[ZETO-DBG] getAccountBalance account=%s useNullifiers=%v numAvailableStates=%d",
+		accountKey, useNullifiers, len(states))
+	for i, state := range states {
 		coin, err := makeCoin(state.DataJson)
 		if err != nil {
 			return 0, nil, false, i18n.NewError(ctx, msgs.MsgInvalidCoin, state.Id, err)
 		}
 		total.Add(total, coin.Amount.Int())
+		log.L(ctx).Infof("[ZETO-DBG]   state[%d] id=%s amount=%s", i, state.Id, coin.Amount.Int().Text(10))
 	}
 
 	if len(states) == 1000 {

@@ -31,8 +31,11 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
-	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/core"
+	"github.com/hyperledger-labs/zeto/go-sdk/pkg/crypto"
+	smtcore "github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/core"
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/node"
+	smtsmt "github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/smt"
+	apicore "github.com/hyperledger-labs/zeto/go-sdk/pkg/utxo/core"
 	"github.com/iden3/go-iden3-crypto/poseidon"
 	"google.golang.org/protobuf/proto"
 )
@@ -162,7 +165,7 @@ func generateMerkleProofs(ctx context.Context, smtSpec *common.MerkleTreeSpec, i
 	return smtProof, nil
 }
 
-func makeLeafIndexesFromCoins(ctx context.Context, inputCoins []*types.ZetoCoin, mt core.SparseMerkleTree) ([]*big.Int, error) {
+func makeLeafIndexesFromCoins(ctx context.Context, inputCoins []*types.ZetoCoin, mt smtcore.SparseMerkleTree) ([]*big.Int, error) {
 	var indexes []*big.Int
 	for _, coin := range inputCoins {
 		pubKey, err := zetosigner.DecodeBabyJubJubPublicKey(coin.Owner.String())
@@ -172,8 +175,8 @@ func makeLeafIndexesFromCoins(ctx context.Context, inputCoins []*types.ZetoCoin,
 		// Create a new fungible node for the coin, to check existence
 		// in the Merkle tree. The index is calculated from the coin's
 		// amount, owner and salt.
-		idx := node.NewFungible(coin.Amount.Int(), pubKey, coin.Salt.Int())
-		leaf, err := node.NewLeafNode(idx)
+		idx := node.NewFungible(coin.Amount.Int(), pubKey, coin.Salt.Int(), crypto.NewPoseidonHasher())
+		leaf, err := node.NewLeafNode(idx, nil)
 		if err != nil {
 			return nil, i18n.NewError(ctx, msgs.MsgErrorNewLeafNode, err)
 		}
@@ -191,7 +194,7 @@ func makeLeafIndexesFromCoins(ctx context.Context, inputCoins []*types.ZetoCoin,
 			return nil, i18n.NewError(ctx, msgs.MsgErrorHashInputState, err)
 		}
 		if n.Index().BigInt().Cmp(hash.Int()) != 0 {
-			expectedIndex, err := node.NewNodeIndexFromBigInt(hash.Int())
+			expectedIndex, err := node.NewNodeIndexFromBigInt(hash.Int(), crypto.NewPoseidonHasher())
 			if err != nil {
 				return nil, i18n.NewError(ctx, msgs.MsgErrorNewNodeIndex, err)
 			}
@@ -235,7 +238,7 @@ func makeLeafIndexesFromCoinOwners(ctx context.Context, inputOwner string, outpu
 // formatTransferProvingRequest formats the proving request for a transfer transaction.
 // the same function is used for both the transfer and lock transactions because they
 // both require the same proof from the transfer circuit
-func formatTransferProvingRequest(ctx context.Context, callbacks plugintk.DomainCallbacks, merkleTreeRootSchema *prototk.StateSchema, merkleTreeNodeSchema *prototk.StateSchema, inputCoins, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress, delegate ...string) ([]byte, error) {
+func formatTransferProvingRequest(ctx context.Context, callbacks plugintk.DomainCallbacks, keyProvider common.AuthorityKeyProvider, merkleTreeRootSchema *prototk.StateSchema, merkleTreeNodeSchema *prototk.StateSchema, inputCoins, outputCoins []*types.ZetoCoin, circuit *zetosignerapi.Circuit, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress, delegate ...string) ([]byte, error) {
 	inputSize := common.GetInputSize(len(inputCoins))
 	inputCommitments := make([]string, inputSize)
 	inputValueInts := make([]uint64, inputSize)
@@ -281,7 +284,26 @@ func formatTransferProvingRequest(ctx context.Context, callbacks plugintk.Domain
 		}
 
 		var extrasObj proto.Message
-		if !circuit.UsesKyc {
+		if circuit.UsesEnforcement {
+			smtProofKyc, err := smtProofForOwners(ctx, callbacks, merkleTreeRootSchema, merkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, inputOwner, outputCoins, inputSize+1)
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+			}
+			smtProofCompliance, err := smtProofForCompliance(ctx, callbacks, merkleTreeRootSchema, merkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, inputOwner, outputCoins, inputSize+1)
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+			}
+			enforcedExtras := &corepb.ProvingRequestExtras_NonRepudiationEnforced{
+				SmtUtxoProof:       smtProof,
+				SmtKycProof:        smtProofKyc,
+				SmtComplianceProof: smtProofCompliance,
+			}
+			if keys := keyProvider.GetAuthorityKeys(contractAddress.String()); keys != nil {
+				enforcedExtras.ArbiterPublicKey = keys.ArbiterPublicKey[:]
+				enforcedExtras.EnforcerPublicKey = keys.EnforcerPublicKey[:]
+			}
+			extrasObj = enforcedExtras
+		} else if !circuit.UsesKyc {
 			extrasObj = &corepb.ProvingRequestExtras_Nullifiers{
 				SmtProof: smtProof,
 			}
@@ -289,12 +311,10 @@ func formatTransferProvingRequest(ctx context.Context, callbacks plugintk.Domain
 				extrasObj.(*corepb.ProvingRequestExtras_Nullifiers).Delegate = delegate[0]
 			}
 		} else {
-			// for KYC, we need the additional proof for the KYC states
 			smtProofKyc, err := smtProofForOwners(ctx, callbacks, merkleTreeRootSchema, merkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, inputOwner, outputCoins, inputSize+1)
 			if err != nil {
 				return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 			}
-
 			extrasObj = &corepb.ProvingRequestExtras_NullifiersKyc{
 				SmtUtxoProof: smtProof,
 				SmtKycProof:  smtProofKyc,
@@ -377,6 +397,163 @@ func smtProofForOwners(ctx context.Context, callbacks plugintk.DomainCallbacks, 
 		return nil, err
 	}
 	return smtProof, nil
+}
+
+func smtProofForCompliance(ctx context.Context, callbacks plugintk.DomainCallbacks, merkleTreeRootSchema *prototk.StateSchema, merkleTreeNodeSchema *prototk.StateSchema, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress, inputOwner string, outputCoins []*types.ZetoCoin, targetSize int) (*corepb.MerkleProofObject, error) {
+	smtName := smt.MerkleTreeNameForComplianceStates(tokenName, contractAddress)
+	mt, err := common.NewMerkleTreeSpec(ctx, smtName, common.ComplianceStatesTree, callbacks, merkleTreeRootSchema.Id, merkleTreeNodeSchema.Id, stateQueryContext)
+	if err != nil {
+		return nil, err
+	}
+	indexes, err := makeLeafIndexesFromCoinOwners(ctx, inputOwner, outputCoins)
+	if err != nil {
+		return nil, err
+	}
+	return generateMerkleProofs(ctx, mt, indexes, targetSize)
+}
+
+// smtProofForForcedTransferCompliance builds a fresh compliance tree with the
+// seized owner and any additionally-frozen identities at FROZEN (status=2),
+// everyone else at ACTIVE (status=1). The reconstructed root must match the
+// on-chain compliance root or the forced-transfer circuit rejects the proof
+// with "Invalid proof" during verification.
+//
+// frozenKeyHashes is a set of Poseidon2(pubKeyX, pubKeyY) decimal strings for
+// identities other than the seized owner that are currently frozen. The
+// submitter (enforcer) is responsible for supplying this set because the
+// on-chain contract only stores the root, not individual leaf statuses.
+func smtProofForForcedTransferCompliance(ctx context.Context, identities []common.ComplianceIdentity, seizedOwner string, frozenKeyHashes map[string]struct{}, inputOwner string, outputCoins []*types.ZetoCoin, targetSize int) (*corepb.MerkleProofObject, error) {
+	seizedPubKey, err := zetosigner.DecodeBabyJubJubPublicKey(seizedOwner)
+	if err != nil {
+		return nil, i18n.NewError(ctx, msgs.MsgErrorLoadOwnerPubKey, err)
+	}
+	seizedKeyHash, err := poseidon.Hash([]*big.Int{seizedPubKey.X, seizedPubKey.Y})
+	if err != nil {
+		return nil, err
+	}
+
+	// Build a fresh in-memory compliance tree
+	storage := &memComplianceStorage{
+		hasher: crypto.NewPoseidonHasher(),
+		nodes:  make(map[string]smtcore.Node),
+	}
+	tree, err := smtsmt.NewMerkleTree(storage, smt.SMT_HEIGHT_COMPLIANCE)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, id := range identities {
+		keyHash, err := poseidon.Hash([]*big.Int{id.PubKeyX, id.PubKeyY})
+		if err != nil {
+			return nil, err
+		}
+		status := big.NewInt(1)
+		if keyHash.Cmp(seizedKeyHash) == 0 {
+			status = big.NewInt(2)
+		} else if frozenKeyHashes != nil {
+			if _, frozen := frozenKeyHashes[keyHash.Text(10)]; frozen {
+				status = big.NewInt(2)
+			}
+		}
+		value, err := poseidon.Hash([]*big.Int{id.PubKeyX, id.PubKeyY, status})
+		if err != nil {
+			return nil, err
+		}
+		idx, err := node.NewNodeIndexFromBigInt(keyHash, crypto.NewPoseidonHasher())
+		if err != nil {
+			return nil, err
+		}
+		leaf, err := node.NewLeafNode(node.NewIndexOnly(idx), value)
+		if err != nil {
+			return nil, err
+		}
+		if err := tree.AddLeaf(leaf); err != nil {
+			return nil, err
+		}
+	}
+
+	// Build the MerkleTreeSpec wrapper for proof generation
+	mt := &common.MerkleTreeSpec{
+		Tree:   tree,
+		Levels: smt.SMT_HEIGHT_COMPLIANCE,
+	}
+	mt.EmptyProof = common.MakeEmptyProof(smt.SMT_HEIGHT_COMPLIANCE)
+
+	indexes, err := makeLeafIndexesFromCoinOwners(ctx, inputOwner, outputCoins)
+	if err != nil {
+		return nil, err
+	}
+	return generateMerkleProofs(ctx, mt, indexes, targetSize)
+}
+
+// memComplianceStorage is a minimal in-memory Storage for building temporary compliance trees.
+type memComplianceStorage struct {
+	hasher apicore.Hasher
+	root   smtcore.NodeRef
+	nodes  map[string]smtcore.Node
+}
+
+func (s *memComplianceStorage) GetRootNodeRef() (smtcore.NodeRef, error) {
+	if s.root != nil {
+		return s.root, nil
+	}
+	return nil, smtcore.ErrNotFound
+}
+func (s *memComplianceStorage) UpsertRootNodeRef(ref smtcore.NodeRef) error {
+	s.root = ref
+	return nil
+}
+func (s *memComplianceStorage) GetNode(ref smtcore.NodeRef) (smtcore.Node, error) {
+	if n, ok := s.nodes[ref.Hex()]; ok {
+		return n, nil
+	}
+	return nil, smtcore.ErrNotFound
+}
+func (s *memComplianceStorage) InsertNode(n smtcore.Node) error {
+	s.nodes[n.Ref().Hex()] = n
+	return nil
+}
+func (s *memComplianceStorage) BeginTx() (smtcore.Transaction, error) { return s, nil }
+func (s *memComplianceStorage) Close()                                {}
+func (s *memComplianceStorage) GetHasher() apicore.Hasher             { return s.hasher }
+func (s *memComplianceStorage) Commit() error                         { return nil }
+func (s *memComplianceStorage) Rollback() error                       { return nil }
+
+// Tree type selectors for smtProofForOutputOwnersOnly.
+const (
+	smtKycTreeType        = 0
+	smtComplianceTreeType = 1
+)
+
+// smtProofForOutputOwnersOnly generates SMT proofs for output owners only (no input owner).
+func smtProofForOutputOwnersOnly(ctx context.Context, callbacks plugintk.DomainCallbacks, merkleTreeRootSchema *prototk.StateSchema, merkleTreeNodeSchema *prototk.StateSchema, tokenName, stateQueryContext string, contractAddress *pldtypes.EthAddress, outputCoins []*types.ZetoCoin, targetSize int, treeType int) (*corepb.MerkleProofObject, error) {
+	var smtName string
+	var mtType common.MerkleTreeType
+	switch treeType {
+	case smtKycTreeType:
+		smtName = smt.MerkleTreeNameForKycStates(tokenName, contractAddress)
+		mtType = common.KycStatesTree
+	case smtComplianceTreeType:
+		smtName = smt.MerkleTreeNameForComplianceStates(tokenName, contractAddress)
+		mtType = common.ComplianceStatesTree
+	}
+	mt, err := common.NewMerkleTreeSpec(ctx, smtName, mtType, callbacks, merkleTreeRootSchema.Id, merkleTreeNodeSchema.Id, stateQueryContext)
+	if err != nil {
+		return nil, err
+	}
+	indexes := make([]*big.Int, len(outputCoins))
+	for i, coin := range outputCoins {
+		pubKey, err := zetosigner.DecodeBabyJubJubPublicKey(coin.Owner.String())
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorLoadOwnerPubKey, err)
+		}
+		hash, err := poseidon.Hash([]*big.Int{pubKey.X, pubKey.Y})
+		if err != nil {
+			return nil, i18n.NewError(ctx, msgs.MsgErrorHashOutputState, err)
+		}
+		indexes[i] = hash
+	}
+	return generateMerkleProofs(ctx, mt, indexes, targetSize)
 }
 
 func trimZeroUtxos(utxos []string) []string {

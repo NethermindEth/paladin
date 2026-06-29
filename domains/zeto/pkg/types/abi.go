@@ -40,6 +40,7 @@ const (
 	METHOD_DEPOSIT         = "deposit"
 	METHOD_WITHDRAW        = "withdraw"
 	METHOD_BALANCE_OF      = "balanceOf"
+	METHOD_FORCED_TRANSFER = "forcedTransfer"
 )
 
 type InitializerParams struct {
@@ -57,6 +58,7 @@ type DeployParams struct {
 	Symbol        string            `json:"symbol"`
 	InitialOwner  string            `json:"initialOwner"`
 	IsNonFungible bool              `json:"isNonFungible"`
+	IsEnforced    bool              `json:"isEnforced"`
 }
 
 type NonFungibleMintParams struct {
@@ -104,6 +106,18 @@ type DepositParams struct {
 
 type WithdrawParams struct {
 	Amount *pldtypes.HexUint256 `json:"amount"`
+}
+
+type ForcedTransferParams struct {
+	SeizedOwner string                        `json:"seizedOwner"`               // identity of the frozen owner whose notes are seized
+	Transfers   []*FungibleTransferParamEntry `json:"transfers"`                 // output recipients
+	// FrozenAccounts lists all currently-frozen identities other than SeizedOwner.
+	// Required by the enforced (AENKNR-E) compliance circuit so the prover's
+	// reconstructed tree matches the on-chain compliance root. The submitter
+	// (the enforcer) is the only party that knows the full set of frozen
+	// identities — the on-chain contract stores only the root. Empty or
+	// omitted on non-enforced variants.
+	FrozenAccounts []string `json:"frozenAccounts,omitempty"`
 }
 
 type FungibleBalanceOfParam struct {

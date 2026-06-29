@@ -24,6 +24,8 @@ message Circuit {
   bool usesNullifiers = 3;
   bool usesEncryption = 4;
   bool usesKyc = 5;
+  bool usesNonRepudiation = 6;
+  bool usesEnforcement = 7;
 }
 
 message ProvingRequest {
@@ -71,6 +73,15 @@ message ProvingRequestExtras_NullifiersKyc {
   MerkleProofObject smtUtxoProof = 1;
   MerkleProofObject smtKycProof = 2;
   string delegate = 3;
+}
+
+message ProvingRequestExtras_NonRepudiationEnforced {
+  MerkleProofObject smtUtxoProof = 1;
+  MerkleProofObject smtKycProof = 2;
+  MerkleProofObject smtComplianceProof = 3;
+  repeated string arbiterPublicKey = 4;
+  repeated string enforcerPublicKey = 5;
+  string encryptionNonce = 6;
 }
 
 message MerkleProofObject {

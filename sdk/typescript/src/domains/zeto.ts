@@ -57,6 +57,18 @@ export interface ZetoTransfer {
   data: string;
 }
 
+export interface ZetoForcedTransferParams {
+  seizedOwner: string;
+  transfers: ZetoTransfer[];
+  /**
+   * Currently-frozen identities other than seizedOwner. Required on the
+   * enforced (AENKNR-E) token so the prover's compliance tree matches the
+   * on-chain root — the contract stores only the root, not individual leaf
+   * statuses, so the submitter must supply the complete frozen set.
+   */
+  frozenAccounts?: string[];
+}
+
 export interface ZetoDepositParams {
   amount: string | number;
 }
@@ -149,6 +161,24 @@ export class ZetoInstance {
         from: from.lookup,
         data: {
           transfers: data.transfers.map((t) => ({ ...t, to: t.to.lookup })),
+        },
+      })
+    );
+  }
+
+  forcedTransfer(from: PaladinVerifier, data: ZetoForcedTransferParams) {
+    return new TransactionFuture(
+      this.paladin,
+      this.paladin.sendTransaction({
+        type: TransactionType.PRIVATE,
+        abi: zetoAbi,
+        function: "forcedTransfer",
+        to: this.address,
+        from: from.lookup,
+        data: {
+          seizedOwner: data.seizedOwner,
+          transfers: data.transfers.map((t) => ({ ...t, to: t.to.lookup })),
+          frozenAccounts: data.frozenAccounts ?? [],
         },
       })
     );

@@ -17,6 +17,7 @@ package fungible
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"strings"
@@ -43,7 +44,8 @@ var _ types.DomainHandler = &withdrawHandler{}
 
 type withdrawHandler struct {
 	baseHandler
-	callbacks plugintk.DomainCallbacks
+	callbacks   plugintk.DomainCallbacks
+	keyProvider common.AuthorityKeyProvider
 }
 
 var withdrawABI = &abi.Entry{
@@ -71,7 +73,30 @@ var withdrawABI_nullifiers = &abi.Entry{
 	},
 }
 
-func NewWithdrawHandler(name string, callbacks plugintk.DomainCallbacks, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema *pb.StateSchema) *withdrawHandler {
+var withdrawABI_enforced = &abi.Entry{
+	Type: abi.Function,
+	Name: types.METHOD_WITHDRAW,
+	Inputs: abi.ParameterArray{
+		{Name: "amount", Type: "uint256"},
+		{Name: "inputs", Type: "uint256[]"},
+		{Name: "output", Type: "uint256"},
+		{Name: "proof", Type: "bytes"},
+		{Name: "data", Type: "bytes"},
+	},
+}
+
+// Must match AENKNRECodec._decodeWithdraw
+var enforcedWithdrawProofABI = &abi.ParameterArray{
+	{Name: "root", Type: "uint256"},
+	{Name: "enforcementNullifiers", Type: "uint256[]"},
+	{Name: "encryptionNonce", Type: "uint256"},
+	{Name: "ecdhPublicKey", Type: "uint256[2]"},
+	{Name: "encryptedValuesForArbiter", Type: "uint256[]"},
+	{Name: "encryptedValuesForEnforcer", Type: "uint256[]"},
+	{Name: "proof", Type: "tuple", InternalType: "struct Commonlib.Proof", Components: common.ProofComponents},
+}
+
+func NewWithdrawHandler(name string, callbacks plugintk.DomainCallbacks, keyProvider common.AuthorityKeyProvider, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema *pb.StateSchema) *withdrawHandler {
 	return &withdrawHandler{
 		baseHandler: baseHandler{
 			name: name,
@@ -81,7 +106,8 @@ func NewWithdrawHandler(name string, callbacks plugintk.DomainCallbacks, coinSch
 				MerkleTreeNodeSchema: merkleTreeNodeSchema,
 			},
 		},
-		callbacks: callbacks,
+		callbacks:   callbacks,
+		keyProvider: keyProvider,
 	}
 }
 
@@ -132,7 +158,7 @@ func (h *withdrawHandler) Assemble(ctx context.Context, tx *types.ParsedTransact
 	}
 
 	remainder := big.NewInt(0).Sub(inputStates.total, amount.Int())
-	outputCoin, outputState, err := h.prepareOutput(ctx, pldtypes.MustParseHexUint256(remainder.Text(10)), resolvedSender)
+	outputCoin, outputState, err := h.prepareOutput(ctx, useNullifiers, pldtypes.MustParseHexUint256(remainder.Text(10)), resolvedSender)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorPrepTxOutputs, err)
 	}
@@ -201,6 +227,24 @@ func (h *withdrawHandler) Prepare(ctx context.Context, tx *types.ParsedTransacti
 		}
 	}
 
+	// Track input commitment hashes so the event handler can use them for SpentStates
+	// (the UTXOWithdraw event only provides nullifier values, not commitment hashes,
+	// but the state_spend_records table has a FK constraint requiring actual state IDs).
+	if common.IsNullifiersToken(tx.DomainConfig.TokenName) && h.keyProvider != nil {
+		commitmentHashes := make([]pldtypes.HexUint256, 0, len(req.InputStates))
+		for _, state := range req.InputStates {
+			coin, err := makeCoin(state.StateDataJson)
+			if err == nil {
+				if h, err := coin.Hash(ctx); err == nil {
+					commitmentHashes = append(commitmentHashes, *h)
+				}
+			}
+		}
+		// Use the same txID format as the event handler's txData.TransactionID.HexString0xPrefix()
+		txID, _ := pldtypes.ParseBytes32(req.Transaction.TransactionId)
+		h.keyProvider.TrackTxInputStates(txID.HexString0xPrefix(), commitmentHashes)
+	}
+
 	outputCoin, err := makeCoin(req.OutputStates[0].StateDataJson)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorParseOutputStates, err)
@@ -217,15 +261,23 @@ func (h *withdrawHandler) Prepare(ctx context.Context, tx *types.ParsedTransacti
 	}
 	params := map[string]any{
 		"amount": amount.Int().Text(10),
-		"inputs": inputs,
 		"output": output,
-		"proof":  common.EncodeProof(proofRes.Proof),
 		"data":   data,
 	}
-	if common.IsNullifiersToken(tx.DomainConfig.TokenName) {
-		delete(params, "inputs")
+	if common.IsEnforcedToken(tx.DomainConfig.TokenName) {
+		params["inputs"] = strings.Split(proofRes.PublicInputs["nullifiers"], ",")
+		proofBytes, err := common.EncodeEnforcedProof(ctx, &proofRes, enforcedWithdrawProofABI, nil)
+		if err != nil {
+			return nil, err
+		}
+		params["proof"] = "0x" + hex.EncodeToString(proofBytes)
+	} else if common.IsNullifiersToken(tx.DomainConfig.TokenName) {
 		params["nullifiers"] = strings.Split(proofRes.PublicInputs["nullifiers"], ",")
 		params["root"] = proofRes.PublicInputs["root"]
+		params["proof"] = common.EncodeProof(proofRes.Proof)
+	} else {
+		params["inputs"] = inputs
+		params["proof"] = common.EncodeProof(proofRes.Proof)
 	}
 	withdrawFunction := getWithdrawABI(tx.DomainConfig.TokenName)
 	paramsJSON, err := json.Marshal(params)
@@ -251,7 +303,7 @@ func (h *withdrawHandler) prepareInputs(ctx context.Context, useNullifiers bool,
 	return buildInputsForExpectedTotal(ctx, h.callbacks, h.stateSchemas.CoinSchema, useNullifiers, stateQueryContext, senderKey, expectedTotal, false)
 }
 
-func (h *withdrawHandler) prepareOutput(ctx context.Context, amount *pldtypes.HexUint256, resolvedRecipient *pb.ResolvedVerifier) (*types.ZetoCoin, *pb.NewState, error) {
+func (h *withdrawHandler) prepareOutput(ctx context.Context, useNullifiers bool, amount *pldtypes.HexUint256, resolvedRecipient *pb.ResolvedVerifier) (*types.ZetoCoin, *pb.NewState, error) {
 	recipientKey, err := common.LoadBabyJubKey([]byte(resolvedRecipient.Verifier))
 	if err != nil {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgErrorLoadOwnerPubKey, err)
@@ -265,7 +317,7 @@ func (h *withdrawHandler) prepareOutput(ctx context.Context, amount *pldtypes.He
 		Amount: amount,
 	}
 
-	newState, err := makeNewState(ctx, h.stateSchemas.CoinSchema, false, newCoin, h.name, resolvedRecipient.Lookup)
+	newState, err := makeNewState(ctx, h.stateSchemas.CoinSchema, useNullifiers, newCoin, h.name, resolvedRecipient.Lookup)
 	if err != nil {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgErrorCreateNewState, err)
 	}
@@ -318,8 +370,34 @@ func (h *withdrawHandler) formatProvingRequest(ctx context.Context, inputCoins [
 		if err != nil {
 			return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
 		}
-		extrasObj := &corepb.ProvingRequestExtras_Nullifiers{
-			SmtProof: smtProof,
+
+		var extrasObj proto.Message
+		if circuit.UsesEnforcement {
+			// Withdraw circuit: identitiesMerkleProof[nOutputs+1][64] where nOutputs=1 → 2 proofs.
+			// smtProofForOwners generates inputOwner + outputCoins = 2 indexes, targetSize=2.
+			numComplianceProofs := len([]*types.ZetoCoin{outputCoin}) + 1 // nOutputs + 1
+			smtProofKyc, err := smtProofForOwners(ctx, h.callbacks, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, inputOwner, []*types.ZetoCoin{outputCoin}, numComplianceProofs)
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+			}
+			smtProofCompliance, err := smtProofForCompliance(ctx, h.callbacks, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, tokenName, stateQueryContext, contractAddress, inputOwner, []*types.ZetoCoin{outputCoin}, numComplianceProofs)
+			if err != nil {
+				return nil, i18n.NewError(ctx, msgs.MsgErrorGenerateMTP, err)
+			}
+			enforcedExtras := &corepb.ProvingRequestExtras_NonRepudiationEnforced{
+				SmtUtxoProof:       smtProof,
+				SmtKycProof:        smtProofKyc,
+				SmtComplianceProof: smtProofCompliance,
+			}
+			if keys := h.keyProvider.GetAuthorityKeys(contractAddress.String()); keys != nil {
+				enforcedExtras.ArbiterPublicKey = keys.ArbiterPublicKey[:]
+				enforcedExtras.EnforcerPublicKey = keys.EnforcerPublicKey[:]
+			}
+			extrasObj = enforcedExtras
+		} else {
+			extrasObj = &corepb.ProvingRequestExtras_Nullifiers{
+				SmtProof: smtProof,
+			}
 		}
 		protoExtras, err := proto.Marshal(extrasObj)
 		if err != nil {
@@ -356,9 +434,11 @@ func (h *withdrawHandler) formatProvingRequest(ctx context.Context, inputCoins [
 }
 
 func getWithdrawABI(tokenName string) *abi.Entry {
-	withdrawFunction := withdrawABI
-	if common.IsNullifiersToken(tokenName) {
-		withdrawFunction = withdrawABI_nullifiers
+	if common.IsEnforcedToken(tokenName) {
+		return withdrawABI_enforced
 	}
-	return withdrawFunction
+	if common.IsNullifiersToken(tokenName) {
+		return withdrawABI_nullifiers
+	}
+	return withdrawABI
 }

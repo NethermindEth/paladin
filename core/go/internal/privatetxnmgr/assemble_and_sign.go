@@ -18,6 +18,7 @@ package privatetxnmgr
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
@@ -27,6 +28,20 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/google/uuid"
 )
+
+// isDeterministicSigningError returns true if the signing error indicates a
+// deterministic failure that will never succeed on retry. This includes:
+//   - ZK circuit constraint violations ("Assert Failed" from WASM witness calculators)
+//   - Proof generation failures from invalid witness inputs
+//
+// These errors should cause the transaction to REVERT rather than retry
+// indefinitely. Transient errors (network, DB, resource exhaustion) do NOT
+// match and will continue to be retried.
+func isDeterministicSigningError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Assert Failed") ||
+		strings.Contains(msg, "failed to calculate the witness")
+}
 
 // assemble a transaction that we are not coordinating, using the provided state locks
 // all errors are assumed to be transient and the request should be retried
@@ -165,6 +180,14 @@ func (s *Sequencer) assembleAndSign(ctx context.Context, transactionID uuid.UUID
 					signaturePayload, err := keyMgr.Sign(ctx, resolvedKey, attRequest.PayloadType, attRequest.Payload)
 					if err != nil {
 						log.L(ctx).Errorf("failed to sign for party %s (verifier=%s,algorithm=%s): %s", unqualifiedLookup, resolvedKey.Verifier.Verifier, attRequest.Algorithm, err)
+						if isDeterministicSigningError(err) {
+							// Circuit constraint violation — deterministic failure, no point retrying.
+							// Return a REVERT PostAssembly so the transaction gets a failure receipt.
+							revertReason := i18n.ExpandWithCode(ctx, i18n.MessageKey(msgs.MsgPrivateTxManagerSignError), unqualifiedLookup, resolvedKey.Verifier.Verifier, attRequest.Algorithm, err.Error())
+							transaction.PostAssembly.AssemblyResult = prototk.AssembleTransactionResponse_REVERT
+							transaction.PostAssembly.RevertReason = &revertReason
+							return transaction.PostAssembly, nil
+						}
 						return nil, i18n.WrapError(ctx, err, msgs.MsgPrivateTxManagerSignError, unqualifiedLookup, resolvedKey.Verifier.Verifier, attRequest.Algorithm)
 					}
 					log.L(ctx).Debugf("payload: %x signed %x by %s (%s)", attRequest.Payload, signaturePayload, unqualifiedLookup, resolvedKey.Verifier.Verifier)

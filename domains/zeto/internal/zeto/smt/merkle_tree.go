@@ -22,11 +22,13 @@ import (
 	"github.com/hyperledger-labs/zeto/go-sdk/pkg/sparse-merkle-tree/smt"
 )
 
-const SMT_HEIGHT_UTXO = 64
-const SMT_HEIGHT_KYC = 10
+const SMT_HEIGHT_UTXO = 32
+const SMT_HEIGHT_KYC = 20
+const SMT_HEIGHT_COMPLIANCE = 20
 
 var Empty_Proof_Utxos proto.MerkleProof
 var Empty_Proof_kyc proto.MerkleProof
+var Empty_Proof_Compliance proto.MerkleProof
 
 func init() {
 	var nodes []string
@@ -42,6 +44,13 @@ func init() {
 	}
 	Empty_Proof_kyc = proto.MerkleProof{
 		Nodes: kycNodes,
+	}
+	var complianceNodes []string
+	for i := 0; i < SMT_HEIGHT_COMPLIANCE; i++ {
+		complianceNodes = append(complianceNodes, "0")
+	}
+	Empty_Proof_Compliance = proto.MerkleProof{
+		Nodes: complianceNodes,
 	}
 }
 
@@ -60,4 +69,8 @@ func MerkleTreeNameForLockedStates(tokenName string, domainInstanceContract *pld
 
 func MerkleTreeNameForKycStates(tokenName string, domainInstanceContract *pldtypes.EthAddress) string {
 	return "smtKyc_" + tokenName + "_" + domainInstanceContract.String()
+}
+
+func MerkleTreeNameForComplianceStates(tokenName string, domainInstanceContract *pldtypes.EthAddress) string {
+	return "smtCompliance_" + tokenName + "_" + domainInstanceContract.String()
 }

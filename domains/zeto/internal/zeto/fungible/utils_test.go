@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/LFDT-Paladin/paladin/domains/zeto/internal/zeto/common"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/types"
 	"github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner/zetosignerapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -15,6 +16,25 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// assertPrepareParamsJSON parses the Prepare response's ParamsJson, decodes the embedded
+// transaction data, and asserts on the structured content. This avoids brittle comparisons
+// against hardcoded ABI-encoded hex strings.
+func assertPrepareParamsJSON(t *testing.T, paramsJson string, expectedTxID string) {
+	t.Helper()
+	var params map[string]interface{}
+	err := json.Unmarshal([]byte(paramsJson), &params)
+	require.NoError(t, err, "ParamsJson should be valid JSON")
+
+	dataHex, ok := params["data"].(string)
+	require.True(t, ok, "params should contain a 'data' string field")
+
+	ctx := context.Background()
+	txData, err := common.DecodeTransactionData(ctx, pldtypes.MustParseHexBytes(dataHex))
+	require.NoError(t, err, "data field should be decodable as ZetoTransactionData")
+	require.NotNil(t, txData)
+	assert.Equal(t, expectedTxID, txData.TransactionID.String(), "transactionId mismatch in data field")
+}
 
 func TestGetAlgoZetoSnarkBJJ(t *testing.T) {
 	h := &mintHandler{
@@ -370,6 +390,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacks,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoins,
@@ -389,6 +410,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacks,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoins,
@@ -428,6 +450,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacksNullifier,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoinsSize3,
@@ -461,6 +484,7 @@ func TestFormatTransferProvingRequestMerkleProofPadding(t *testing.T) {
 		result, err := formatTransferProvingRequest(
 			ctx,
 			mockCallbacksNullifierKyc,
+			nil,
 			merkleTreeRootSchema,
 			merkleTreeNodeSchema,
 			inputCoinsSize3,

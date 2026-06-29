@@ -293,14 +293,16 @@ task clean {
 task docker(type: Exec) {
     executable 'docker'
     args 'build'
+    args '-f', 'Dockerfile'
     args '-t', 'paladin:test'
-    args '.'
+    args '..'
 }
 
 task dockerx(type: Exec) {
     executable 'docker'
     args 'buildx', 'build'
+    args '-f', 'Dockerfile'
     args '--platform', 'linux/amd64,linux/arm64'
     args '-t', 'paladin:test'
-    args '.'
+    args '..'
 }

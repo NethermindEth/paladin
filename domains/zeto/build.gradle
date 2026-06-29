@@ -33,8 +33,6 @@ ext {
         "github.com/LFDT-Paladin/paladin/domains/zeto/pkg/zetosigner",
     ]
 
-    zetoVersion = "v0.2.0"
-    zetoHost = "hyperledger-labs"
     zkpOut = "${projectDir}/zkp"
     toolsOut = "${projectDir}/tools"
 }
@@ -75,29 +73,12 @@ dependencies {
     coreGo project(path: ":core:go", configuration: "goSource")
 }
 
-task downloadZetoProver(type: Download) {
-    def outname = "zeto-wasm-${zetoVersion}.tar.gz"
-    src "https://github.com/${zetoHost}/zeto/releases/download/${zetoVersion}/${outname}"
-    dest new File(toolsOut, outname)
-    overwrite false
-    onlyIfModified true
-}
-
-task downloadZetoTestProvingKeys(type: Download) {
-    def outname = "zeto-test-proving-keys-${zetoVersion}.tar.gz"
-    src "https://github.com/${zetoHost}/zeto/releases/download/${zetoVersion}/${outname}"
-    dest new File(toolsOut, outname)
-    overwrite false
-    onlyIfModified true
-}
-
-task downloadZetoCompiledContracts(type: Download) {
-    def outname = "zeto-contracts-${zetoVersion}.tar.gz"
-    src "https://github.com/${zetoHost}/zeto/releases/download/${zetoVersion}/${outname}"
-    dest new File(toolsOut, outname)
-    overwrite false
-    onlyIfModified true
-}
+// Historical download tasks for hyperledger-labs/zeto@v0.2.0 release
+// tarballs were removed in favor of compiling the local Nethermind zeto
+// fork in-place (see extractZetoArtifacts below and the hardhat step in
+// the Dockerfile). The fork adds AENKNR-E contracts that upstream never
+// published, so any download-based flow cannot produce IZetoEnforced.json
+// and breaks the buildGo step's //go:embed directive.
 
 task installPoseidonDependencies(type: Exec) {
     outputs.dir("${toolsOut}/solidity")
@@ -140,10 +121,21 @@ task generatePoseidonArtifacts(type: Exec, dependsOn: [installPoseidonDependenci
     args "build-poseidon.js"
 }
 
-task extractZetoArtifacts(type: Copy, dependsOn: [protoc, downloadZetoProver, downloadZetoTestProvingKeys, downloadZetoCompiledContracts]) {
-    from tarTree("${toolsOut}/zeto-wasm-${zetoVersion}.tar.gz")
-    from tarTree("${toolsOut}/zeto-test-proving-keys-${zetoVersion}.tar.gz")
-    from tarTree("${toolsOut}/zeto-contracts-${zetoVersion}.tar.gz")
+// Source the Zeto ABI artifacts from the local Nethermind zeto fork that
+// was cloned into the build context at /zeto/solidity and hardhat-compiled
+// by the Dockerfile. Historically this task extracted a pre-built tarball
+// from hyperledger-labs/zeto@v0.2.0 releases — that upstream does not
+// publish AENKNR-E artifacts, so the tarball was missing IZetoEnforced.json
+// and broke the Go //go:embed step. Compiling the local fork in-place
+// produces a matching artifacts/contracts/** layout, so no downstream
+// consumers (copySolidity in this module, copySolidity in integration-test)
+// need to change.
+task extractZetoArtifacts(type: Copy, dependsOn: [protoc]) {
+    from fileTree("/zeto/solidity") {
+        include 'artifacts/contracts/**'
+        include 'artifacts/@iden3/contracts/**'
+        exclude '**/*.dbg.json'
+    }
     into zkpOut
 }
 
@@ -157,6 +149,7 @@ task copySolidity(type: Copy, dependsOn: [protoc, ":solidity:compile", extractZe
         include 'lib/interfaces/izeto_kyc.sol/IZetoKyc.json'
         include 'lib/interfaces/izeto_lockable.sol/IZetoLockable.json'
         include 'lib/interfaces/izeto_kyc.sol/IZetoKyc.json'
+        include 'lib/interfaces/izeto_enforced.sol/IZetoEnforced.json'
         include 'lib/interfaces/zeto_fungible_initializable.sol/IZetoFungibleInitializable.json'
         include 'lib/interfaces/zeto_nf_initializable.sol/IZetoNonFungibleInitializable.json'
     }
@@ -185,7 +178,6 @@ task unitTests(type: Exec, dependsOn: [
         protoc,
         ":core:go:makeMocks",
         ":testinfra:startTestInfra",
-        downloadZetoCompiledContracts,
         copySolidity,
         copyPkgSolidity,
         ":domains:integration-test:copySolidity" // TODO: find a better way to share this

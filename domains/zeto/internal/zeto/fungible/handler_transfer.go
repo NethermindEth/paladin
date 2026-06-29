@@ -17,6 +17,7 @@ package fungible
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"strings"
@@ -40,7 +41,8 @@ var _ types.DomainHandler = &transferHandler{}
 
 type transferHandler struct {
 	baseHandler
-	callbacks plugintk.DomainCallbacks
+	callbacks    plugintk.DomainCallbacks
+	keyProvider  common.AuthorityKeyProvider
 }
 
 var transferABI = &abi.Entry{
@@ -80,7 +82,33 @@ var transferABI_withEncryption = &abi.Entry{
 	},
 }
 
-func NewTransferHandler(name string, callbacks plugintk.DomainCallbacks, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema, dataSchema *pb.StateSchema) *transferHandler {
+// AENKNR-E enforced tokens use simple function signatures; all circuit-specific
+// fields are ABI-packed into the proof bytes blob and decoded by the on-chain Codec.
+var transferABI_enforced = &abi.Entry{
+	Type: abi.Function,
+	Name: types.METHOD_TRANSFER,
+	Inputs: abi.ParameterArray{
+		{Name: "inputs", Type: "uint256[]"},
+		{Name: "outputs", Type: "uint256[]"},
+		{Name: "proof", Type: "bytes"},
+		{Name: "data", Type: "bytes"},
+	},
+}
+
+// ABI layout for encoding the transfer proof bytes blob for AENKNR-E.
+// Must match AENKNRECodec._decodeTransfer: abi.decode(p, (uint256, uint256[], uint256, uint256[2], uint256[], uint256[], uint256[], Commonlib.Proof))
+var enforcedTransferProofABI = &abi.ParameterArray{
+	{Name: "root", Type: "uint256"},
+	{Name: "enforcementNullifiers", Type: "uint256[]"},
+	{Name: "encryptionNonce", Type: "uint256"},
+	{Name: "ecdhPublicKey", Type: "uint256[2]"},
+	{Name: "encryptedValuesForReceiver", Type: "uint256[]"},
+	{Name: "encryptedValuesForArbiter", Type: "uint256[]"},
+	{Name: "encryptedValuesForEnforcer", Type: "uint256[]"},
+	{Name: "proof", Type: "tuple", InternalType: "struct Commonlib.Proof", Components: common.ProofComponents},
+}
+
+func NewTransferHandler(name string, callbacks plugintk.DomainCallbacks, keyProvider common.AuthorityKeyProvider, coinSchema, merkleTreeRootSchema, merkleTreeNodeSchema, dataSchema *pb.StateSchema) *transferHandler {
 	return &transferHandler{
 		baseHandler: baseHandler{
 			name: name,
@@ -91,7 +119,8 @@ func NewTransferHandler(name string, callbacks plugintk.DomainCallbacks, coinSch
 				DataSchema:           dataSchema,
 			},
 		},
-		callbacks: callbacks,
+		callbacks:   callbacks,
+		keyProvider: keyProvider,
 	}
 }
 
@@ -187,7 +216,8 @@ func (h *transferHandler) Assemble(ctx context.Context, tx *types.ParsedTransact
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorDecodeContractAddress, err)
 	}
-	payloadBytes, err := formatTransferProvingRequest(ctx, h.callbacks, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, inputStates.coins, outputCoins, (*tx.DomainConfig.Circuits)[types.METHOD_TRANSFER], tx.DomainConfig.TokenName, req.StateQueryContext, contractAddress)
+
+	payloadBytes, err := formatTransferProvingRequest(ctx, h.callbacks, h.keyProvider, h.stateSchemas.MerkleTreeRootSchema, h.stateSchemas.MerkleTreeNodeSchema, inputStates.coins, outputCoins, (*tx.DomainConfig.Circuits)[types.METHOD_TRANSFER], tx.DomainConfig.TokenName, req.StateQueryContext, contractAddress)
 	if err != nil {
 		return nil, i18n.NewError(ctx, msgs.MsgErrorFormatProvingReq, err)
 	}
@@ -243,20 +273,35 @@ func (h *transferHandler) Prepare(ctx context.Context, tx *types.ParsedTransacti
 	}
 	params := map[string]any{
 		"outputs": outputs,
-		"proof":   common.EncodeProof(proofRes.Proof),
 		"data":    data,
 	}
 	transferFunction := getTransferABI(tx.DomainConfig.TokenName)
-	if common.IsEncryptionToken(tx.DomainConfig.TokenName) {
+	if common.IsEnforcedToken(tx.DomainConfig.TokenName) {
+		// AENKNR-E: nullifiers go in "inputs", proof bytes blob packs all circuit fields
+		params["inputs"] = strings.Split(proofRes.PublicInputs["nullifiers"], ",")
+		proofBytes, err := common.EncodeEnforcedProof(ctx, &proofRes, enforcedTransferProofABI, nil)
+		if err != nil {
+			return nil, err
+		}
+		params["proof"] = "0x" + hex.EncodeToString(proofBytes)
+	} else if common.IsEncryptionToken(tx.DomainConfig.TokenName) {
 		params["ecdhPublicKey"] = strings.Split(proofRes.PublicInputs["ecdhPublicKey"], ",")
 		params["encryptionNonce"] = proofRes.PublicInputs["encryptionNonce"]
 		params["encryptedValues"] = strings.Split(proofRes.PublicInputs["encryptedValues"], ",")
-	}
-	if common.IsNullifiersToken(tx.DomainConfig.TokenName) {
+		params["proof"] = common.EncodeProof(proofRes.Proof)
+		if common.IsNullifiersToken(tx.DomainConfig.TokenName) {
+			params["nullifiers"] = strings.Split(proofRes.PublicInputs["nullifiers"], ",")
+			params["root"] = proofRes.PublicInputs["root"]
+		} else {
+			params["inputs"] = inputs
+		}
+	} else if common.IsNullifiersToken(tx.DomainConfig.TokenName) {
 		params["nullifiers"] = strings.Split(proofRes.PublicInputs["nullifiers"], ",")
 		params["root"] = proofRes.PublicInputs["root"]
+		params["proof"] = common.EncodeProof(proofRes.Proof)
 	} else {
 		params["inputs"] = inputs
+		params["proof"] = common.EncodeProof(proofRes.Proof)
 	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
@@ -283,11 +328,14 @@ func (h *transferHandler) Prepare(ctx context.Context, tx *types.ParsedTransacti
 }
 
 func getTransferABI(tokenName string) *abi.Entry {
-	transferFunction := transferABI
-	if common.IsEncryptionToken(tokenName) {
-		transferFunction = transferABI_withEncryption
-	} else if common.IsNullifiersToken(tokenName) {
-		transferFunction = transferABINullifiers
+	if common.IsEnforcedToken(tokenName) {
+		return transferABI_enforced
 	}
-	return transferFunction
+	if common.IsEncryptionToken(tokenName) {
+		return transferABI_withEncryption
+	}
+	if common.IsNullifiersToken(tokenName) {
+		return transferABINullifiers
+	}
+	return transferABI
 }

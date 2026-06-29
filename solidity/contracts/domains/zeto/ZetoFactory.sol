@@ -7,25 +7,36 @@ import {IPaladinContractRegistry_V0} from "../interfaces/IPaladinContractRegistr
 contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
     function deploy(
         bytes32 transactionId,
-        string memory tokenName,
-        string memory name,
-        string memory symbol,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
         address initialOwner,
-        bytes memory data,
-        bool isNonFungible
+        bytes calldata data,
+        bool isNonFungible,
+        bool isEnforced
     ) external {
+        require(
+            !(isNonFungible && isEnforced),
+            "Factory: enforced non-fungible tokens are not supported"
+        );
+
         address instance;
 
         if (isNonFungible) {
-            // deploy non-fungible token
             instance = deployZetoNonFungibleToken(
                 name,
                 symbol,
                 tokenName,
                 initialOwner
             );
+        } else if (isEnforced) {
+            instance = deployZetoEnforcedFungibleToken(
+                name,
+                symbol,
+                tokenName,
+                initialOwner
+            );
         } else {
-            // deploy fungible token
             instance = deployZetoFungibleToken(
                 name,
                 symbol,
@@ -39,13 +50,13 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
 
     function deploy(
         bytes32 transactionId,
-        string memory tokenName,
-        string memory name,
-        string memory symbol,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
         address initialOwner,
-        bytes memory data
+        bytes calldata data,
+        bool isNonFungible
     ) external {
-        // default deploy is fungible token
         this.deploy(
             transactionId,
             tokenName,
@@ -53,6 +64,27 @@ contract ZetoFactory is ZetoTokenFactory, IPaladinContractRegistry_V0 {
             symbol,
             initialOwner,
             data,
+            isNonFungible,
+            false
+        );
+    }
+
+    function deploy(
+        bytes32 transactionId,
+        string calldata tokenName,
+        string calldata name,
+        string calldata symbol,
+        address initialOwner,
+        bytes calldata data
+    ) external {
+        this.deploy(
+            transactionId,
+            tokenName,
+            name,
+            symbol,
+            initialOwner,
+            data,
+            false,
             false
         );
     }

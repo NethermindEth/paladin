@@ -84,7 +84,7 @@ func TestEncodeTransactionData(t *testing.T) {
 	}{
 		"valid": {
 			transactionId: "0x8572b34655888710ea27adbda526c5789576b7072cb0494dab3c8c7891549934",
-			expected:      "0x000100008572b34655888710ea27adbda526c5789576b7072cb0494dab3c8c789154993400000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000",
+			expected:      "0x000100008572b34655888710ea27adbda526c5789576b7072cb0494dab3c8c78915499340000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
 			expectError:   false,
 		},
 		"invalid TransactionId": {
@@ -213,6 +213,10 @@ func TestNewMerkleTreeSpec(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KycStatesTree, spec.Type)
 
-	spec, err = NewMerkleTreeSpec(ctx, "testSmt", 3, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
-	require.ErrorContains(t, err, "PD210140: Unknown states merkle tree type: 3")
+	spec, err = NewMerkleTreeSpec(ctx, "testSmt", ComplianceStatesTree, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
+	require.NoError(t, err)
+	assert.Equal(t, ComplianceStatesTree, spec.Type)
+
+	spec, err = NewMerkleTreeSpec(ctx, "testSmt", 4, testCallbacks, "smt_root_schema", "smt_node_schema", "test_query_context")
+	require.ErrorContains(t, err, "PD210140: Unknown states merkle tree type: 4")
 }

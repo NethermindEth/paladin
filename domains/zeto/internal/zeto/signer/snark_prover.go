@@ -232,7 +232,43 @@ func serializeProofResponse(circuit *zetosignerapi.Circuit, proof *types.ZKProof
 
 	publicInputs := make(map[string]string)
 	if circuit.Type == zetosignerapi.Transfer {
-		if circuit.UsesEncryption {
+		if circuit.UsesEnforcement {
+			// AENKNR-E public signal layout (58 signals):
+			//   [0-1]   ecdhPublicKey[2]
+			//   [2-9]   encryptedValuesForReceiver[8]
+			//   [10-25] encryptedValuesForArbiter[16]
+			//   [26-41] encryptedValuesForEnforcer[16]
+			//   [42-43] ownerNullifiers[2]
+			//   [44-45] enforcementNullifiers[2]
+			//   [46-47] outputCommitments[2]  (not needed — already in params)
+			//   [48]    encryptionNonce
+			//   [49]    utxosRoot
+			// AENKNR-E public signal layout (58 signals).
+			// Outputs (42 total):
+			//   [0-1]   ecdhPublicKey[2]
+			//   [2-9]   encryptedValuesForReceiver[2][4]
+			//   [10-25] encryptedValuesForArbiter[16]
+			//   [26-41] encryptedValuesForEnforcer[16]
+			// Public inputs (16 total, ordered by template DECLARATION order):
+			//   [42-43] ownerNullifiers[2]
+			//   [44-45] enforcementNullifiers[2]
+			//   [46]    utxosRoot
+			//   [47-48] enabledInputs[2]
+			//   [49]    identitiesRoot
+			//   [50]    complianceRoot
+			//   [51-52] outputCommitments[2]
+			//   [53]    encryptionNonce
+			//   [54-55] arbiterPublicKey[2]
+			//   [56-57] enforcerPublicKey[2]
+			publicInputs["ecdhPublicKey"] = strings.Join(proof.PubSignals[0:2], ",")
+			publicInputs["encryptedValuesForReceiver"] = strings.Join(proof.PubSignals[2:10], ",")
+			publicInputs["encryptedValuesForArbiter"] = strings.Join(proof.PubSignals[10:26], ",")
+			publicInputs["encryptedValuesForEnforcer"] = strings.Join(proof.PubSignals[26:42], ",")
+			publicInputs["nullifiers"] = strings.Join(proof.PubSignals[42:44], ",")
+			publicInputs["enforcementNullifiers"] = strings.Join(proof.PubSignals[44:46], ",")
+			publicInputs["root"] = proof.PubSignals[46]
+			publicInputs["encryptionNonce"] = proof.PubSignals[53]
+		} else if circuit.UsesEncryption {
 			if !IsBatchCircuit(circuit.Name) {
 				publicInputs["ecdhPublicKey"] = strings.Join(proof.PubSignals[0:2], ",")
 				publicInputs["encryptedValues"] = strings.Join(proof.PubSignals[2:10], ",")
@@ -252,7 +288,29 @@ func serializeProofResponse(circuit *zetosignerapi.Circuit, proof *types.ZKProof
 			}
 		}
 	} else if circuit.Type == zetosignerapi.Withdraw {
-		if circuit.UsesNullifiers {
+		if circuit.UsesEnforcement {
+			// Withdraw enforced: 50 signals = 34 outputs + 16 public inputs
+			// Outputs [0:34]: ecdhPublicKey[2] + encArb[16] + encEnf[16]
+			// Public inputs [34:50] (template declaration order):
+			//   [34]    amount
+			//   [35:37] ownerNullifiers[2]
+			//   [37:39] enforcementNullifiers[2]
+			//   [39]    outputCommitments (single change output)
+			//   [40]    utxosRoot
+			//   [41]    identitiesRoot
+			//   [42]    complianceRoot
+			//   [43:45] enabledInputs[2]
+			//   [45]    encryptionNonce
+			//   [46:48] arbiterPublicKey[2]
+			//   [48:50] enforcerPublicKey[2]
+			publicInputs["ecdhPublicKey"] = strings.Join(proof.PubSignals[0:2], ",")
+			publicInputs["encryptedValuesForArbiter"] = strings.Join(proof.PubSignals[2:18], ",")
+			publicInputs["encryptedValuesForEnforcer"] = strings.Join(proof.PubSignals[18:34], ",")
+			publicInputs["nullifiers"] = strings.Join(proof.PubSignals[35:37], ",")
+			publicInputs["enforcementNullifiers"] = strings.Join(proof.PubSignals[37:39], ",")
+			publicInputs["root"] = proof.PubSignals[40]
+			publicInputs["encryptionNonce"] = proof.PubSignals[45]
+		} else if circuit.UsesNullifiers {
 			if !IsBatchCircuit(circuit.Name) {
 				publicInputs["nullifiers"] = strings.Join(proof.PubSignals[1:3], ",")
 				publicInputs["root"] = proof.PubSignals[3]
@@ -261,6 +319,48 @@ func serializeProofResponse(circuit *zetosignerapi.Circuit, proof *types.ZKProof
 				publicInputs["root"] = proof.PubSignals[11]
 			}
 		}
+	} else if circuit.Type == zetosignerapi.Deposit {
+		if circuit.UsesEnforcement {
+			// Deposit enforced: 52 signals = 43 outputs + 9 public inputs
+			// Outputs [0:43]:
+			//   [0]     out (amount, circuit-computed)
+			//   [1:3]   ecdhPublicKey[2]
+			//   [3:11]  encryptedValuesForReceiver[8]
+			//   [11:27] encryptedValuesForArbiter[16]
+			//   [27:43] encryptedValuesForEnforcer[16]
+			// Public inputs [43:52] (template declaration order):
+			//   [43:45] outputCommitments[2]
+			//   [45]    identitiesRoot
+			//   [46]    complianceRoot
+			//   [47]    encryptionNonce
+			//   [48:50] arbiterPublicKey[2]
+			//   [50:52] enforcerPublicKey[2]
+			publicInputs["ecdhPublicKey"] = strings.Join(proof.PubSignals[1:3], ",")
+			publicInputs["encryptedValuesForReceiver"] = strings.Join(proof.PubSignals[3:11], ",")
+			publicInputs["encryptedValuesForArbiter"] = strings.Join(proof.PubSignals[11:27], ",")
+			publicInputs["encryptedValuesForEnforcer"] = strings.Join(proof.PubSignals[27:43], ",")
+			publicInputs["encryptionNonce"] = proof.PubSignals[47]
+		}
+	} else if circuit.Type == zetosignerapi.ForcedTransfer {
+		// ForcedTransfer enforced: 56 signals = 42 outputs + 14 public inputs
+		// Outputs [0:42]: ecdhPublicKey[2] + encRecv[8] + encArb[16] + encEnf[16]
+		// Public inputs (template declaration order):
+		//   [42-43] enforcementNullifiers[2]
+		//   [44-45] outputCommitments[2]
+		//   [46]    utxosRoot
+		//   [47]    identitiesRoot
+		//   [48]    complianceRoot
+		//   [49-50] enabledInputs[2]
+		//   [51-52] enforcerPublicKey[2]
+		//   [53]    encryptionNonce
+		//   [54-55] arbiterPublicKey[2]
+		publicInputs["ecdhPublicKey"] = strings.Join(proof.PubSignals[0:2], ",")
+		publicInputs["encryptedValuesForReceiver"] = strings.Join(proof.PubSignals[2:10], ",")
+		publicInputs["encryptedValuesForArbiter"] = strings.Join(proof.PubSignals[10:26], ",")
+		publicInputs["encryptedValuesForEnforcer"] = strings.Join(proof.PubSignals[26:42], ",")
+		publicInputs["enforcementNullifiers"] = strings.Join(proof.PubSignals[42:44], ",")
+		publicInputs["root"] = proof.PubSignals[46]
+		publicInputs["encryptionNonce"] = proof.PubSignals[53]
 	}
 
 	res := pb.ProvingResponse{
@@ -305,8 +405,22 @@ func calculateWitness(ctx context.Context, circuit *zetosignerapi.Circuit, commo
 func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, extras interface{}) (witnessInputs, error) {
 	switch circuit.Type {
 	case zetosignerapi.Deposit:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced deposit circuit")
+			}
+			return &wtns.DepositEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		return &wtns.DepositWitnessInputs{}, nil
 	case zetosignerapi.Withdraw:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced withdraw circuit")
+			}
+			return &wtns.WithdrawEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		if circuit.UsesNullifiers {
 			nullifierExtras, ok := extras.(*pb.ProvingRequestExtras_Nullifiers)
 			if !ok {
@@ -320,6 +434,13 @@ func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, ex
 		}
 		return &wtns.WithdrawWitnessInputs{}, nil
 	case zetosignerapi.Transfer:
+		if circuit.UsesEnforcement {
+			enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+			if !ok {
+				return nil, fmt.Errorf("unexpected extras type for enforced transfer circuit")
+			}
+			return &wtns.NonRepudiationEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
+		}
 		if tokenType == pb.TokenType_fungible {
 			if circuit.UsesEncryption {
 				encExtras, ok := extras.(*pb.ProvingRequestExtras_Encryption)
@@ -350,6 +471,12 @@ func newWitnessInputs(tokenType pb.TokenType, circuit *zetosignerapi.Circuit, ex
 		} else {
 			return &wtns.NonFungibleWitnessInputs{}, nil
 		}
+	case zetosignerapi.ForcedTransfer:
+		enforcedExtras, ok := extras.(*pb.ProvingRequestExtras_NonRepudiationEnforced)
+		if !ok {
+			return nil, fmt.Errorf("unexpected extras type for forced transfer circuit")
+		}
+		return &wtns.ForcedTransferEnforcedWitnessInputs{EnforcedExtras: enforcedExtras}, nil
 	case zetosignerapi.TransferLocked:
 		return &wtns.FungibleWitnessInputs{}, nil
 	}
