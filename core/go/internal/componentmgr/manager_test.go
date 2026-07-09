@@ -171,6 +171,7 @@ func TestStartOK(t *testing.T) {
 
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockBlockIndexer := blockindexermocks.NewBlockIndexer(t)
@@ -307,6 +308,7 @@ func TestErrorWrapping(t *testing.T) {
 func TestCompleteStart_MultipleAuthorizers(t *testing.T) {
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -443,6 +445,7 @@ func TestCompleteStart_MultipleAuthorizers(t *testing.T) {
 func TestCompleteStart_SingleAuthorizer(t *testing.T) {
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockKeyManager := componentsmocks.NewKeyManager(t)
@@ -569,6 +572,7 @@ func TestCompleteStart_SingleAuthorizer(t *testing.T) {
 func TestCompleteStart_AuthorizerNotFound(t *testing.T) {
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return().Maybe()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -687,6 +691,7 @@ func TestCompleteStart_AuthorizerNotFound(t *testing.T) {
 func TestCompleteStart_AuthorizerMissingFromArray(t *testing.T) {
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return().Maybe()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -817,6 +822,7 @@ func TestCompleteStart_AuthorizerMissingFromArray(t *testing.T) {
 func TestCompleteStart_AuthorizersArrayEmptyButConfigured(t *testing.T) {
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return().Maybe()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -939,7 +945,7 @@ func TestCompleteStart_AuthorizersArrayEmptyButConfigured(t *testing.T) {
 
 // mockMetricsServer is a simple mock for MetricsServer interface
 type mockMetricsServer struct {
-	startErr error
+	startErr   error
 	stopCalled bool
 }
 
@@ -955,6 +961,7 @@ func TestCompleteStart_MetricsServerNil(t *testing.T) {
 	// Test that when metricsServer is nil, the block is skipped
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -1058,6 +1065,7 @@ func TestCompleteStart_MetricsServerStartSuccess(t *testing.T) {
 	// Test that when metricsServer is not nil and Start() succeeds, it's added to started map
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -1168,6 +1176,7 @@ func TestCompleteStart_MetricsServerStartError(t *testing.T) {
 	// Test that when metricsServer is not nil and Start() returns an error, it's wrapped and returned
 	mockEthClientFactory := ethclientmocks.NewEthClientFactory(t)
 	mockEthClientFactory.On("Start").Return(nil)
+	mockEthClientFactory.On("SharedWS").Return(ethclientmocks.NewEthClient(t)).Maybe()
 	mockEthClientFactory.On("Stop").Return()
 
 	mockPluginManager := componentsmocks.NewPluginManager(t)
@@ -1283,4 +1292,26 @@ func TestLoopbackTransportManager(t *testing.T) {
 
 	result := cm.LoopbackTransportManager()
 	assert.Equal(t, mockLoopbackTransportManager, result, "LoopbackTransportManager() should return the set loopbackTransportManager")
+}
+
+func TestInitRejectsUnsupportedBaseLedgerType(t *testing.T) {
+	cm := NewComponentManager(context.Background(), tempSocketFile(t), uuid.New(), &pldconf.PaladinConfig{
+		BaseLedger: pldconf.BaseLedgerConfig{
+			Type: pldconf.BaseLedgerTypeStellar,
+		},
+	}, nil).(*componentManager)
+
+	err := cm.Init()
+	require.Regexp(t, "PD010045.*stellar", err)
+}
+
+func TestInitRejectsInvalidBaseLedgerType(t *testing.T) {
+	cm := NewComponentManager(context.Background(), tempSocketFile(t), uuid.New(), &pldconf.PaladinConfig{
+		BaseLedger: pldconf.BaseLedgerConfig{
+			Type: "badger",
+		},
+	}, nil).(*componentManager)
+
+	err := cm.Init()
+	require.Regexp(t, "PD010046.*badger", err)
 }

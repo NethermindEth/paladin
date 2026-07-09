@@ -29,10 +29,18 @@ message ConfigureDomainRequest {
   string registry_contract_address = 3;  // The address of the registry smart contract
   int64 chain_id = 4; // The chain_id of the underlying base ledger on which all smart contracts are deployed
   string fixed_signing_identity = 5; // The identity to use for signing public transactions submitted to the underlying base ledger
+  optional ChainInfo chain_info = 6; // Chain-neutral base ledger details. For EVM, chain_id remains populated.
 }
 
 message ConfigureDomainResponse {
   DomainConfig domain_config = 1; // Information that Paladin will use to govern its behavior with respect to this domain
+  repeated string supported_chain_kinds = 2; // Optional capability declaration, e.g. "evm" or "stellar".
+}
+
+message ChainInfo {
+  string chain_kind = 1; // "evm" | "stellar"
+  string network_id = 2; // evm: decimal chain ID; stellar: network passphrase
+  int64 evm_chain_id = 3; // evm only
 }
 
 // **INIT** happens once when the domain is loaded into Paladin, after the result of ConfigureDomain has been processed
@@ -62,6 +70,8 @@ message PrepareDeployResponse {
   optional string signer = 1; // The identifier of a signing address to use to submit the transaction to the chain. Default behavior if not supplied is that the signing key is considered to be irrelevant to the submission and will be managed by Paladin for anonymity, with regular rotation (as often as once per transaction)
   optional PreparedTransaction transaction = 2; // The instruction for a transaction to submit to the base ledger
   optional BaseLedgerDeployTransaction deploy = 3; // The instruction for deploy request to submit to the base ledger
+  optional PreparedChainTransaction chain_transaction = 4; // Chain-neutral transaction instruction for v2 domains
+  optional SorobanDeploy soroban_deploy = 5; // Stellar/Soroban deploy instruction for v2 domains
 }
 
 // **INIT CONTRACT** happens every time a squencer for a private smart contract in a domain is paged into memory, providing the runtine configuration needed for execution
@@ -169,6 +179,7 @@ message PrepareTransactionRequest {
 message PrepareTransactionResponse {
   PreparedTransaction transaction = 1; // The instruction for submission to the base ledger
   optional string metadata = 2; // Domain-provided metadata about the prepared transaction (only used when intent is PREPARE_TRANSACTION)
+  optional PreparedChainTransaction chain_transaction = 3; // Chain-neutral transaction instruction for v2 domains
 }
 
 // **INIT_CALL** this allows a domain to provide a read-only view into the state store, using high-level functions. The response data must conform to the ABI supplied, or an error must be returned
@@ -213,6 +224,7 @@ message HandleEventBatchRequest {
   string batch_id = 2; // A unique identifier for this batch
   ContractInfo contract_info = 3; // The configuration of the contract that emitted the batch of events
   repeated OnChainEvent events = 4; // The list of events from the block indexer
+  repeated ChainEvent chain_events = 5; // Chain-neutral event shape for v2 domains
 }
 
 message HandleEventBatchResponse {
@@ -471,10 +483,46 @@ message PreparedTransaction {
   optional string required_signer = 5; // If the prepare requires use of a specific signer for this particular transaction (requires the domain to understand and accept any potential anonymity leakage)
 }
 
+message PreparedChainTransaction {
+  enum TransactionType {
+    PUBLIC = 0;
+    PRIVATE = 1;
+  }
+  TransactionType type = 1;
+  optional string required_signer = 2;
+  oneof payload {
+    EVMInvoke evm = 10;
+    SorobanInvoke soroban = 11;
+  }
+}
+
+message EVMInvoke {
+  string function_abi_json = 1;
+  string params_json = 2;
+  optional string contract_address = 3;
+}
+
+message SorobanInvoke {
+  string contract_id = 1;
+  string function_name = 2;
+  bytes args_xdr = 3;
+  string args_json = 4;
+  repeated bytes auth_entries_xdr = 5;
+  repeated bytes read_footprint_hints = 6;
+}
+
 message BaseLedgerDeployTransaction {
   string constructor_abi_json = 1; // The ABI of the smart contract constructor
   bytes bytecode = 2; // The contract bytecode
   string params_json = 3; // The parameters to pass to the base smart contract constructor, in JSON format. Paladin will submit this transaction to the base blockchain
+}
+
+message SorobanDeploy {
+  bytes wasm = 1;
+  bytes wasm_hash = 2;
+  bytes salt = 3;
+  string constructor_fn = 4;
+  bytes constructor_args_xdr = 5;
 }
 
 message DomainAPIError {
@@ -484,6 +532,7 @@ message DomainAPIError {
 message CompletedTransaction {
   string transaction_id = 1; // The ID of the transaction that has completed (opaque 32 byte identifier)
   OnChainEventLocation location = 2; // the locator information on the blockchain to point at as the source of the confirmation
+  ChainEventLocation chain_location = 3; // Chain-neutral source location for v2 domains
 }
 
 message PrivacyGroup {

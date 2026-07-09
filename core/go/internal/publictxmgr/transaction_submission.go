@@ -24,6 +24,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"golang.org/x/crypto/sha3"
@@ -56,25 +57,21 @@ func (it *inFlightTransactionStageController) submitTX(ctx context.Context, sign
 		if cancelled(ctx) {
 			return false, nil
 		}
-		txHash, submissionError = it.ethClient.SendRawTransaction(ctx, pldtypes.HexBytes(signedMessage))
+		var submittedID baseledger.TxID
+		submittedID, submissionError = it.baseLedger.Submit(ctx, baseledger.SignedChainTx(signedMessage))
 		if submissionError == nil {
+			txHash = &submittedID
 			submissionOutcome = SubmissionOutcomeFailedRequiresRetry
 			it.thMetrics.RecordOperationMetrics(ctx, string(InFlightTxOperationTransactionSend), string(GenericStatusSuccess), time.Since(sendStart).Seconds())
-			if txHash != nil {
-				if calculatedTxHash != nil && txHash.String() != calculatedTxHash.String() {
-					// TODO: Investigate why under high concurrency load with Besu we are triggering this, and the returned hash is for
-					//       a DIFFERENT NONCE that is submitted at an extremely close time.
-					log.L(ctx).Warnf("Received response for transaction %s, but calculated transaction hash %s is different from the response %s.", signerNonce, calculatedTxHash, txHash)
-					submissionError = i18n.NewError(ctx, msgs.MsgSubmitFailedWrongHashReturned, calculatedTxHash, txHash)
-					txHash = nil // clear the transaction hash as we are not certain it's correct
-					return true, submissionError
-				} else {
-					log.L(ctx).Debugf("Submitted %s successfully with hash=%s", signerNonce, txHash)
-				}
-			} else {
-				txHash = calculatedTxHash
-				log.L(ctx).Warnf("Received response for transaction %s, no transaction hash from the response, using the calculated transaction hash %s instead.", signerNonce, txHash)
+			if calculatedTxHash != nil && txHash.String() != calculatedTxHash.String() {
+				// TODO: Investigate why under high concurrency load with Besu we are triggering this, and the returned hash is for
+				//       a DIFFERENT NONCE that is submitted at an extremely close time.
+				log.L(ctx).Warnf("Received response for transaction %s, but calculated transaction hash %s is different from the response %s.", signerNonce, calculatedTxHash, txHash)
+				submissionError = i18n.NewError(ctx, msgs.MsgSubmitFailedWrongHashReturned, calculatedTxHash, txHash)
+				txHash = nil // clear the transaction hash as we are not certain it's correct
+				return true, submissionError
 			}
+			log.L(ctx).Debugf("Submitted %s successfully with hash=%s", signerNonce, txHash)
 			log.L(ctx).Infof("Transaction %s submitted. Hash: %s", signerNonce, calculatedTxHash)
 			submissionOutcome = SubmissionOutcomeSubmittedNew
 			return false, nil

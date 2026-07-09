@@ -17,6 +17,7 @@ package components
 
 import (
 	"github.com/LFDT-Paladin/paladin/core/internal/metrics"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
@@ -29,6 +30,7 @@ import (
 type PreInitComponents interface {
 	KeyManager() KeyManager // TODO: move to separate component
 	EthClientFactory() ethclient.EthClientFactory
+	BaseLedger() baseledger.Client
 	Persistence() persistence.Persistence
 	BlockIndexer() blockindexer.BlockIndexer
 	RPCServer() rpcserver.RPCServer

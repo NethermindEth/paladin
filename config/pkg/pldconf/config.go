@@ -24,6 +24,7 @@ type PaladinConfig struct {
 	RPCAuthManagerConfig         `json:",inline"`
 	Startup                      StartupConfig          `json:"startup"`
 	Log                          LogConfig              `json:"log"`
+	BaseLedger                   BaseLedgerConfig       `json:"baseLedger"`
 	Blockchain                   EthClientConfig        `json:"blockchain"`
 	DB                           DBConfig               `json:"db"`
 	RPCServer                    RPCServerConfig        `json:"rpcServer"`
@@ -48,6 +49,7 @@ var PaladinConfigDefaults = &PaladinConfig{
 	KeyManagerInlineConfig:       KeyManagerDefaults,
 	Startup:                      StartupConfigDefaults,
 	Log:                          LogDefaults,
+	BaseLedger:                   BaseLedgerDefaults,
 	Blockchain:                   EthClientDefaults,
 	RPCServer:                    RPCServerConfigDefaults,
 	MetricsServer:                MetricsServerDefaults,

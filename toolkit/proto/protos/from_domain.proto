@@ -39,6 +39,10 @@ enum EncodingType {
   TYPED_DATA_V4 = 3; // encode only
   EVENT_DATA = 4; // decode only
   ETH_TRANSACTION_SIGNED = 5; // encode and sign
+  XDR_SCVAL = 10;
+  XDR_INVOKE_CONTRACT_ARGS = 11;
+  SOROBAN_AUTH_ENTRY = 12;
+  SALADIN_TYPED_DATA_V0 = 13;
 }
 
 message EncodeDataRequest {

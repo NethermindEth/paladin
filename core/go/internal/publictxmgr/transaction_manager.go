@@ -27,6 +27,8 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/filters"
 	"github.com/LFDT-Paladin/paladin/core/internal/publictxmgr/metrics"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
+	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
@@ -84,6 +86,7 @@ type pubTxManager struct {
 	bIndexer         blockindexer.BlockIndexer
 	sequencerManager components.SequencerManager
 	ethClient        ethclient.EthClient
+	baseLedger       baseledger.Client
 	keymgr           components.KeyManager
 	rootTxMgr        components.TXManager
 	ethClientFactory ethclient.EthClientFactory
@@ -170,6 +173,7 @@ func (ptm *pubTxManager) PostInit(pic components.AllComponents) error {
 	log.L(ctx).Debugf("Initializing public transaction manager")
 	ptm.nodeName = pic.TransportManager().LocalNodeName()
 	ptm.ethClientFactory = pic.EthClientFactory()
+	ptm.baseLedger = pic.BaseLedger()
 	ptm.keymgr = pic.KeyManager()
 	ptm.p = pic.Persistence()
 	ptm.bIndexer = pic.BlockIndexer()
@@ -188,6 +192,9 @@ func (ptm *pubTxManager) Start() error {
 
 	// The client is assured to be started by this point and availaptm
 	ptm.ethClient = ptm.ethClientFactory.SharedWS()
+	if ptm.baseLedger == nil {
+		ptm.baseLedger = baseledgerevm.WrapClient(ptm.ethClient)
+	}
 	ptm.gasPriceClient.Start(ctx, ptm.ethClient)
 	if ptm.engineLoopDone == nil { // only start once
 		ptm.engineLoopDone = make(chan struct{})

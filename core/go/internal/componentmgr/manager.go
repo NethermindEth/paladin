@@ -39,6 +39,8 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/statemgr"
 	"github.com/LFDT-Paladin/paladin/core/internal/transportmgr"
 	"github.com/LFDT-Paladin/paladin/core/internal/txmgr"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
+	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
@@ -69,6 +71,7 @@ type componentManager struct {
 	// pre-init
 	keyManager       components.KeyManager
 	ethClientFactory ethclient.EthClientFactory
+	baseLedger       baseledger.Client
 	persistence      persistence.Persistence
 	blockIndexer     blockindexer.BlockIndexer
 	rpcServer        rpcserver.RPCServer
@@ -155,6 +158,19 @@ func (cm *componentManager) Init() (err error) {
 	if confutil.Bool(cm.conf.DebugServer.Enabled, *pldconf.DebugServerDefaults.Enabled) {
 		cm.debugServer, err = cm.startDebugServer()
 		err = cm.addIfStarted("debugServer", cm.debugServer, err, msgs.MsgComponentDebugServerStartError)
+	}
+
+	if err == nil {
+		switch cm.conf.BaseLedger.ResolvedType() {
+		case pldconf.BaseLedgerTypeEVM:
+			if cm.conf.BaseLedger.EVM != nil {
+				cm.conf.Blockchain = *cm.conf.BaseLedger.EVM
+			}
+		case pldconf.BaseLedgerTypeStellar:
+			err = i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerUnsupported, cm.conf.BaseLedger.ResolvedType())
+		default:
+			err = i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerInvalidType, cm.conf.BaseLedger.ResolvedType())
+		}
 	}
 
 	if err == nil {
@@ -370,6 +386,9 @@ func (cm *componentManager) StartManagers() (err error) {
 	// We have special handling here to allow for concurrent startup of the blockchain node and Paladin
 	err = cm.startEthClient()
 	err = cm.addIfStarted("eth_client", cm.ethClientFactory, err, msgs.MsgComponentEthClientStartError)
+	if err == nil {
+		cm.baseLedger = baseledgerevm.WrapClient(cm.ethClientFactory.SharedWS())
+	}
 
 	// start the managers
 	if err == nil {
@@ -610,6 +629,10 @@ func (cm *componentManager) EthClientFactory() ethclient.EthClientFactory {
 
 func (cm *componentManager) Persistence() persistence.Persistence {
 	return cm.persistence
+}
+
+func (cm *componentManager) BaseLedger() baseledger.Client {
+	return cm.baseLedger
 }
 
 func (cm *componentManager) StateManager() components.StateManager {

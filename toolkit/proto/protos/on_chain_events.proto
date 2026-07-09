@@ -32,3 +32,17 @@ message OnChainEvent {
   string solidity_signature = 3; // The friendly solidity signature to match against
   string data_json = 4; // The parsed event data
 }
+
+message ChainEventLocation {
+  string transaction_id = 1; // 32-byte transaction hash hex on all supported base ledgers
+  int64 ledger_sequence = 2; // block number / ledger sequence
+  int64 transaction_index = 3;
+  int64 event_index = 4; // log index / event index within transaction
+}
+
+message ChainEvent {
+  ChainEventLocation location = 1;
+  string selector = 2; // EVM topic0 hex / Stellar symbol hash
+  string friendly_signature = 3;
+  string data_json = 4;
+}

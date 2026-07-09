@@ -51,6 +51,10 @@ func EthAddressBytes(b []byte) *EthAddress {
 	return &a
 }
 
+func EthAddressFromChainAddress(addr ChainAddress) (*EthAddress, error) {
+	return addr.EthAddress()
+}
+
 func RandAddress() *EthAddress {
 	return (*EthAddress)(RandBytes(20))
 }
@@ -75,6 +79,10 @@ func (a *EthAddress) Equals(b *EthAddress) bool {
 
 func (a *EthAddress) IsZero() bool {
 	return a == nil || *a == zeroAddress
+}
+
+func (a EthAddress) ChainAddress() ChainAddress {
+	return NewEVMChainAddress(a)
 }
 
 func (a EthAddress) String() string {

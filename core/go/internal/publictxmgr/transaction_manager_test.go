@@ -39,6 +39,7 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 
+	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
@@ -81,6 +82,7 @@ func baseMocks(t *testing.T) *mocksAndTestControl {
 		sequencerManager: componentsmocks.NewSequencerManager(t),
 	}
 	mocks.allComponents.On("EthClientFactory").Return(mocks.ethClientFactory).Maybe()
+	mocks.allComponents.On("BaseLedger").Return(baseledgerevm.WrapClient(mocks.ethClient)).Maybe()
 	mocks.ethClientFactory.On("SharedWS").Return(mocks.ethClient).Maybe()
 	mocks.ethClientFactory.On("HTTPClient").Return(mocks.ethClient).Maybe()
 	mocks.allComponents.On("BlockIndexer").Return(mocks.blockIndexer).Maybe()
@@ -202,6 +204,20 @@ func newTestPublicTxManager(t *testing.T, realDBAndSigner bool, extraSetup ...fu
 func TestInit(t *testing.T) {
 	_, _, _, done := newTestPublicTxManager(t, false)
 	defer done()
+}
+
+func TestStartWrapsBaseLedgerWhenUnset(t *testing.T) {
+	_, ptm, _, done := newTestPublicTxManager(t, false, func(mocks *mocksAndTestControl, conf *pldconf.PublicTxManagerConfig) {
+		mocks.disableManagerStart = true
+		mocks.ethClient.On("GasPrice", mock.Anything).Return(pldtypes.MustParseHexUint256("100"), nil).Maybe()
+	})
+	defer done()
+
+	ptm.baseLedger = nil
+	ptm.engineLoopDone = make(chan struct{})
+	close(ptm.engineLoopDone)
+	require.NoError(t, ptm.Start())
+	assert.NotNil(t, ptm.baseLedger)
 }
 
 func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {

@@ -85,6 +85,8 @@ var (
 	MsgRPCAuthorizerMissing                          = pde("PD010042", "RPC authorizer '%s' is configured but not included in rpcServer.authorizers")
 	MsgComponentDistributedSequencerManagerInitError = pde("PD010043", "Error initializing distributed sequencer manager")
 	MsgComponentDistributedSequencerStartError       = pde("PD010044", "Error starting distributed sequencer manager")
+	MsgComponentBaseLedgerUnsupported                = pde("PD010045", "Base ledger type '%s' is parsed but not implemented yet")
+	MsgComponentBaseLedgerInvalidType                = pde("PD010046", "Invalid base ledger type '%s'")
 
 	// States PD0101XX
 	MsgStateInvalidLength             = pde("PD010101", "Invalid hash len expected=%d actual=%d")

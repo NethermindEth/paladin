@@ -35,6 +35,7 @@ type DBPublicTxn struct {
 	Data            pldtypes.HexBytes      `gorm:"column:data"`
 	Suspended       bool                   `gorm:"column:suspended"` // excluded from processing because it's suspended by user
 	Dispatcher      string                 `gorm:"column:dispatcher"`
+	RestoreTxHash   *pldtypes.Bytes32      `gorm:"column:restore_tx_hash"`
 	Completed       *DBPublicTxnCompletion `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
 	Submissions     []*DBPubTxnSubmission  `gorm:"foreignKey:pub_txn_id"`
 	// Binding is only on queries by transaction (GORM doesn't seem to allow us to define a separate struct for this) and

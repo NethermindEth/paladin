@@ -41,7 +41,7 @@ func (it *inFlightTransactionStageController) signTx(ctx context.Context, from p
 		return nil, nil, err
 	}
 	// Sign
-	sigPayload := ethTx.SignaturePayloadEIP1559(it.ethClient.ChainID())
+	sigPayload := ethTx.SignaturePayloadEIP1559(it.baseLedger.ChainInfo().EVMChainID)
 	sigPayloadHash := sha3.NewLegacyKeccak256()
 	_, err = sigPayloadHash.Write(sigPayload.Bytes())
 	var signatureRSV []byte

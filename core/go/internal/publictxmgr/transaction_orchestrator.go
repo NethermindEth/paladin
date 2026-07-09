@@ -27,7 +27,6 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
-	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
 )
@@ -104,7 +103,6 @@ type orchestrator struct {
 	resubmitInterval        time.Duration
 	stageRetryTimeout       time.Duration
 	persistenceRetryTimeout time.Duration
-	ethClient               ethclient.EthClient
 	bIndexer                blockindexer.BlockIndexer
 
 	transactionSubmissionRetry *retry.Retry
@@ -179,7 +177,6 @@ func NewOrchestrator(
 		hasZeroGasPrice:            ptm.gasPriceClient.HasZeroGasPrice(ctx),
 		InFlightTxsStale:           make(chan bool, 1),
 		stopProcess:                make(chan bool, 1),
-		ethClient:                  ptm.ethClient,
 		bIndexer:                   ptm.bIndexer,
 		timeLineLoggingMaxEntries:  conf.Orchestrator.TimeLineLoggingMaxEntries,
 	}
