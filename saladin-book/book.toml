@@ -1,0 +1,23 @@
+[book]
+title = "Saladin — Programmable Privacy for Stellar Soroban"
+description = "Technical implementation plan: Paladin today, the Stellar/Soroban port (Saladin), a Rust-native alternative (Saladin-rs), a post-quantum chain-agnostic greenfield (Qaladin), and its adoption & monetization strategy."
+authors = ["LFDT-Paladin / Saladin book contributors"]
+src = "."
+language = "en"
+
+[build]
+build-dir = "book-dist"
+create-missing = false
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/LFDT-Paladin/paladin"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.fold]
+enable = true
+level = 1
