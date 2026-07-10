@@ -3,7 +3,31 @@
 The Stellar implementation of the BLI: a client, a signer extension, an ingestor, and a
 submitter. Everything here lives in `core/go/pkg/stellarclient`,
 `core/go/pkg/baseledger/stellar`, and `core/go/internal/publictxmgr` (Stellar submitter), built
-on `github.com/stellar/go-stellar-sdk` (⚠️ being renamed `go-stellar-sdk` — pin and track).
+on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the deprecated
+`github.com/stellar/go` — already migrated, no further tracking needed).
+
+> **Implementation status.** A **foundational slice** is implemented on the `saladin` branch:
+> §12.1's `stellarclient` (a thin constructor over the SDK's own `*rpcclient.Client`, no Horizon
+> dependency at all), `baseledger/stellar.Client` (all six `baseledger.Client` methods, real - not
+> stubbed - including `GetTransactionResult`), the ed25519 signing extension
+> (`algorithms.EDDSA_ED25519`/`verifiers.STELLAR_ADDRESS`/`signpayloads.OPAQUE_TO_EDDSA`,
+> `toolkit/go/pkg/signer/signers/eddsa.go`) with SLIP-10 HD derivation via the SDK's own
+> `tools/stellar-hd-wallet/crypto/derivation` (verified against the official test vectors), and a
+> basic §12.2 `ChainSubmitter`
+> (`core/go/internal/publictxmgr/stellar_chain_submitter.go` - note: not `stellar_submitter.go` as
+> earlier drafts of this chapter named it) covering sequence-number assignment, transaction
+> build/sign/submit, and `xdr.TransactionResultCode`-based error classification, unit-tested with
+> mocks. `componentmgr.newBaseLedgerClient` has a real, working `stellar` branch, and
+> `publictxmgr`'s chain-submitter construction switches on `ChainInfo().Kind` - both wired and
+> tested in isolation, but full node boot for `type: stellar` is still rejected in `Init()`
+> pending the ledger indexer (below).
+>
+> **Explicitly deferred** (no code yet): channel-account pooling, fee-bump transactions, and the
+> restore-preamble submission stage (all §12.2); classic operations and trustline preflight
+> (§12.3); the ledger ingestor (§12.4); the `registries/stellar` plugin (§12.5, already marked
+> low-priority - static registry suffices); `ttlJanitor` and the operator/quickstart additions
+> (§12.6). None of §12.7's acceptance criteria have been exercised - there has been no
+> live-network or quickstart testing of this slice, only mocked unit tests.
 
 ## 12.1 `stellarclient`
 
@@ -52,7 +76,7 @@ while an anonymous key submits" — the domain supplies **pre-signed auth entrie
 
 ## 12.2 The Stellar `ChainSubmitter`
 
-`core/go/internal/publictxmgr/stellar_submitter.go`, implementing ch. 11's interface.
+`core/go/internal/publictxmgr/stellar_chain_submitter.go`, implementing ch. 11's interface.
 
 **Sequence numbers are not nonces.** Differences that invalidate the EVM logic:
 
@@ -122,9 +146,9 @@ operations).
 - **Retention is the operational constraint.** stellar-rpc keeps 24 h (default) to 7 d (max).
   Responses: (1) checkpoint per ledger (already the indexer model); (2) on startup, if
   `checkpoint < oldestLedger(rpc)` → **fail loudly** unless a backfill source is configured
-  (future historical ingestion should be RPC/indexer/archive based rather than Horizon-backed in this repo); 
-  (3) ops guidance: self-host stellar-rpc with 7-day retention; treat a gap beyond
-  retention as disaster recovery.
+  (future historical ingestion should be RPC/indexer/archive based, not Horizon-backed - this
+  repo does not depend on Horizon anywhere); (3) ops guidance: self-host stellar-rpc with 7-day
+  retention; treat a gap beyond retention as disaster recovery.
 - **State-resync escape hatch.** Because the SNoto/SZeto contracts keep their authoritative sets
   as enumerable ledger entries (ch. 13), `stellarclient.SnapshotContractState(contractID,
   keyPrefix)` (via `getLedgerEntries`) can rebuild a domain's on-chain view directly — a
@@ -156,8 +180,8 @@ operations).
 - **Operator (`operator/`):** add a `Stellar`-flavored node CR (or a generic
   `baseLedger` section in the Paladin CR), a `stellar/quickstart` container for dev networks,
   and Stellar equivalents of `SmartContractDeployment` (Wasm upload + instantiate).
-- Local dev: `stellar/quickstart` docker image (RPC + Horizon + core, accelerated ledgers) joins
-  `testinfra/docker-compose-test.yml` beside Besu.
+- Local dev: `stellar/quickstart` docker image (RPC + core, accelerated ledgers, no Horizon)
+  joins `testinfra/docker-compose-test.yml` beside Besu.
 
 ## 12.7 Acceptance criteria
 
@@ -170,7 +194,8 @@ operations).
 4. Fee-bump path: artificially underprice inclusion fee → stale detection → fee-bump →
    inclusion.
 5. Retention-gap drill: stop the indexer > retention, restart → loud failure without backfill
-   config; successful catch-up with Horizon backfill configured.
+   config; successful catch-up once an RPC/indexer/archive-based backfill source is configured
+   (no Horizon involved - see §12.4).
 6. Throughput: ≥ N parallel in-flight submissions with a channel-account pool of N, no
    `txBAD_SEQ` storms.
 7. Sequencer re-endorsement path on auth-entry expiry exercised by an integration test.

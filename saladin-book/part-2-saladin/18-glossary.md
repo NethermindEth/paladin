@@ -66,8 +66,10 @@ Consolidated definitions for the whole book. Terms are also defined at first use
   **invoker authorization** — a contract implicitly authorizes calls it makes itself.
 - **Custom account contract** — a contract defining its own signature-verification rules.
 - **stellar-rpc** — the node JSON-RPC API (short retention: 24 h–7 d); **Horizon** — the
-  legacy full-history API; **history archives / Galexie** — checkpointed full history exports;
-  **quickstart** — the all-in-one Stellar docker image for local networks.
+  legacy, now-deprecated full-history REST API; **not used by this project**, which relies on
+  stellar-rpc plus history archives/Galexie for any future backfill needs; **history archives /
+  Galexie** — checkpointed full history exports; **quickstart** — the all-in-one Stellar docker
+  image for local networks.
 - **CAP** — Core Advancement Proposal (Stellar's protocol-change process); **Protocol 22/25/26**
   — network upgrades (BLS12-381; BN254 + Poseidon; BN254 MSM + scalar arithmetic).
 - **Classic asset** — a natively issued Stellar token (`code:issuer`), incl. **XLM** (the

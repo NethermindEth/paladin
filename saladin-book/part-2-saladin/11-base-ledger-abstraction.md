@@ -6,12 +6,21 @@ concrete packages, interfaces, proto messages, and migration steps.
 
 > **Implementation status.** The `baseledger` package, the EVM `Client` implementation, the
 > `ChainAddress` type, the proto v2 additions (§11.6), and the `ChainSubmitter` seam (§11.3) are
-> implemented on the `saladin` branch. Two design details evolved from this chapter's original
-> text during implementation — noted inline where they occur (§11.3's `ChainSubmitter` signatures;
-> §11.4's `ChainAddress` storage format). Not yet started: the Stellar backend itself
-> (`baseledger/stellar`, `stellarclient`), the `ledgerindexer` split (§11.3's `Ingestor`), and the
-> bulk of the internal `EthAddress` → `ChainAddress` manager migration (§11.4) — all still scoped
-> to their originally planned milestones (ch. 16).
+> implemented on the `saladin` branch. Chapter 12's foundational slice is also implemented, which
+> pulled forward part of §11.4's manager migration: `DBPublicTxn.From`/`.To` (and the
+> `InMemoryTxStateReadOnly` interface) are now `pldtypes.ChainAddress`, discovered as a genuine
+> blocking requirement for a Stellar `ChainSubmitter` to resolve a real signing address from a
+> persisted transaction record, not merely a nice-to-have. The boundary conversions back to the
+> EVM-shaped `pldapi.PublicTx` API type (which remains `EthAddress`-typed, out of scope) are
+> fallible and documented at each call site (`mapPersistedTransaction`, the submission-writer
+> sequencer handoff, etc.). `orchestrator.signingAddress` and the nonce-allocation/balance-check
+> cluster were deliberately left `EthAddress`-typed — not forced to change, consistent with
+> channel-account pooling still being deferred (ch. 12 §12.2). Three design details evolved from
+> this chapter's original text during implementation — noted inline where they occur (§11.3's
+> `ChainSubmitter` signatures; §11.4's `ChainAddress` storage format; the manager migration just
+> described). Not yet started: the `ledgerindexer` split (§11.3's `Ingestor`) and full
+> `componentmgr` node boot for `type: stellar` (blocked on that same ledger indexer) — still
+> scoped to their originally planned milestones (ch. 16).
 
 ## 11.1 Design principles
 
@@ -115,7 +124,7 @@ type Ingestor interface {
     // Ordered, FINAL ledger units from the checkpoint. EVM resolves re-orgs internally and
     // emits only at configured confirmation depth; Stellar emits every closed ledger (SCP finality).
     StreamLedgers(ctx context.Context, from LedgerCheckpoint) (<-chan *LedgerUnit, error)
-    BackfillSource() BackfillCapability   // NONE | ARCHIVE (Horizon/Galexie) | FULL (EVM node)
+    BackfillSource() BackfillCapability   // NONE | ARCHIVE (history-archives/Galexie or a future RPC/indexer-based backfill) | FULL (EVM node)
     TipHeight(ctx context.Context) (uint64, error)
 }
 

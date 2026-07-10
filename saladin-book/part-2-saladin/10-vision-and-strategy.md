@@ -113,11 +113,12 @@ The circuits and Go proving stack port unchanged; only the verifier contract is 
 - Nodes expose **stellar-rpc** (JSON-RPC): `getLedgers`, `getEvents`, `getTransaction(s)`,
   `getLedgerEntries`, `simulateTransaction`, `sendTransaction`, `getFeeStats`, …
 - **Retention is short**: stellar-rpc keeps ~24 hours by default, 7 days maximum. Deep history
-  lives in **Horizon** (the legacy API) or **history archives** (checkpoint files every 64
-  ledgers, exportable via Galexie). An indexer must ingest continuously and treat retention gaps
-  as an operational emergency (ch. 12).
-- The **Go SDK** is `github.com/stellar/go` (being renamed `go-stellar-sdk`): `txnbuild`
-  (transaction construction), XDR codecs, RPC + Horizon clients. ⚠️ Track the module rename.
+  lives in **history archives** (checkpoint files every 64 ledgers, exportable via Galexie) — this
+  project has no Horizon dependency; historical ingestion is RPC/indexer/archive-based only. An
+  indexer must ingest continuously and treat retention gaps as an operational emergency (ch. 12).
+- The **Go SDK** is `github.com/stellar/go-stellar-sdk` (the renamed successor to the deprecated
+  `github.com/stellar/go` — already migrated): `txnbuild` (transaction construction), XDR codecs,
+  and RPC clients.
 
 ### Terminology mapping table
 

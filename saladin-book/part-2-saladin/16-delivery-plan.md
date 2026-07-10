@@ -43,9 +43,9 @@ port-only with 3–4 engineers lands in the same window without I-1/I-2.
   `integration-test/`.
 - **Integration:** 3-node docker-compose Saladin vs quickstart in CI; nightly against public
   Stellar testnet (⚠️ quarterly testnet resets — environments must rebuild from one script).
-- **Chaos:** retention-gap drill (stop indexer > retention → loud failure → Horizon backfill);
-  forced-archival drill; auth-entry-expiry → re-endorsement; sequencer coordinator kill/handover
-  on Stellar timing.
+- **Chaos:** retention-gap drill (stop indexer > retention → loud failure → RPC/indexer/
+  archive-based backfill, no Horizon); forced-archival drill; auth-entry-expiry → re-endorsement;
+  sequencer coordinator kill/handover on Stellar timing.
 - **CI:** new matrix axis `baseledger={evm,stellar}` for core tests; Rust toolchain +
   `stellar-cli` in build images; reproducible-Wasm check (pinned rustc, locked build profile);
   CI leg against the *next* protocol's preview quickstart image (risk R11).
