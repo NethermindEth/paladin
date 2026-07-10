@@ -26,5 +26,6 @@ title: EventWithData
 | `block` | The block containing this event | [`IndexedBlock`](indexedblock.md#indexedblock) |
 | `soliditySignature` | A Solidity style description of the event and parameters, including parameter names and whether they are indexed | `string` |
 | `address` | The address of the smart contract that emitted this event | [`EthAddress`](simpletypes.md#ethaddress) |
+| `addressChain` | The chain-neutral address of the smart contract that emitted this event (optional; populated alongside 'address' for non-EVM base ledgers) | [`ChainAddress`](indexedtransaction.md#chainaddress) |
 | `data` | JSON formatted data from the event | [`RawJSON`](simpletypes.md#rawjson) |
 

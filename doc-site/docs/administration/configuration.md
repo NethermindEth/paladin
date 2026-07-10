@@ -165,7 +165,6 @@
 |-----|-------------|------|---------|
 | auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerstellarauth) | - |
 | connectionTimeout | Connection timeout | `string` | - |
-| horizonURL | Optional Horizon server URL for deep-history backfill beyond stellar-rpc's retention window | `string` | - |
 | httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
 | networkPassphrase | Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network) | `string` | - |
 | requestTimeout | Request timeout | `string` | - |
