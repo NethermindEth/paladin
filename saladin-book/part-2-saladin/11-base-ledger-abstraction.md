@@ -4,6 +4,15 @@ This chapter specifies the core refactor: making Paladin's engine chain-agnostic
 backend (ch. 12) can sit beside the EVM one. It is written to be executable by a coding agent:
 concrete packages, interfaces, proto messages, and migration steps.
 
+> **Implementation status.** The `baseledger` package, the EVM `Client` implementation, the
+> `ChainAddress` type, the proto v2 additions (§11.6), and the `ChainSubmitter` seam (§11.3) are
+> implemented on the `saladin` branch. Two design details evolved from this chapter's original
+> text during implementation — noted inline where they occur (§11.3's `ChainSubmitter` signatures;
+> §11.4's `ChainAddress` storage format). Not yet started: the Stellar backend itself
+> (`baseledger/stellar`, `stellarclient`), the `ledgerindexer` split (§11.3's `Ingestor`), and the
+> bulk of the internal `EthAddress` → `ChainAddress` manager migration (§11.4) — all still scoped
+> to their originally planned milestones (ch. 16).
+
 ## 11.1 Design principles
 
 1. **One node, one chain profile (initially).** A node is configured for `evm` *or* `stellar`.
@@ -133,26 +142,57 @@ Event *decoding* (raw → JSON the domains consume) moves behind a per-chain `Ev
 
 ### `publictxmgr.ChainSubmitter` — the seam inside the public tx manager
 
-The publictxmgr's orchestration — per-signer in-flight orchestrators, persisted submission
-records, stage state machine, confirmation matching — is ~80 % chain-neutral and stays. The
-EVM-specific 20 % (nonce assignment, gas pricing, RLP signing, resubmit-with-higher-gas) is
-extracted:
+**Implemented.** The publictxmgr's orchestration — per-signer in-flight orchestrators, persisted
+submission records, stage state machine, confirmation matching, balance/retry/metrics handling —
+is ~80 % chain-neutral and stays untouched. The EVM-specific 20 % (nonce assignment, gas pricing
+and signing, submission response classification, resubmit-with-higher-gas policy) is extracted
+behind `ChainSubmitter` (`core/go/internal/publictxmgr/chain_submitter.go`), with an EVM
+implementation in `core/go/internal/publictxmgr/evm_chain_submitter.go`:
 
 ```go
+type PreparedSubmission struct {
+    PublicTxnID     uint64
+    RawTransaction  pldtypes.HexBytes
+    TransactionHash *pldtypes.Bytes32
+    GasPricing      *pldapi.PublicTxGasPricing
+}
+
+type SubmitResult struct {
+    TxHash      *pldtypes.Bytes32
+    Outcome     SubmissionOutcome
+    ErrorReason string // EVM-specific today; chain-neutral string, not ethclient.ErrorReason
+    Retry       bool   // true only when the caller's bounded submission retry should attempt again immediately
+}
+
 type ChainSubmitter interface {
     AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error)
-        // EVM: next nonce. Stellar: next sequence number (see ch. 12 — channel accounts change the model)
-    PrepareSubmission(ctx context.Context, ptx *PersistedPubTx) (*PreparedSubmission, error)
-        // estimate/simulate + build + sign via KeyManager
-    Submit(ctx context.Context, ps *PreparedSubmission) (pldtypes.Bytes32, SubmissionOutcome, error)
-    ActionOnStale(ctx context.Context, ptx *PersistedPubTx) (StaleAction, error)
-        // EVM: re-price gas, resubmit same nonce
+        // EVM: next nonce (baseLedger.GetAccountInfo). Stellar: next sequence number
+        // (ch. 12 — channel accounts change the model)
+    PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, gasPricing *pldapi.PublicTxGasPricing) (*PreparedSubmission, error)
+        // build + sign via KeyManager. Note: gasPricing is passed explicitly rather than read off
+        // ptx, because the resolved-for-this-attempt gas price lives in in-memory orchestrator
+        // state (mtx.CurrentGasPrice), not the persisted row — a signature detail settled during
+        // implementation, per this book's own "final signatures at code review" caveat.
+    Submit(ctx context.Context, ps *PreparedSubmission) (*SubmitResult, error)
+    ActionOnStale(ctx context.Context, ptx *DBPublicTxn) (StaleAction, error)
+        // EVM: always StaleActionRebuild (re-price, re-sign, re-submit) — matches the engine's
+        // existing unconditional behavior on resubmit-interval expiry.
         // Stellar: fee-bump wrap OR re-simulate+rebuild; archived entries → restore preamble (ch. 12)
 }
 ```
 
+Design note on why `Submit` returns `*SubmitResult` rather than the originally-sketched
+`(pldtypes.Bytes32, SubmissionOutcome, error)`: the caller's bounded retry loop (`submitTX` in
+`transaction_submission.go`) needs to distinguish "stop retrying, an error occurred" from "retry
+immediately" — a distinction that, for EVM, depends on classifying the underlying RPC error
+(nonce-too-low, already-known, underpriced, reverted, or unrecognized). Folding that
+chain-specific classification into a small result struct (rather than requiring the chain-neutral
+`submitTX` wrapper to inspect `ethclient.ErrorReason` values itself) keeps the orchestration layer
+genuinely chain-agnostic.
+
 The orchestrator's `nonce` column persists as the opaque *ordering key* (uint64 on both chains).
-One new nullable column: `restore_tx_hash` on `public_txns` (Stellar restore preamble, ch. 12).
+One new nullable column: `restore_tx_hash` on `public_txns` (Stellar restore preamble, ch. 12;
+migration `000036_public_txn_restore_hash` already applied).
 
 ## 11.4 The address problem
 
@@ -164,27 +204,52 @@ addresses of two kinds (`G…` accounts, `C…` contracts).
 |---|---|
 | A. Widen everything to a universal 32-byte address (left-pad EVM) | ❌ Breaks every EVM JSON-RPC consumer; padding ambiguity; upstream would never accept |
 | B. Parameterize managers with Go generics | ❌ Infects every interface in `components/`; kills upstream diffs; generics+GORM misery |
-| **C. Opaque variable-length `pldtypes.ChainAddress`** | ✅ chosen |
+| **C. Opaque `pldtypes.ChainAddress`** | ✅ chosen — implemented as a **string**-tagged union, not the binary form originally sketched (below) |
 
-**`ChainAddress` specification** (`sdk/go/pkg/pldtypes/chain_address.go`, new):
+**`ChainAddress` specification, as implemented** (`sdk/go/pkg/pldtypes/chain_address.go`):
 
-- **Binary form:** 1 discriminator byte + payload. `0x01` = EVM (20 bytes), `0x02` =
-  Stellar account (32B ed25519), `0x03` = Stellar contract (32B), `0x04` reserved (muxed).
-  DB address columns are `BYTEA` (already variable-length in Postgres); existing EVM rows are
-  migrated by prefixing: `UPDATE t SET col = '\x01' || col` — one migration file per affected
-  table (enumerate with `grep -rl EthAddress core/go/internal | xargs grep -l gorm`).
-- **Text form (JSON-RPC, protos, domain strings): the native rendering per kind** — `0x…` 40-hex
-  for EVM, StrKey `G…`/`C…` for Stellar. Parsing is unambiguous by prefix. **Therefore existing
-  EVM API payloads are byte-identical** — the property that makes this both backward-compatible
-  and upstreamable.
-- `EthAddress` remains as a type with `ChainAddress()`/`FromChainAddress()` converters and a
-  deprecation path; internal managers migrate to `ChainAddress`; the EVM backend converts at its
-  boundary.
+```go
+type ChainAddress struct {
+    kind ChainAddressKind // e.g. "eth", "stellar_account", "stellar_contract"
+    text string           // the native text rendering — see below
+}
+```
+
+- **No binary/discriminator-byte encoding.** The originally-sketched design (1 discriminator
+  byte + raw address bytes, `0x01`/`0x02`/`0x03` prefixes) was **not** built. Instead, the type
+  is a kind tag plus the address's native text form.
+- **Text form is the native rendering per kind** — `0x…` 40-hex for EVM (via `EthAddress.String()`),
+  StrKey `G…`/`C…` passed through verbatim for Stellar. Parsing (`ParseChainAddressCtx`) is
+  unambiguous by prefix (`0x`/40-hex-no-prefix → EVM; `G…` → Stellar account; `C…` → Stellar
+  contract). **Existing EVM API payloads are byte-identical** — the property that makes this both
+  backward-compatible and upstreamable — achieved here directly, without a binary layer.
+- **Storage is TEXT, not BYTEA.** `Value()`/`Scan()` (implementing `driver.Valuer`/`sql.Scanner`)
+  persist the hex string (without `0x` prefix, for EVM) or the raw StrKey (for Stellar) as plain
+  text. **Consequently, no migration of existing EVM address columns is needed at all** —
+  `public_txns.from`/`.to` and other address columns remain the `TEXT` type they always were;
+  `ChainAddress` values round-trip through the same column type unchanged. (Verify this holds for
+  every address column before relying on it in a new context: some tables may still declare a
+  fixed-width `VARCHAR` — confirm `TEXT`/unbounded `VARCHAR` before assuming zero migration.)
+- `EthAddress.ChainAddress()` and `EthAddressFromChainAddress()` converters exist; internal
+  managers migrate to `ChainAddress` gradually (as of this writing, `ChainAddress` is used only at
+  the `baseledger` boundary itself — the internal-manager migration below is still ahead of us).
 - `pldtypes.Bytes32` (state IDs, tx hashes, schema hashes) is untouched.
 
-This is the single largest mechanical refactor of the port (~2.5 em) and gets its own milestone
-(M1) with an iron rule: **zero behavior change**, enforced by golden tests capturing EVM
-JSON-RPC payloads byte-for-byte before/after.
+**Why the simpler design won.** The binary/BYTEA scheme was written before implementation began;
+during implementation, the TEXT-based design was chosen instead because it achieves the same
+goal (byte-identical EVM API payloads, opaque cross-chain addressing) with less mechanical churn
+— no address-column migrations, no binary/text conversion boundary to get wrong — at the cost of
+a few extra bytes per stored address and losing the discriminator byte as a single-byte
+fast-dispatch (kind is checked via the Go type's `kind` field instead, which is equivalent at
+negligible cost). This book's plan and the shipped code diverged here; the plan is now corrected
+to match reality rather than the reverse.
+
+The internal-manager `EthAddress` → `ChainAddress` migration itself (the single largest mechanical
+refactor of the port, ~2.5 em) has **not** started — it remains milestone M1's scope (ch. 16), with
+an iron rule once it begins: **zero behavior change**, enforced by golden tests capturing EVM
+JSON-RPC payloads byte-for-byte before/after (an initial golden-payload test already exists —
+`core/go/internal/publictxmgr/golden_payload_test.go` — fixing `mapPersistedTransaction`'s JSON
+shape as the first such regression guard; §11.8 criterion 2).
 
 ## 11.5 State schemas: deliberately unchanged
 
@@ -275,15 +340,27 @@ transport plugin, **RegistryManager** and the plugin API, **GroupManager**, **Id
 
 ## 11.8 Acceptance criteria (for a coding agent)
 
-1. `git grep -l "ethclient.EthClient"` inside `core/go/internal` returns only
-   `baseledger/evm/**` after the refactor (managers depend on `baseledger.Client`).
+1. `git grep -l "ethclient.EthClient"` inside `core/go/internal` returns **zero hits** (note:
+   `baseledger/evm/**` lives under `core/go/pkg`, not `core/go/internal`, so it is outside this
+   grep's scope by construction — the criterion is about `core/go/internal` managers no longer
+   holding a direct `ethclient.EthClient`-typed dependency, not a literal substring match against
+   the package path). ✅ Met for `publictxmgr` (the `ChainSubmitter` extraction removed its direct
+   `ethClient`/`ethClientFactory` fields). ⚠️ Known, documented exception: `txmgr` still holds
+   `ethClientFactory` for one call site needing `EthClientWithKeyManager`'s ABI-encoding helpers
+   (`transaction_submission.go:335`) — ABI encoding is intentionally kept EVM-specific and out of
+   the BLI (§11.5), so this is deferred to milestone M1's broader migration, not silently ignored.
 2. Golden-payload tests: recorded EVM JSON-RPC request/response fixtures replay byte-identically
-   before/after M1+M2 (addresses, receipts, queries).
-3. All 35 existing migrations + new `ChainAddress` migrations apply cleanly on Postgres and
-   SQLite; migrated EVM rows round-trip to identical `0x…` text forms.
+   before/after M1+M2 (addresses, receipts, queries). An initial instance exists —
+   `core/go/internal/publictxmgr/golden_payload_test.go` fixes `mapPersistedTransaction`'s JSON
+   shape against `testdata/golden/public_tx.json`; this needs extending as the M1 migration
+   proceeds (more shapes: receipts, queries, other managers' JSON payloads).
+3. All 35 existing migrations apply cleanly on Postgres and SQLite (confirmed); **no
+   `ChainAddress` migration is needed** — see §11.4's "storage is TEXT, not BYTEA" correction —
+   existing EVM address columns are unmigrated and unaffected.
 4. Existing domain plugin binaries (unrebuilt) pass the full EVM testbed
    (`domains/integration-test`) against the refactored engine.
-5. `pldconf` accepts legacy configs (no `baseLedger.type`) as EVM without warnings.
+5. `pldconf` accepts legacy configs (no `baseLedger.type`) as EVM without warnings. ✅ Met —
+   `BaseLedgerConfig.ResolvedType()` defaults absent/empty `Type` to `evm`.
 6. Upstream CI (Gradle build, Go tests, Solidity tests) is green on the refactor branch.
 
 ---
