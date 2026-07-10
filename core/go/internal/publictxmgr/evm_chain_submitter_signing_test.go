@@ -60,7 +60,8 @@ func TestInFlightTxSignFail(t *testing.T) {
 		Nonce: ethtypes.NewHexInteger64(12345),
 	}
 
-	_, txHash, err := it.signTx(ctx, fromAddr, ethTx)
+	chainSubmitter := it.chainSubmitter.(*evmChainSubmitter)
+	_, txHash, err := chainSubmitter.signTx(ctx, fromAddr, ethTx)
 	assert.Regexp(t, "sign failed", err)
 	assert.Nil(t, txHash)
 

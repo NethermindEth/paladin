@@ -28,7 +28,6 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/filters"
 	"github.com/LFDT-Paladin/paladin/core/internal/publictxmgr/metrics"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
-	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
@@ -85,11 +84,14 @@ type pubTxManager struct {
 	p                persistence.Persistence
 	bIndexer         blockindexer.BlockIndexer
 	sequencerManager components.SequencerManager
-	ethClient        ethclient.EthClient
 	baseLedger       baseledger.Client
+	chainSubmitter   ChainSubmitter
 	keymgr           components.KeyManager
 	rootTxMgr        components.TXManager
-	ethClientFactory ethclient.EthClientFactory
+	// allComponents is retained (rather than eagerly grabbing BaseLedger() in PostInit) because the
+	// base ledger client is only fully constructed once the eth client connects, which happens in
+	// StartManagers() - after every manager's PostInit has already run. See Start() below.
+	allComponents components.AllComponents
 	// gas price
 	gasPriceClient   GasPriceClient
 	submissionWriter *submissionWriter
@@ -172,8 +174,7 @@ func (ptm *pubTxManager) PostInit(pic components.AllComponents) error {
 	ctx := ptm.ctx
 	log.L(ctx).Debugf("Initializing public transaction manager")
 	ptm.nodeName = pic.TransportManager().LocalNodeName()
-	ptm.ethClientFactory = pic.EthClientFactory()
-	ptm.baseLedger = pic.BaseLedger()
+	ptm.allComponents = pic
 	ptm.keymgr = pic.KeyManager()
 	ptm.p = pic.Persistence()
 	ptm.bIndexer = pic.BlockIndexer()
@@ -190,10 +191,10 @@ func (ptm *pubTxManager) Start() error {
 	ctx := ptm.ctx
 	log.L(ctx).Debugf("Starting public transaction manager")
 
-	// The client is assured to be started by this point and availaptm
-	ptm.ethClient = ptm.ethClientFactory.SharedWS()
-	if ptm.baseLedger == nil {
-		ptm.baseLedger = baseledgerevm.WrapClient(ptm.ethClient)
+	// The base ledger client is assured to be started (and connected) by this point.
+	ptm.baseLedger = ptm.allComponents.BaseLedger()
+	if ptm.chainSubmitter == nil {
+		ptm.chainSubmitter = newEVMChainSubmitter(ptm)
 	}
 	ptm.gasPriceClient.Start(ctx, ptm.baseLedger)
 	if ptm.engineLoopDone == nil { // only start once

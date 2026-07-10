@@ -24,7 +24,6 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
-	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"golang.org/x/crypto/sha3"
@@ -40,16 +39,20 @@ func calculateTransactionHash(rawTxnData []byte) *pldtypes.Bytes32 {
 	return &hashBytes
 }
 
-func (it *inFlightTransactionStageController) submitTX(ctx context.Context, signedMessage []byte, calculatedTxHash *pldtypes.Bytes32, signerNonce string, contractAddress string, lastSubmitTime *pldtypes.Timestamp, cancelled func(context.Context) bool) (*pldtypes.Bytes32, *pldtypes.Timestamp, ethclient.ErrorReason, SubmissionOutcome, error) {
+// submitTX is the chain-neutral submission wrapper: it owns retry/cancellation/timing/metrics
+// orchestration (chapter 11's "~80% chain-neutral" observation), delegating the actual submit-and-classify
+// step to the ChainSubmitter (chain_submitter.go), which knows how to interpret chain-specific errors.
+func (it *inFlightTransactionStageController) submitTX(ctx context.Context, ps *PreparedSubmission, signerNonce string, lastSubmitTime *pldtypes.Timestamp, cancelled func(context.Context) bool) (*pldtypes.Bytes32, *pldtypes.Timestamp, ethclient.ErrorReason, SubmissionOutcome, error) {
 	var txHash *pldtypes.Bytes32
 	sendStart := time.Now()
-	if calculatedTxHash == nil {
+	if ps.TransactionHash == nil {
 		return nil, nil, ethclient.ErrorReasonInvalidInputs, SubmissionOutcomeFailedRequiresRetry, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
 	}
+	calculatedTxHash := ps.TransactionHash
 	log.L(ctx).Debugf("Sending raw transaction %s (lastSubmit=%s), Hash=%s", signerNonce, lastSubmitTime, calculatedTxHash)
 
 	submissionTime := confutil.P(pldtypes.TimestampNow())
-	var submissionErrorReason ethclient.ErrorReason // TODO: fix reason parsing
+	var submissionErrorReason ethclient.ErrorReason
 	var submissionOutcome SubmissionOutcome
 	var submissionError error
 
@@ -57,62 +60,25 @@ func (it *inFlightTransactionStageController) submitTX(ctx context.Context, sign
 		if cancelled(ctx) {
 			return false, nil
 		}
-		var submittedID baseledger.TxID
-		submittedID, submissionError = it.baseLedger.Submit(ctx, baseledger.SignedChainTx(signedMessage))
+		result, err := it.chainSubmitter.Submit(ctx, ps)
+		submissionError = err
+		txHash = nil
+		if result != nil {
+			txHash = result.TxHash
+			submissionOutcome = result.Outcome
+			submissionErrorReason = ethclient.ErrorReason(result.ErrorReason)
+		}
 		if submissionError == nil {
-			txHash = &submittedID
-			submissionOutcome = SubmissionOutcomeFailedRequiresRetry
 			it.thMetrics.RecordOperationMetrics(ctx, string(InFlightTxOperationTransactionSend), string(GenericStatusSuccess), time.Since(sendStart).Seconds())
-			if calculatedTxHash != nil && txHash.String() != calculatedTxHash.String() {
-				// TODO: Investigate why under high concurrency load with Besu we are triggering this, and the returned hash is for
-				//       a DIFFERENT NONCE that is submitted at an extremely close time.
-				log.L(ctx).Warnf("Received response for transaction %s, but calculated transaction hash %s is different from the response %s.", signerNonce, calculatedTxHash, txHash)
-				submissionError = i18n.NewError(ctx, msgs.MsgSubmitFailedWrongHashReturned, calculatedTxHash, txHash)
-				txHash = nil // clear the transaction hash as we are not certain it's correct
-				return true, submissionError
-			}
 			log.L(ctx).Debugf("Submitted %s successfully with hash=%s", signerNonce, txHash)
 			log.L(ctx).Infof("Transaction %s submitted. Hash: %s", signerNonce, calculatedTxHash)
-			submissionOutcome = SubmissionOutcomeSubmittedNew
-			return false, nil
-		} else {
-			if calculatedTxHash != nil {
-				txHash = calculatedTxHash
-			}
-			submissionErrorReason = ethclient.MapError(submissionError)
-			it.thMetrics.RecordOperationMetrics(ctx, string(InFlightTxOperationTransactionSend), string(GenericStatusFail), time.Since(sendStart).Seconds())
-			// We have some simple rules for handling reasons from the connector, which could be enhanced by extending the connector.
-			switch submissionErrorReason {
-			case ethclient.ErrorReasonTransactionUnderpriced:
-				log.L(ctx).Debugf("Transaction %s underpriced", signerNonce)
-				submissionOutcome = SubmissionOutcomeFailedRequiresRetry
-			case ethclient.ErrorReasonTransactionReverted:
-				// transaction could be reverted due to gas limit estimate too low
-				log.L(ctx).Debugf("Transaction %s reverted", signerNonce)
-				submissionOutcome = SubmissionOutcomeFailedRequiresRetry
-			case ethclient.ErrorKnownTransaction:
-				// check mined transaction also returns this error code
-				// KnownTransaction means it's in the mempool
-				log.L(ctx).Debugf("Transaction %s known with hash: %s (previous=%s)", signerNonce, txHash, submissionError)
-				submissionError = nil
-				submissionErrorReason = ""
-				submissionOutcome = SubmissionOutcomeAlreadyKnown
-			case ethclient.ErrorReasonNonceTooLow:
-				// NonceTooLow means a transaction with same nonce is already mined, this could mean:
-				//   1. we have a nonce conflict
-				//   2. our transaction is completed and we are waiting for the confirmation
-				log.L(ctx).Debugf("Nonce too low for transaction ID: %s. new transaction hash: %s, recorded transaction hash: %s", signerNonce, txHash, calculatedTxHash)
-				// otherwise, we revert back to track the old hash
-				submissionError = nil
-				submissionErrorReason = ""
-				submissionOutcome = SubmissionOutcomeNonceTooLow
-			default:
-				log.L(ctx).Errorf("Submission error for transaction ID %s with hash %s (requires retry): %s", signerNonce, txHash, submissionError)
-				submissionOutcome = SubmissionOutcomeFailedRequiresRetry
-				return true, submissionError
-			}
 			return false, nil
 		}
+		it.thMetrics.RecordOperationMetrics(ctx, string(InFlightTxOperationTransactionSend), string(GenericStatusFail), time.Since(sendStart).Seconds())
+		if result != nil && result.Retry {
+			return true, submissionError
+		}
+		return false, nil
 	})
 
 	if retryError != nil {

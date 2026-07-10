@@ -188,7 +188,8 @@ func newTestPublicTxManager(t *testing.T, realDBAndSigner bool, extraSetup ...fu
 	require.NoError(t, err)
 
 	if mocks.disableManagerStart {
-		pmgr.ethClient = pmgr.ethClientFactory.SharedWS()
+		pmgr.baseLedger = mocks.allComponents.BaseLedger()
+		pmgr.chainSubmitter = newEVMChainSubmitter(pmgr)
 		pmgr.gasPriceClient.Start(ctx, pmgr.baseLedger)
 	} else {
 		err = pmgr.Start()

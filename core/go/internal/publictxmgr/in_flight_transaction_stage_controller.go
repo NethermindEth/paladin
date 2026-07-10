@@ -576,8 +576,25 @@ func (it *inFlightTransactionStageController) startNewStage(ctx context.Context,
 	//    from the node but it is flaky behaviour that we have observed and should guard against
 	lastSubmitTime := it.stateManager.GetLastSubmitTime()
 	if lastSubmitTime != nil && time.Since(lastSubmitTime.Time()) > it.resubmitInterval {
-		log.L(ctx).Debugf("Transaction with ID %s entering retrieve gas price as exceeded resubmit interval of %s.", it.stateManager.GetSignerNonce(), it.resubmitInterval.String())
-		it.TriggerNewStageRun(ctx, InFlightTxStageRetrieveGasPrice, BaseTxSubStatusStale)
+		staleAction, err := it.chainSubmitter.ActionOnStale(ctx, &DBPublicTxn{
+			PublicTxnID: it.stateManager.GetPubTxnID(),
+			From:        it.stateManager.GetFrom(),
+		})
+		if err != nil {
+			log.L(ctx).Errorf("Transaction with ID %s: error determining stale action: %s", it.stateManager.GetSignerNonce(), err)
+			return
+		}
+		switch staleAction {
+		case StaleActionRebuild, StaleActionResubmit:
+			log.L(ctx).Debugf("Transaction with ID %s entering retrieve gas price as exceeded resubmit interval of %s.", it.stateManager.GetSignerNonce(), it.resubmitInterval.String())
+			it.TriggerNewStageRun(ctx, InFlightTxStageRetrieveGasPrice, BaseTxSubStatusStale)
+		case StaleActionSubmitRestoreThen:
+			// Not yet applicable to EVM; reserved for future chain submitters (e.g. a Stellar
+			// submitter's restore-preamble flow, chapter 12).
+			log.L(ctx).Warnf("Transaction with ID %s: unsupported stale action %s for this chain submitter", it.stateManager.GetSignerNonce(), staleAction)
+		case StaleActionNone:
+			// no action required
+		}
 		return
 	}
 	// check and track the existing transaction hash- tracking is done in the block indexer so there is nothing to do here
@@ -649,10 +666,24 @@ func (it *inFlightTransactionStageController) TriggerStatusUpdate(ctx context.Co
 
 func (it *inFlightTransactionStageController) TriggerSignTx(ctx context.Context) error {
 	generation := it.stateManager.GetCurrentGeneration(ctx)
-	from := it.stateManager.GetFrom()
-	ethTX := it.stateManager.BuildEthTX()
+	ptx := &DBPublicTxn{
+		PublicTxnID: it.stateManager.GetPubTxnID(),
+		From:        it.stateManager.GetFrom(),
+		To:          it.stateManager.GetTo(),
+		Nonce:       confutil.P(it.stateManager.GetNonce()),
+		Gas:         it.stateManager.GetGasLimit(),
+		Value:       it.stateManager.GetValue(),
+		Data:        it.stateManager.GetData(),
+	}
+	gasPricing := it.stateManager.GetGasPriceObject()
 	it.executeAsync(func() {
-		signedMessage, txHash, err := it.signTx(ctx, from, ethTX)
+		var signedMessage []byte
+		var txHash *pldtypes.Bytes32
+		prepared, err := it.chainSubmitter.PrepareSubmission(ctx, ptx, gasPricing)
+		if err == nil {
+			signedMessage = prepared.RawTransaction
+			txHash = prepared.TransactionHash
+		}
 		log.L(ctx).Debugf("Adding signed message to output, hash %s, signedMessage not nil %t, err %+v", txHash, signedMessage != nil, err)
 		generation.AddSignOutput(ctx, signedMessage, txHash, err)
 	}, ctx, generation, false)
@@ -663,9 +694,11 @@ func (it *inFlightTransactionStageController) TriggerSubmitTx(ctx context.Contex
 	generation := it.stateManager.GetCurrentGeneration(ctx)
 	signerNonce := it.stateManager.GetSignerNonce()
 	lastSubmitTime := it.stateManager.GetLastSubmitTime()
+	pubTxnID := it.stateManager.GetPubTxnID()
 
 	it.executeAsync(func() {
-		txHash, submissionTime, errReason, submissionOutcome, err := it.submitTX(ctx, signedMessage, calculatedHash, signerNonce, contractAddress, lastSubmitTime, generation.IsCancelled)
+		ps := &PreparedSubmission{PublicTxnID: pubTxnID, RawTransaction: signedMessage, TransactionHash: calculatedHash}
+		txHash, submissionTime, errReason, submissionOutcome, err := it.submitTX(ctx, ps, signerNonce, lastSubmitTime, generation.IsCancelled)
 
 		generation.AddSubmitOutput(ctx, txHash, submissionTime, submissionOutcome, errReason, err)
 	}, ctx, generation, false)

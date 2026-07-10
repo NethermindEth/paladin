@@ -30,6 +30,18 @@ type PreparedSubmission struct {
 	GasPricing      *pldapi.PublicTxGasPricing
 }
 
+// SubmitResult is the outcome of a ChainSubmitter.Submit call: the (possibly unchanged) transaction
+// hash, the classified outcome, and (EVM-specific today) a string error-reason for observability/persistence.
+type SubmitResult struct {
+	TxHash      *pldtypes.Bytes32
+	Outcome     SubmissionOutcome
+	ErrorReason string
+	// Retry is true only when the underlying error is unrecognized by the chain submitter and the
+	// caller's bounded submission retry should attempt again immediately, rather than waiting for
+	// the orchestrator's normal resubmit-interval polling to trigger a fresh PrepareSubmission.
+	Retry bool
+}
+
 type StaleAction string
 
 const (
@@ -39,13 +51,13 @@ const (
 	StaleActionSubmitRestoreThen StaleAction = "submitRestoreThen"
 )
 
-// ChainSubmitter is the chain-specific seam inside the public transaction manager.
-// The current EVM path remains wired through the existing stage controllers; this
-// interface is introduced first so EVM and Stellar submitters can converge on the
-// same orchestration contract without changing existing EVM behavior in-place.
+// ChainSubmitter is the chain-specific seam inside the public transaction manager: nonce/sequence
+// assignment, gas pricing and signing (build + sign into a submittable payload), submission and
+// response classification, and staleness/resubmit policy. The orchestrator and in-flight stage
+// controller own the chain-neutral 80%: polling, balance checks, persistence, retries, and metrics.
 type ChainSubmitter interface {
 	AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error)
-	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn) (*PreparedSubmission, error)
-	Submit(ctx context.Context, ps *PreparedSubmission) (pldtypes.Bytes32, SubmissionOutcome, error)
+	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, gasPricing *pldapi.PublicTxGasPricing) (*PreparedSubmission, error)
+	Submit(ctx context.Context, ps *PreparedSubmission) (*SubmitResult, error)
 	ActionOnStale(ctx context.Context, ptx *DBPublicTxn) (StaleAction, error)
 }

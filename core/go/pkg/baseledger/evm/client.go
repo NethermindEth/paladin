@@ -151,8 +151,35 @@ func (c *Client) EstimateResources(ctx context.Context, tx *baseledger.UnsignedC
 	return res, nil
 }
 
-func (c *Client) BuildTransaction(_ context.Context, _ *baseledger.UnsignedChainTx, _ *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {
-	return baseledger.SignablePayload{}, fmt.Errorf("EVM baseledger BuildTransaction is provided by publictxmgr signing until the ChainSubmitter seam is fully wired")
+// BuildTransaction returns the EIP-1559 signature payload for an unsigned transaction plus its
+// resource estimate. Note this returns the bytes-to-sign, not a finalized raw transaction: EIP-1559
+// finalization (ethsigner.Transaction.FinalizeEIP1559WithSignature) needs the live unsigned-transaction
+// object alongside its derived signature payload, which this chain-neutral opaque-bytes return type
+// cannot carry. publictxmgr's ChainSubmitter therefore builds and finalizes directly (transaction_submission
+// design, chapter 11) rather than round-tripping through this method for submission; this method exists
+// as an independently correct capability of the Client interface (e.g. for external/offline signing flows).
+func (c *Client) BuildTransaction(_ context.Context, tx *baseledger.UnsignedChainTx, est *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {
+	ethTx, err := evmUnsignedTxToTransaction(tx)
+	if err != nil {
+		return baseledger.SignablePayload{}, err
+	}
+	if tx.Nonce != nil {
+		ethTx.Nonce = ethtypes.NewHexIntegerU64(*tx.Nonce)
+	}
+	if est != nil {
+		if est.Gas != nil {
+			ethTx.GasLimit = ethtypes.NewHexIntegerU64(*est.Gas)
+		}
+		if est.GasPricing != nil {
+			ethTx.MaxFeePerGas = (*ethtypes.HexInteger)(est.GasPricing.MaxFeePerGas)
+			ethTx.MaxPriorityFeePerGas = (*ethtypes.HexInteger)(est.GasPricing.MaxPriorityFeePerGas)
+		}
+	}
+	sigPayload := ethTx.SignaturePayloadEIP1559(c.ChainInfo().EVMChainID)
+	return baseledger.SignablePayload{
+		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+		Payload:     sigPayload.Bytes(),
+	}, nil
 }
 
 func (c *Client) Submit(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
@@ -172,8 +199,14 @@ func hashSignedTransaction(raw baseledger.SignedChainTx) pldtypes.Bytes32 {
 	return pldtypes.MustParseBytes32(hex.EncodeToString(msgHash.Sum(nil)))
 }
 
+// GetTransactionResult requires a block-indexer dependency that is not yet wired into the EVM
+// baseledger client: correlating a transaction hash to its on-chain result is the job of the
+// chain-neutral ledger indexer split described in chapter 11 §11.3 ("core/go/internal/ledgerindexer"),
+// which has not yet been implemented. Deferred rather than stubbed with a fake block-indexer wiring
+// here, to avoid threading a blockindexer.BlockIndexer dependency through every WrapClient call site
+// ahead of that refactor actually landing.
 func (c *Client) GetTransactionResult(_ context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
-	return nil, fmt.Errorf("GetTransactionResult(%s) is provided by the ledger indexer in chapter 11", id)
+	return nil, fmt.Errorf("GetTransactionResult(%s) requires the ledger-indexer dependency planned for chapter 11's baseledger.Ingestor split, not yet wired into this client", id)
 }
 
 func evmCallRequestToTransaction(req *baseledger.CallRequest) (*ethsigner.Transaction, error) {

@@ -88,6 +88,7 @@ type AccountInfo struct {
 type UnsignedChainTx struct {
 	From        pldtypes.ChainAddress  `json:"from"`
 	To          *pldtypes.ChainAddress `json:"to,omitempty"`
+	Nonce       *uint64                `json:"nonce,omitempty"` // evm: required to build a submittable transaction; absent for read-only calls/estimates
 	PayloadKind PayloadEncoding        `json:"payloadKind"`
 	Payload     []byte                 `json:"payload"`
 	Intent      json.RawMessage        `json:"intent,omitempty"`
@@ -153,6 +154,10 @@ type LedgerCheckpoint struct {
 	Hash     pldtypes.Bytes32 `json:"hash"`
 }
 
+// Ingestor and the types below it (LedgerUnit, IndexedChainTx, IndexedChainEvent) are chapter 12
+// scaffolding for the planned core/go/internal/ledgerindexer split (chapter 11 §11.2/§11.3):
+// intentionally unreferenced elsewhere in the codebase until that refactor lands. Kept here
+// (rather than deleted) because chapter 11's own text shows this shape as the target design.
 type Ingestor interface {
 	StreamLedgers(ctx context.Context, from LedgerCheckpoint) (<-chan *LedgerUnit, error)
 	BackfillSource() BackfillCapability

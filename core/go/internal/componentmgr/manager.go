@@ -380,6 +380,20 @@ func (cm *componentManager) stopEthClient() {
 	cm.ethClientFactory.Stop()
 }
 
+// newBaseLedgerClient dispatches construction of the base ledger client on the configured chain
+// kind. Init() already validates cm.conf.BaseLedger.Type and rejects anything other than "evm"
+// today, so only that branch is reachable - the switch exists as the single, obvious extension
+// point for a future chain kind (e.g. "stellar", chapter 12) rather than requiring another
+// restructuring of StartManagers() when that lands.
+func (cm *componentManager) newBaseLedgerClient() (baseledger.Client, error) {
+	switch cm.conf.BaseLedger.ResolvedType() {
+	case pldconf.BaseLedgerTypeEVM:
+		return baseledgerevm.WrapClient(cm.ethClientFactory.SharedWS()), nil
+	default:
+		return nil, i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerUnsupported, cm.conf.BaseLedger.ResolvedType())
+	}
+}
+
 func (cm *componentManager) StartManagers() (err error) {
 
 	// start the eth client before any managers - this connects the WebSocket, and gathers the ChainID
@@ -387,7 +401,7 @@ func (cm *componentManager) StartManagers() (err error) {
 	err = cm.startEthClient()
 	err = cm.addIfStarted("eth_client", cm.ethClientFactory, err, msgs.MsgComponentEthClientStartError)
 	if err == nil {
-		cm.baseLedger = baseledgerevm.WrapClient(cm.ethClientFactory.SharedWS())
+		cm.baseLedger, err = cm.newBaseLedgerClient()
 	}
 
 	// start the managers

@@ -118,10 +118,39 @@ func TestEstimateResourcesReturnsRevertDataOnError(t *testing.T) {
 	require.Nil(t, res.Gas)
 }
 
-func TestBuildTransactionReturnsNotWiredError(t *testing.T) {
+func TestBuildTransaction(t *testing.T) {
+	ctx := context.Background()
+	from := pldtypes.MustEthAddress("0x1d0cd5b99d2e2a380e52b4000377dd507c6df754").ChainAddress()
+	to := pldtypes.MustEthAddress("0x2d0cd5b99d2e2a380e52b4000377dd507c6df754").ChainAddress()
+	nonce := uint64(7)
+	gas := uint64(21000)
+
+	mockEth := ethclientmocks.NewEthClient(t)
+	mockEth.On("ChainID").Return(int64(8453))
+
+	c := WrapClient(mockEth)
+	payload, err := c.BuildTransaction(ctx, &baseledger.UnsignedChainTx{
+		From:        from,
+		To:          &to,
+		Nonce:       &nonce,
+		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+		Payload:     []byte{0x01, 0x02},
+	}, &baseledger.ResourceEstimate{Gas: &gas})
+	require.NoError(t, err)
+	require.Equal(t, baseledger.PayloadEncodingFunctionCallData, payload.PayloadKind)
+	require.NotEmpty(t, payload.Payload)
+}
+
+func TestBuildTransactionRejectsNonEVMAddress(t *testing.T) {
+	from, err := pldtypes.NewStellarAccountAddress("GABC")
+	require.NoError(t, err)
+
 	c := WrapClient(ethclientmocks.NewEthClient(t))
-	_, err := c.BuildTransaction(context.Background(), &baseledger.UnsignedChainTx{}, &baseledger.ResourceEstimate{})
-	require.EqualError(t, err, "EVM baseledger BuildTransaction is provided by publictxmgr signing until the ChainSubmitter seam is fully wired")
+	_, err = c.BuildTransaction(context.Background(), &baseledger.UnsignedChainTx{
+		From:        from,
+		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+	}, &baseledger.ResourceEstimate{})
+	require.EqualError(t, err, `chain address kind "stellar_account" is not an EVM address`)
 }
 
 func TestSubmit(t *testing.T) {
@@ -154,7 +183,7 @@ func TestGetTransactionResultReturnsNotWiredError(t *testing.T) {
 	c := WrapClient(ethclientmocks.NewEthClient(t))
 	id := pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	_, err := c.GetTransactionResult(context.Background(), id)
-	require.EqualError(t, err, "GetTransactionResult(0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef) is provided by the ledger indexer in chapter 11")
+	require.EqualError(t, err, "GetTransactionResult(0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef) requires the ledger-indexer dependency planned for chapter 11's baseledger.Ingestor split, not yet wired into this client")
 }
 
 func TestEVMUnsignedTxToTransaction(t *testing.T) {
