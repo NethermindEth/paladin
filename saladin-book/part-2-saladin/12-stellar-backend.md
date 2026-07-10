@@ -3,11 +3,11 @@
 The Stellar implementation of the BLI: a client, a signer extension, an ingestor, and a
 submitter. Everything here lives in `core/go/pkg/stellarclient`,
 `core/go/pkg/baseledger/stellar`, and `core/go/internal/publictxmgr` (Stellar submitter), built
-on `github.com/stellar/go` (⚠️ being renamed `go-stellar-sdk` — pin and track).
+on `github.com/stellar/go-stellar-sdk` (⚠️ being renamed `go-stellar-sdk` — pin and track).
 
 ## 12.1 `stellarclient`
 
-Mirrors `ethclient`'s role. RPC methods used: `simulateTransaction`, `sendTransaction`,
+Mirrors `ethclient`'s role as a thin constructor over Stellar RPC. RPC methods used: `simulateTransaction`, `sendTransaction`,
 `getTransaction(s)`, `getLedgers`, `getEvents`, `getLedgerEntries`, `getLatestLedger`,
 `getFeeStats`, `getNetwork`, `getHealth`.
 
@@ -122,8 +122,8 @@ operations).
 - **Retention is the operational constraint.** stellar-rpc keeps 24 h (default) to 7 d (max).
   Responses: (1) checkpoint per ledger (already the indexer model); (2) on startup, if
   `checkpoint < oldestLedger(rpc)` → **fail loudly** unless a backfill source is configured
-  (`stellar.backfill.horizonURL` walks Horizon; serious deployments run Galexie/history-archive
-  ingestion); (3) ops guidance: self-host stellar-rpc with 7-day retention; treat a gap beyond
+  (future historical ingestion should be RPC/indexer/archive based rather than Horizon-backed in this repo); 
+  (3) ops guidance: self-host stellar-rpc with 7-day retention; treat a gap beyond
   retention as disaster recovery.
 - **State-resync escape hatch.** Because the SNoto/SZeto contracts keep their authoritative sets
   as enumerable ledger entries (ch. 13), `stellarclient.SnapshotContractState(contractID,
