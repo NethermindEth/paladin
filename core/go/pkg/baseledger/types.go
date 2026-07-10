@@ -19,6 +19,7 @@ package baseledger
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -51,6 +52,12 @@ type Client interface {
 	BuildTransaction(ctx context.Context, tx *UnsignedChainTx, est *ResourceEstimate) (SignablePayload, error)
 	Submit(ctx context.Context, raw SignedChainTx) (TxID, error)
 	GetTransactionResult(ctx context.Context, id TxID) (*TxResult, error)
+}
+
+// GasPricingCapability is implemented by ledgers that can natively answer public gas-pricing queries.
+type GasPricingCapability interface {
+	DetectZeroGasPrice(ctx context.Context) (bool, error)
+	EstimateGasPricing(ctx context.Context, req *GasPricingRequest) (*pldapi.PublicTxGasPricing, error)
 }
 
 type ChainInfo struct {
@@ -89,7 +96,29 @@ type UnsignedChainTx struct {
 type ResourceEstimate struct {
 	Gas        *uint64                    `json:"gas,omitempty"`
 	GasPricing *pldapi.PublicTxGasPricing `json:"gasPricing,omitempty"`
+	RevertData []byte                     `json:"revertData,omitempty"`
 	Soroban    *SorobanResources          `json:"soroban,omitempty"`
+}
+
+type GasPricingRequest struct {
+	PriorityFeePercentile int `json:"priorityFeePercentile"`
+	HistoryBlockCount     int `json:"historyBlockCount"`
+	BaseFeeBufferFactor   int `json:"baseFeeBufferFactor"`
+}
+
+type EmptyGasPricingDataError struct {
+	BaseFeeCount int
+	RewardCount  int
+}
+
+func (e *EmptyGasPricingDataError) Error() string {
+	return fmt.Sprintf("fee history returned empty data: len(baseFeePerGas)=%d, len(reward)=%d", e.BaseFeeCount, e.RewardCount)
+}
+
+type NoValidGasPricingTipsError struct{}
+
+func (e *NoValidGasPricingTipsError) Error() string {
+	return "no valid tips found in fee history"
 }
 
 type SorobanResources struct {

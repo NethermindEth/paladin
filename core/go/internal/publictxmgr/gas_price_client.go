@@ -31,7 +31,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
-	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldresty"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -43,7 +43,7 @@ type GasPriceClient interface {
 	HasZeroGasPrice(ctx context.Context) bool
 	GetGasPriceObject(ctx context.Context, txFixedGasPrice *pldapi.PublicTxGasPricing, previouslySubmittedGPO *pldapi.PublicTxGasPricing, underpriced bool) (gasPrice *pldapi.PublicTxGasPricing, err error)
 	Init(ctx context.Context) error
-	Start(ctx context.Context, ethClient ethclient.EthClient)
+	Start(ctx context.Context, baseLedger baseledger.Client)
 	Stop()
 }
 
@@ -58,9 +58,9 @@ type HybridGasPriceClient struct {
 	bgCtx       context.Context
 	cancelBgCtx context.CancelFunc
 
-	hasZeroGasPrice bool
-	fixedGasPrice   *pldapi.PublicTxGasPricing
-	ethClient       ethclient.EthClient
+	hasZeroGasPrice  bool
+	fixedGasPrice    *pldapi.PublicTxGasPricing
+	gasPricingLedger baseledger.GasPricingCapability
 
 	conf *pldconf.GasPriceConfig
 
@@ -94,60 +94,25 @@ func (hGpc *HybridGasPriceClient) HasZeroGasPrice(ctx context.Context) bool {
 
 // estimateEIP1559Fees calculates optimal maxFeePerGas and maxPriorityFeePerGas using eth_feeHistory
 func (hGpc *HybridGasPriceClient) estimateEIP1559Fees(ctx context.Context) (*pldapi.PublicTxGasPricing, error) {
-	// Prepare reward percentiles for the RPC call
-	rewardPercentiles := []float64{float64(hGpc.priorityFeePercentile)}
-
-	// Fetch fee history
-	feeHistory, err := hGpc.ethClient.FeeHistory(ctx, hGpc.historyBlockCount, "latest", rewardPercentiles)
+	if hGpc.gasPricingLedger == nil {
+		return nil, errors.New("base ledger does not support dynamic gas pricing")
+	}
+	result, err := hGpc.gasPricingLedger.EstimateGasPricing(ctx, &baseledger.GasPricingRequest{
+		PriorityFeePercentile: hGpc.priorityFeePercentile,
+		HistoryBlockCount:     hGpc.historyBlockCount,
+		BaseFeeBufferFactor:   hGpc.baseFeeBufferFactor,
+	})
 	if err != nil {
 		log.L(ctx).Errorf("Failed to fetch fee history: %+v", err)
+		var noTipsErr *baseledger.NoValidGasPricingTipsError
+		if errors.As(err, &noTipsErr) {
+			return nil, err
+		}
+		var emptyDataErr *baseledger.EmptyGasPricingDataError
+		if errors.As(err, &emptyDataErr) {
+			return nil, i18n.NewError(ctx, msgs.MsgPublicTxMgrFeeHistoryEmpty, emptyDataErr.BaseFeeCount, emptyDataErr.RewardCount)
+		}
 		return nil, i18n.NewError(ctx, msgs.MsgPublicTxMgrFeeHistoryCallFailed, err)
-	}
-
-	if len(feeHistory.BaseFeePerGas) == 0 || len(feeHistory.Reward) == 0 {
-		log.L(ctx).Errorf("Fee history returned empty data: len(baseFeePerGas)=%d, len(reward)=%d",
-			len(feeHistory.BaseFeePerGas), len(feeHistory.Reward))
-		return nil, i18n.NewError(ctx, msgs.MsgPublicTxMgrFeeHistoryEmpty, len(feeHistory.BaseFeePerGas), len(feeHistory.Reward))
-	}
-
-	// Calculate maxPriorityFeePerGas (the tip)
-	var maxPriorityFeePerGas *pldtypes.HexUint256
-
-	// Extract tips for the specified percentile
-	tips := make([]*big.Int, 0, len(feeHistory.Reward))
-	for _, blockRewards := range feeHistory.Reward {
-		if len(blockRewards) > 0 {
-			tips = append(tips, blockRewards[0].Int())
-		}
-	}
-
-	if len(tips) == 0 {
-		// This is a failure in the eth_feeHistory RPC response if the tip details we've requested
-		// are not included in the response. There's not much we can do about it, so we'll return an error
-		// which will cause this stage to be retried until it does succeed.
-		errMsg := "no valid tips found in fee history"
-		log.L(ctx).Error(errMsg)
-		return nil, errors.New(errMsg)
-	} else {
-		// Find the highest tip for robustness
-		maxPriorityFeePerGas = (*pldtypes.HexUint256)(tips[0])
-		for _, tip := range tips[1:] {
-			if tip.Cmp(maxPriorityFeePerGas.Int()) > 0 {
-				maxPriorityFeePerGas = (*pldtypes.HexUint256)(tip)
-			}
-		}
-	}
-
-	// Calculate maxFeePerGas (the total bid)
-	// Get the next block's base fee (last element in the array) then create a buffer by multiplying the base fee by
-	// the configured factor to handle potential increases.
-	nextBlockBaseFee := feeHistory.BaseFeePerGas[len(feeHistory.BaseFeePerGas)-1].Int()
-	bufferedBaseFee := new(big.Int).Mul(nextBlockBaseFee, big.NewInt(int64(hGpc.baseFeeBufferFactor)))
-	maxFeePerGas := (*pldtypes.HexUint256)(new(big.Int).Add(bufferedBaseFee, maxPriorityFeePerGas.Int()))
-
-	result := &pldapi.PublicTxGasPricing{
-		MaxFeePerGas:         maxFeePerGas,
-		MaxPriorityFeePerGas: maxPriorityFeePerGas,
 	}
 	return result, nil
 }
@@ -482,25 +447,25 @@ func (hGpc *HybridGasPriceClient) Init(ctx context.Context) error {
 	return nil
 }
 
-func (hGpc *HybridGasPriceClient) Start(ctx context.Context, ethClient ethclient.EthClient) {
-	hGpc.ethClient = ethClient
+func (hGpc *HybridGasPriceClient) Start(ctx context.Context, baseLedger baseledger.Client) {
+	hGpc.gasPricingLedger = nil
+	if gp, ok := baseLedger.(baseledger.GasPricingCapability); ok {
+		hGpc.gasPricingLedger = gp
+	}
 
 	// If we haven't already been told a fixed gas price, check whether it's a zero gas price chain
-	// Although we cant use GasPrice for effective EIP-1559 dynamic gas pricing, we can still trust that if
-	// the response from this call is zero then the chain has zero gas price
-	if hGpc.fixedGasPrice == nil {
-		gasPrice, err := ethClient.GasPrice(ctx)
-		if err == nil && gasPrice != nil {
-			if gasPrice.Int().Sign() == 0 {
+	if hGpc.fixedGasPrice == nil && hGpc.gasPricingLedger != nil {
+		zeroGasPrice, err := hGpc.gasPricingLedger.DetectZeroGasPrice(ctx)
+		if err == nil {
+			if zeroGasPrice {
 				hGpc.hasZeroGasPrice = true
-				log.L(ctx).Debugf("Detected zero gas price chain from eth_gasPrice")
+				log.L(ctx).Debugf("Detected zero gas price chain from base ledger")
 			}
-		} else if err != nil {
-			log.L(ctx).Warnf("Could not determine gas price from eth_gasPrice: %v", err)
+		} else {
+			log.L(ctx).Warnf("Could not determine gas price from base ledger: %v", err)
 		}
 	}
 
-	// Start cache refresh ticker if cache is enabled
 	if hGpc.gasPriceCache != nil {
 		hGpc.startGasPriceRefresh(hGpc.bgCtx)
 	}

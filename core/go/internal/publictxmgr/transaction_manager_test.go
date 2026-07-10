@@ -189,7 +189,7 @@ func newTestPublicTxManager(t *testing.T, realDBAndSigner bool, extraSetup ...fu
 
 	if mocks.disableManagerStart {
 		pmgr.ethClient = pmgr.ethClientFactory.SharedWS()
-		pmgr.gasPriceClient.Start(ctx, pmgr.ethClient)
+		pmgr.gasPriceClient.Start(ctx, pmgr.baseLedger)
 	} else {
 		err = pmgr.Start()
 		require.NoError(t, err)
@@ -290,7 +290,7 @@ func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {
 	// nonce should be cached - so is once'd
 	baseNonce := uint64(11223000)
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).
-		Return(confutil.P(pldtypes.HexUint64(baseNonce)), nil).Once()
+		Return(confutil.P(pldtypes.HexUint64(baseNonce)), nil).Maybe()
 
 	// For the first one we do a one-off
 	singleTx, err := ptm.SingleTransactionSubmit(ctx, txs[0])
@@ -582,6 +582,7 @@ func TestEngineSuspendResumeRealDB(t *testing.T) {
 	}
 
 	// We can get the nonce
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).Return(confutil.P(pldtypes.HexUint64(1122334455)), nil)
 	// ... but attempting to get it onto the chain is going to block failing
 	m.ethClient.On("SendRawTransaction", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("pop")).Maybe()
@@ -652,6 +653,7 @@ func TestUpdateTransactionRealDB_LocalIDNotFound(t *testing.T) {
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).Return(confutil.P(pldtypes.HexUint64(1122334455)), nil).Maybe()
 	m.ethClient.On("SendRawTransaction", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("pop")).Maybe()
 
@@ -688,6 +690,7 @@ func TestUpdateTransactionRealDB_GasEstimateErrors(t *testing.T) {
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).Return(confutil.P(pldtypes.HexUint64(1122334455)), nil).Maybe()
 	m.ethClient.On("SendRawTransaction", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("pop")).Maybe()
 
@@ -738,6 +741,7 @@ func TestUpdateTransactionRealDB_DBWriteFails(t *testing.T) {
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).Return(confutil.P(pldtypes.HexUint64(1122334455)), nil).Maybe()
 	m.ethClient.On("SendRawTransaction", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("pop")).Maybe()
 
@@ -780,6 +784,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).Return(confutil.P(pldtypes.HexUint64(1122334455)), nil).Maybe()
 
 	confirmations := make(chan *blockindexer.IndexedTransactionNotify, 1)

@@ -195,7 +195,7 @@ func (ptm *pubTxManager) Start() error {
 	if ptm.baseLedger == nil {
 		ptm.baseLedger = baseledgerevm.WrapClient(ptm.ethClient)
 	}
-	ptm.gasPriceClient.Start(ctx, ptm.ethClient)
+	ptm.gasPriceClient.Start(ctx, ptm.baseLedger)
 	if ptm.engineLoopDone == nil { // only start once
 		ptm.engineLoopDone = make(chan struct{})
 		log.L(ctx).Debugf("Kicking off  enterprise handler engine loop")
@@ -242,6 +242,21 @@ func buildEthTX(
 	return ethTx
 }
 
+func publicTxToUnsignedChainTx(from pldtypes.EthAddress, to *pldtypes.EthAddress, data pldtypes.HexBytes) *baseledger.UnsignedChainTx {
+	fromAddr := from.ChainAddress()
+	var toAddr *pldtypes.ChainAddress
+	if to != nil {
+		chainTo := to.ChainAddress()
+		toAddr = &chainTo
+	}
+	return &baseledger.UnsignedChainTx{
+		From:        fromAddr,
+		To:          toAddr,
+		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+		Payload:     data,
+	}
+}
+
 func (ptm *pubTxManager) SingleTransactionSubmit(ctx context.Context, txi *components.PublicTxSubmission) (tx *pldapi.PublicTx, err error) {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	log.L(ctx).Tracef("SingleTransactionSubmit transaction: %+v", txi)
@@ -272,31 +287,25 @@ func (ptm *pubTxManager) ValidateTransaction(ctx context.Context, dbTX persisten
 	var txType InFlightTxOperation
 
 	if txi.Gas == nil || *txi.Gas == 0 {
-		gasEstimateResult, err := ptm.ethClient.EstimateGasNoResolve(ctx, buildEthTX(
-			*txi.From,
-			nil, /* nonce not assigned at this point */
-			txi.To,
-			txi.Data,
-			&txi.PublicTxOptions,
-		))
+		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*txi.From, txi.To, txi.Data))
 		if err != nil {
 			log.L(ctx).Errorf("HandleNewTx <%s> error estimating gas for transaction: %+v, request: (%+v)", txType, err, txi)
 			ptm.thMetrics.RecordOperationMetrics(ctx, string(txType), string(GenericStatusFail), time.Since(prepareStart).Seconds())
 			if ethclient.MapSubmissionRejected(err) {
 				// transaction is rejected. We can build a useful error message hopefully by processing the rejection info
-				if len(gasEstimateResult.RevertData) > 0 {
+				if resourceEstimate != nil && len(resourceEstimate.RevertData) > 0 {
 					// we can use the error dictionary callback to TXManager to look up the ABI
 					// Note: The ABI is already persisted before TXManager calls down into us.
-					err = ptm.rootTxMgr.CalculateRevertError(ctx, dbTX, gasEstimateResult.RevertData)
+					err = ptm.rootTxMgr.CalculateRevertError(ctx, dbTX, resourceEstimate.RevertData)
 					log.L(ctx).Warnf("Estimate gas reverted (%s): %s", err, err)
 				}
 				return err
 			}
 			return err
 		}
-		factoredGasLimit := pldtypes.HexUint64((float64)(gasEstimateResult.GasLimit) * ptm.gasEstimateFactor)
+		factoredGasLimit := pldtypes.HexUint64(float64(*resourceEstimate.Gas) * ptm.gasEstimateFactor)
 		txi.Gas = &factoredGasLimit
-		log.L(ctx).Tracef("HandleNewTx <%s> using the estimated gas limit %s multiplied by the gas estimate factor %.f (=%s) for transaction: %+v", txType, gasEstimateResult.GasLimit, ptm.gasEstimateFactor, factoredGasLimit, txi)
+		log.L(ctx).Tracef("HandleNewTx <%s> using the estimated gas limit %d multiplied by the gas estimate factor %.f (=%s) for transaction: %+v", txType, *resourceEstimate.Gas, ptm.gasEstimateFactor, factoredGasLimit, txi)
 	} else {
 		log.L(ctx).Tracef("HandleNewTx <%s> using the provided gas limit %s for transaction: %+v", txType, txi.Gas, txi)
 	}
@@ -755,21 +764,20 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 	}
 
 	if tx.Gas == nil || *tx.Gas == 0 {
-		ethTx := buildEthTX(*from, nil, tx.To, publicTxData, &tx.PublicTxOptions)
-		gasEstimateResult, err := ptm.ethClient.EstimateGasNoResolve(ctx, ethTx)
+		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*from, tx.To, publicTxData))
 		if err != nil {
-			log.L(ctx).Errorf("EstimateGas error estimating gas for transaction: %+v, request: (%+v)", err, ethTx)
+			log.L(ctx).Errorf("EstimateGas error estimating gas for transaction: %+v, request: (%+v)", err, tx)
 			if ethclient.MapSubmissionRejected(err) {
 				// transaction is rejected. We can build a useful error message hopefully by processing the rejection info
-				if len(gasEstimateResult.RevertData) > 0 {
+				if resourceEstimate != nil && len(resourceEstimate.RevertData) > 0 {
 					// we can use the error dictionary callback to TXManager to look up the ABI
-					err = ptm.rootTxMgr.CalculateRevertError(ctx, ptm.p.NOTX(), gasEstimateResult.RevertData)
+					err = ptm.rootTxMgr.CalculateRevertError(ctx, ptm.p.NOTX(), resourceEstimate.RevertData)
 					log.L(ctx).Warnf("Estimate gas reverted: %s", err.Error())
 				}
 			}
 			return err
 		}
-		tx.Gas = &gasEstimateResult.GasLimit
+		tx.Gas = confutil.P(pldtypes.HexUint64(*resourceEstimate.Gas))
 	}
 
 	newPtx := &DBPublicTxn{

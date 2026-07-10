@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -199,11 +200,19 @@ func (d *domain) init() {
 			Name:                    d.name,
 			RegistryContractAddress: d.RegistryAddress().String(),
 			ChainId:                 d.dm.ethClientFactory.ChainID(),
-			ConfigJson:              pldtypes.JSONString(d.conf.Config).String(),
-			FixedSigningIdentity:    d.fixedSigningIdentity,
+			ChainInfo: &prototk.ChainInfo{
+				ChainKind:  "evm",
+				NetworkId:  strconv.FormatInt(d.dm.ethClientFactory.ChainID(), 10),
+				EvmChainId: d.dm.ethClientFactory.ChainID(),
+			},
+			ConfigJson:           pldtypes.JSONString(d.conf.Config).String(),
+			FixedSigningIdentity: d.fixedSigningIdentity,
 		})
 		if err != nil {
 			return true, err
+		}
+		if err = d.checkSupportedChainKinds(confRes); err != nil {
+			return false, err
 		}
 
 		// Process the configuration, so we can move onto init
@@ -232,6 +241,20 @@ func (d *domain) init() {
 		// Inform the plugin manager callback
 		d.api.Initialized()
 	}
+}
+
+func (d *domain) checkSupportedChainKinds(confRes *prototk.ConfigureDomainResponse) error {
+	supportedKinds := confRes.GetSupportedChainKinds()
+	if len(supportedKinds) == 0 {
+		// Legacy domain binaries predate supported_chain_kinds and are EVM-only.
+		supportedKinds = []string{"evm"}
+	}
+	for _, kind := range supportedKinds {
+		if kind == "evm" {
+			return nil
+		}
+	}
+	return i18n.NewError(d.ctx, msgs.MsgDomainUnsupportedChainKind, d.name, "evm", supportedKinds)
 }
 
 func (d *domain) newInFlightDomainRequest(dbTX persistence.DBTX, dc components.DomainContext, readOnly bool) *inFlightDomainRequest {

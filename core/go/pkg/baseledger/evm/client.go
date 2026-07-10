@@ -21,10 +21,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/hyperledger/firefly-signer/pkg/ethsigner"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
@@ -87,17 +89,66 @@ func (c *Client) GetAccountInfo(ctx context.Context, addr pldtypes.ChainAddress)
 	}, nil
 }
 
+func (c *Client) DetectZeroGasPrice(ctx context.Context) (bool, error) {
+	gasPrice, err := c.eth.GasPrice(ctx)
+	if err != nil {
+		return false, err
+	}
+	if gasPrice == nil {
+		return false, nil
+	}
+	return gasPrice.Int().Sign() == 0, nil
+}
+
+func (c *Client) EstimateGasPricing(ctx context.Context, req *baseledger.GasPricingRequest) (*pldapi.PublicTxGasPricing, error) {
+	feeHistory, err := c.eth.FeeHistory(ctx, req.HistoryBlockCount, "latest", []float64{float64(req.PriorityFeePercentile)})
+	if err != nil {
+		return nil, err
+	}
+	if len(feeHistory.BaseFeePerGas) == 0 || len(feeHistory.Reward) == 0 {
+		return nil, &baseledger.EmptyGasPricingDataError{BaseFeeCount: len(feeHistory.BaseFeePerGas), RewardCount: len(feeHistory.Reward)}
+	}
+	tips := make([]*big.Int, 0, len(feeHistory.Reward))
+	for _, blockRewards := range feeHistory.Reward {
+		if len(blockRewards) > 0 {
+			tips = append(tips, blockRewards[0].Int())
+		}
+	}
+	if len(tips) == 0 {
+		return nil, &baseledger.NoValidGasPricingTipsError{}
+	}
+	maxPriorityFeePerGas := new(big.Int).Set(tips[0])
+	for _, tip := range tips[1:] {
+		if tip.Cmp(maxPriorityFeePerGas) > 0 {
+			maxPriorityFeePerGas = tip
+		}
+	}
+	nextBlockBaseFee := feeHistory.BaseFeePerGas[len(feeHistory.BaseFeePerGas)-1].Int()
+	bufferedBaseFee := new(big.Int).Mul(nextBlockBaseFee, big.NewInt(int64(req.BaseFeeBufferFactor)))
+	maxFeePerGas := new(big.Int).Add(bufferedBaseFee, maxPriorityFeePerGas)
+	return &pldapi.PublicTxGasPricing{
+		MaxFeePerGas:         (*pldtypes.HexUint256)(maxFeePerGas),
+		MaxPriorityFeePerGas: (*pldtypes.HexUint256)(maxPriorityFeePerGas),
+	}, nil
+}
+
 func (c *Client) EstimateResources(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
 	ethTX, err := evmUnsignedTxToTransaction(tx)
 	if err != nil {
 		return nil, err
 	}
 	estimate, err := c.eth.EstimateGasNoResolve(ctx, ethTX)
-	if err != nil {
-		return nil, err
+	res := &baseledger.ResourceEstimate{
+		RevertData: estimate.RevertData,
 	}
-	gas := uint64(estimate.GasLimit)
-	return &baseledger.ResourceEstimate{Gas: &gas}, nil
+	if estimate.GasLimit > 0 {
+		gas := uint64(estimate.GasLimit)
+		res.Gas = &gas
+	}
+	if err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 func (c *Client) BuildTransaction(_ context.Context, _ *baseledger.UnsignedChainTx, _ *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {

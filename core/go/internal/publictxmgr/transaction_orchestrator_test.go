@@ -101,6 +101,7 @@ func TestNewOrchestratorLoadsSecondTxAndQueuesBalanceCheck(t *testing.T) {
 			close(addressBalanceChecked)
 		}
 	})
+	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).Return(confutil.P(pldtypes.HexUint64(0)), nil)
 	oDone, _ := o.Start(ctx)
 	<-addressBalanceChecked
 	o.Stop()
@@ -203,6 +204,7 @@ func TestOrchestratorWaitingForBalance(t *testing.T) {
 
 	// Mock the insufficient balance on the account that's submitting
 	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil)
+	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).Return(confutil.P(pldtypes.HexUint64(0)), nil)
 
 	oDone, err := o.Start(ctx)
 	require.NoError(t, err)
@@ -221,6 +223,7 @@ func TestAllocateNoncesGetTransactionCountError(t *testing.T) {
 
 	// nextNonce is nil so allocateNonces will call GetTransactionCount
 	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
+	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
 		Return(nil, fmt.Errorf("rpc error")).Once()
 
@@ -239,6 +242,7 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	// lastNonceAlloc is zero time so cache is always expired and GetTransactionCount is called
 
 	// Mempool reports nonce 4 (lower than our cached 5) - so we keep our cached nonce
+	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
 		Return(confutil.P(pldtypes.HexUint64(4)), nil).Once()
 
@@ -259,6 +263,7 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	defer done()
 
 	// nextNonce is nil so GetTransactionCount is called
+	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
 		Return(confutil.P(pldtypes.HexUint64(10)), nil).Once()
 
@@ -319,6 +324,7 @@ func TestPollAndProcessAllocateNoncesError(t *testing.T) {
 	m.db.ExpectQuery("SELECT.*public_submissions").WillReturnRows(sqlmock.NewRows([]string{}))
 
 	// allocateNonces fails: GetTransactionCount returns error
+	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
 		Return(nil, fmt.Errorf("nonce rpc error")).Once()
 

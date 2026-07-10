@@ -25,6 +25,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/mocks/ethclientmocks"
+	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -53,7 +54,7 @@ func NewTestGasPriceClient(t *testing.T, conf *pldconf.GasPriceConfig, zeroGasPr
 		mockEthClient.On("GasPrice", ctx).Return(gasPrice, nil).Once()
 	}
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 	return ctx, hgc, mockEthClient
 }
 
@@ -881,13 +882,12 @@ func TestGetGasPriceObjectWithCacheHit(t *testing.T) {
 
 	// Mock eth client
 	mockEthClient := ethclientmocks.NewEthClient(t)
-	hgc.ethClient = mockEthClient
 
 	// Mock GasPrice call
 	gasPrice := pldtypes.Uint64ToUint256(20000000000)
 	mockEthClient.On("GasPrice", ctx).Return(gasPrice, nil).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Get gas price object - should use cached value
 	result, err := hgc.GetGasPriceObject(ctx, nil, nil, false)
@@ -920,7 +920,6 @@ func TestGetGasPriceObjectWithCacheMiss(t *testing.T) {
 
 	// Mock eth client
 	mockEthClient := ethclientmocks.NewEthClient(t)
-	hgc.ethClient = mockEthClient
 
 	// Mock GasPrice call
 	gasPrice := pldtypes.Uint64ToUint256(20000000000)
@@ -930,7 +929,7 @@ func TestGetGasPriceObjectWithCacheMiss(t *testing.T) {
 	mockFeeHistoryResult := createMockFeeHistoryResult(20, 20000000000, 1500000000)
 	mockEthClient.On("FeeHistory", ctx, 20, "latest", []float64{85.0}).Return(mockFeeHistoryResult, nil).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Get gas price object - should fetch fresh data and cache it
 	result, err := hgc.GetGasPriceObject(ctx, nil, nil, false)
@@ -978,7 +977,6 @@ func TestGetGasPriceObjectWithGasOracleCache(t *testing.T) {
 
 	// Mock eth client
 	mockEthClient := ethclientmocks.NewEthClient(t)
-	hgc.ethClient = mockEthClient
 
 	// Mock GasPrice call
 	gasPrice := pldtypes.Uint64ToUint256(20000000000)
@@ -997,7 +995,7 @@ func TestGetGasPriceObjectWithGasOracleCache(t *testing.T) {
 	httpmock.RegisterResponder("GET", "https://api.example.com/gas",
 		httpmock.NewStringResponder(200, mockResponse))
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Get gas price object - should fetch from gas oracle and cache it
 	result, err := hgc.GetGasPriceObject(ctx, nil, nil, false)
@@ -1038,7 +1036,7 @@ func TestStartWithNilGasPriceResponse(t *testing.T) {
 	// Mock GasPrice returning nil
 	mockEthClient.On("GasPrice", ctx).Return(nil, nil).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 	assert.False(t, hgc.hasZeroGasPrice) // Should not be set when gasPrice is nil
 
 	mockEthClient.AssertExpectations(t)
@@ -1065,7 +1063,7 @@ func TestStartWithGasPriceError(t *testing.T) {
 	// Mock GasPrice returning error
 	mockEthClient.On("GasPrice", ctx).Return(nil, fmt.Errorf("network error")).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 	assert.False(t, hgc.hasZeroGasPrice) // Should not be set when GasPrice fails
 
 	mockEthClient.AssertExpectations(t)
@@ -1096,7 +1094,7 @@ func TestStartSkipsGasPriceWhenFixedPriceSet(t *testing.T) {
 	defer gasPriceClient.Stop()
 
 	// Should not call GasPrice since fixedGasPrice is set
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// No expectations to assert since GasPrice should not be called
 }
@@ -1124,7 +1122,7 @@ func TestStartWithCacheEnabled(t *testing.T) {
 	gasPrice := pldtypes.Uint64ToUint256(20000000000)
 	mockEthClient.On("GasPrice", ctx).Return(gasPrice, nil).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Should start refresh ticker
 	assert.NotNil(t, hgc.gasPriceRefreshTicker)
@@ -1154,7 +1152,7 @@ func TestStartWithCacheDisabled(t *testing.T) {
 	gasPrice := pldtypes.Uint64ToUint256(20000000000)
 	mockEthClient.On("GasPrice", ctx).Return(gasPrice, nil).Once()
 
-	hgc.Start(ctx, mockEthClient)
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Should not start refresh ticker
 	assert.Nil(t, hgc.gasPriceRefreshTicker)
@@ -1225,11 +1223,13 @@ func TestRefreshGasPriceCacheWithEthFeeHistory(t *testing.T) {
 
 	// Mock eth client
 	mockEthClient := ethclientmocks.NewEthClient(t)
-	hgc.ethClient = mockEthClient
 
 	// Mock fee history response
 	mockFeeHistoryResult := createMockFeeHistoryResult(20, 20000000000, 1500000000)
+	mockEthClient.On("GasPrice", ctx).Return(pldtypes.Uint64ToUint256(20000000000), nil).Once()
 	mockEthClient.On("FeeHistory", ctx, 20, "latest", []float64{85.0}).Return(mockFeeHistoryResult, nil).Once()
+
+	hgc.Start(ctx, baseledgerevm.WrapClient(mockEthClient))
 
 	// Call refresh
 	hgc.refreshGasPriceCache(ctx)

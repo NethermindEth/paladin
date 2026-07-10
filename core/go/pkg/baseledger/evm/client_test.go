@@ -96,6 +96,28 @@ func TestEstimateResources(t *testing.T) {
 	require.EqualValues(t, 456, *res.Gas)
 }
 
+func TestEstimateResourcesReturnsRevertDataOnError(t *testing.T) {
+	ctx := context.Background()
+	from := pldtypes.MustEthAddress("0x1d0cd5b99d2e2a380e52b4000377dd507c6df754").ChainAddress()
+	revertData := []byte{0xaa, 0xbb}
+
+	mockEth := ethclientmocks.NewEthClient(t)
+	mockEth.On("EstimateGasNoResolve", ctx, mock.AnythingOfType("*ethsigner.Transaction")).Return(ethclient.EstimateGasResult{
+		RevertData: revertData,
+	}, errors.New("execution reverted")).Once()
+
+	c := WrapClient(mockEth)
+	res, err := c.EstimateResources(ctx, &baseledger.UnsignedChainTx{
+		From:        from,
+		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+		Payload:     []byte{0x01, 0x02},
+	})
+	require.EqualError(t, err, "execution reverted")
+	require.NotNil(t, res)
+	require.Equal(t, revertData, res.RevertData)
+	require.Nil(t, res.Gas)
+}
+
 func TestBuildTransactionReturnsNotWiredError(t *testing.T) {
 	c := WrapClient(ethclientmocks.NewEthClient(t))
 	_, err := c.BuildTransaction(context.Background(), &baseledger.UnsignedChainTx{}, &baseledger.ResourceEstimate{})

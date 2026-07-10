@@ -17,7 +17,9 @@ package publictxmgr
 
 import (
 	"context"
+
 	"errors"
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"math/big"
 	"testing"
 
@@ -53,8 +55,10 @@ func TestGetAddressBalance(t *testing.T) {
 	exampleAddr := *pldtypes.RandAddress()
 
 	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 
 	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceNew), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 
 	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(nil, errors.New("pop")).Once()
 
@@ -89,6 +93,7 @@ func TestAddressAccountSpend(t *testing.T) {
 	const balanceOld = uint64(400)
 
 	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 	addressAccount, err := bm.GetAddressBalance(ctx, exampleAddr)
 	require.NoError(t, err)
 	assert.NotNil(t, addressAccount)

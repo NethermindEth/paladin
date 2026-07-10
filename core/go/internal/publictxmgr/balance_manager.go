@@ -59,14 +59,14 @@ func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Cont
 	balanceChangedOnChain := af.retrieveAddressBalanceMap[address]
 	if balanceChangedOnChain || cachedAddressBalance == nil {
 		log.L(ctx).Debugf("Retrieving balance for address %s from connector", address)
-		// fetch the latest balance from the chain
-		addressBalancePtr, err := af.pubTxMgr.ethClient.GetBalance(ctx, address, "latest")
+		// fetch the latest account info from the base ledger
+		accountInfo, err := af.pubTxMgr.baseLedger.GetAccountInfo(ctx, address.ChainAddress())
 		if err != nil {
 			log.L(ctx).Errorf("Failed retrieving balance for address %s from connector due to: %+v", address, err)
 			return nil, err
 		}
-		addressBalance = *addressBalancePtr.Int()
-		af.balanceCache.Set(address, addressBalancePtr.Int())
+		addressBalance = *accountInfo.Balance.Int()
+		af.balanceCache.Set(address, accountInfo.Balance.Int())
 		// set the flag to false so that the following requests of this address
 		// uses cache if there is no new balance change
 		af.retrieveAddressBalanceMap[address] = false

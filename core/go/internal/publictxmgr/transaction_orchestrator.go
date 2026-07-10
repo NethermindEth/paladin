@@ -296,17 +296,18 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 	// We need to ensure we have the next nonce to allocate
 	if oc.nextNonce == nil || time.Since(oc.lastNonceAlloc) > oc.nonceCacheTimeout {
 		log.L(ctx).Debugf("no cached nonce, or nonce expired for %s (cached=%v)", oc.signingAddress, oc.lastNonceAlloc)
-		txCount, err := oc.ethClient.GetTransactionCount(ctx, oc.signingAddress)
+		accountInfo, err := oc.baseLedger.GetAccountInfo(ctx, oc.signingAddress.ChainAddress())
 		if err != nil {
 			return err
 		}
+		mempoolNonce := accountInfo.OrderingKey.Uint64()
 		// See if we have nonces in our DB that are ahead of the mempool.
-		if oc.nextNonce != nil && *oc.nextNonce >= txCount.Uint64() {
-			log.L(ctx).Infof("Next nonce for %s is %d (at or ahead of mempool %d)", oc.signingAddress, *oc.nextNonce, txCount.Uint64())
+		if oc.nextNonce != nil && *oc.nextNonce >= mempoolNonce {
+			log.L(ctx).Infof("Next nonce for %s is %d (at or ahead of mempool %d)", oc.signingAddress, *oc.nextNonce, mempoolNonce)
 		} else {
 			// Otherwise take the node's answer
-			oc.nextNonce = (*uint64)(txCount)
-			log.L(ctx).Infof("Next nonce for %s set to %d (from eth_getTransactionCount)", oc.signingAddress, *oc.nextNonce)
+			oc.nextNonce = confutil.P(mempoolNonce)
+			log.L(ctx).Infof("Next nonce for %s set to %d (from base ledger account info)", oc.signingAddress, *oc.nextNonce)
 		}
 	}
 

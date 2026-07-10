@@ -208,6 +208,10 @@ func newTestDomain(t *testing.T, realDB bool, domainConfig *prototk.DomainConfig
 		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
 			assert.Equal(t, "test1", cdr.Name)
 			assert.JSONEq(t, `{"some":"conf"}`, cdr.ConfigJson)
+			require.NotNil(t, cdr.ChainInfo)
+			assert.Equal(t, "evm", cdr.ChainInfo.ChainKind)
+			assert.Equal(t, cdr.ChainId, cdr.ChainInfo.EvmChainId)
+			assert.Equal(t, "12345", cdr.ChainInfo.NetworkId)
 			return &prototk.ConfigureDomainResponse{
 				DomainConfig: domainConfig,
 			}, nil
@@ -1828,6 +1832,44 @@ func TestDomainGetBlockHeight(t *testing.T) {
 	mockES.EXPECT().CheckpointBlock().Return(int64(42)).Once()
 	td.d.eventStream = mockES
 	assert.Equal(t, int64(42), td.d.GetBlockHeight())
+}
+
+func TestDomainInitRejectsUnsupportedChainKind(t *testing.T) {
+	_, dm, mc, dmDone := newTestDomainManager(t, false, &pldconf.DomainManagerInlineConfig{
+		Domains: map[string]*pldconf.DomainConfig{
+			"test1": {
+				Config:          map[string]any{"some": "conf"},
+				RegistryAddress: pldtypes.RandHex(20),
+				DefaultGasLimit: confutil.P(uint64(100000)),
+				Init:            pldconf.DomainInitConfig{},
+			},
+		},
+	})
+	defer dmDone()
+
+	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+
+	tp := newTestPlugin(nil)
+	tp.Functions = &plugintk.DomainAPIFunctions{
+		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
+			require.NotNil(t, cdr.ChainInfo)
+			return &prototk.ConfigureDomainResponse{
+				DomainConfig:        goodDomainConf(),
+				SupportedChainKinds: []string{"stellar"},
+			}, nil
+		},
+		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
+			t.Fatalf("InitDomain must not be called for an unsupported chain kind")
+			return nil, nil
+		},
+	}
+
+	registerTestDomain(t, dm, tp)
+	<-tp.d.initDone
+
+	require.False(t, tp.d.Initialized())
+	require.NotNil(t, tp.d.initError.Load())
+	require.Regexp(t, "PD011668.*test1.*evm.*stellar", *tp.d.initError.Load())
 }
 
 func TestEnqueueCompletionsContextDone(t *testing.T) {
