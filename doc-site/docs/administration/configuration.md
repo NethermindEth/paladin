@@ -2,6 +2,7 @@
 
 | Key | Description | Type | Default |
 |-----|-------------|------|---------|
+| baseLedger | Base ledger configuration (chain-agnostic; selects and configures the EVM or Stellar backend) | [`BaseLedgerConfig`](#baseledger) | - |
 | blockIndexer | Block indexer configuration | [`BlockIndexerConfig`](#blockindexer) | - |
 | blockchain | Blockchain client configuration | [`EthClientConfig`](#blockchain) | - |
 | db | Database configuration | [`DBConfig`](#db) | - |
@@ -38,6 +39,171 @@
 | txManager | Transaction manager configuration | [`TxManagerConfig`](#txmanager) | - |
 | verifierCache | Verifier cache configuration | [`CacheConfig`](#verifiercache) | - |
 | wallets | List of wallet configurations | [`[WalletConfig]`](#wallets) | - |
+
+## baseLedger
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| evm | EVM base ledger client configuration (used when type is 'evm') | [`EthClientConfig`](#baseledgerevm) | - |
+| stellar | Stellar base ledger client configuration (used when type is 'stellar') | [`StellarClientConfig`](#baseledgerstellar) | - |
+| type | The base ledger chain kind: 'evm' (default) or 'stellar' | `BaseLedgerType` | `"evm"` |
+
+## baseLedger.evm
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| gasEstimateFactor | Factor to multiply gas estimates by | `float64` | - |
+| http | HTTP client configuration | [`HTTPClientConfig`](#baseledgerevmhttp) | - |
+| ws | WebSocket client configuration | [`WSClientConfig`](#baseledgerevmws) | - |
+
+## baseLedger.evm.http
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerevmhttpauth) | - |
+| connectionTimeout | Connection timeout | `string` | - |
+| httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
+| requestTimeout | Request timeout | `string` | - |
+| retry | HTTP retry configuration | [`HTTPRetryConfig`](#baseledgerevmhttpretry) | - |
+| tls | TLS configuration | [`TLSConfig`](#baseledgerevmhttptls) | - |
+| url | HTTP client URL | `string` | - |
+
+## baseLedger.evm.http.auth
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| password | Basic auth password | `string` | - |
+| username | Basic auth username | `string` | - |
+
+## baseLedger.evm.http.retry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| count | Number of retry attempts | `int` | - |
+| enabled | Whether HTTP retry is enabled | `bool` | - |
+| errorStatusCodes | Regex pattern for status codes to retry | `string` | - |
+| initialDelay | Initial delay before retry | `string` | - |
+| maximumDelay | Maximum delay between retries | `string` | - |
+
+## baseLedger.evm.http.tls
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| ca | CA certificate content | `string` | - |
+| caFile | Path to CA certificate file | `string` | - |
+| cert | Certificate content | `string` | - |
+| certFile | Path to certificate file | `string` | - |
+| clientAuth | Whether client authentication is required | `bool` | - |
+| enabled | Whether TLS is enabled | `bool` | - |
+| insecureSkipHostVerify | Whether to skip host verification | `bool` | - |
+| key | Private key content | `string` | - |
+| keyFile | Path to private key file | `string` | - |
+| requiredDNAttributes | Required DN attributes for client certificates | `map[string][string]` | - |
+
+## baseLedger.evm.ws
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerevmwsauth) | - |
+| connectRetry | Retry configuration for WebSocket connections | [`RetryConfig`](#baseledgerevmwsconnectretry) | - |
+| connectionTimeout | WebSocket connection timeout | `string` | - |
+| connectionTimeout | Connection timeout | `string` | - |
+| heartbeatInterval | WebSocket heartbeat interval | `string` | - |
+| httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
+| initialConnectAttempts | Number of initial connection attempts | `int` | - |
+| readBufferSize | WebSocket read buffer size | `string` | - |
+| requestTimeout | Request timeout | `string` | - |
+| retry | HTTP retry configuration | [`HTTPRetryConfig`](#baseledgerevmwsretry) | - |
+| tls | TLS configuration | [`TLSConfig`](#baseledgerevmwstls) | - |
+| url | HTTP client URL | `string` | - |
+| writeBufferSize | WebSocket write buffer size | `string` | - |
+| wsRequestTimeout | WebSocket request timeout | `string` | - |
+
+## baseLedger.evm.ws.auth
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| password | Basic auth password | `string` | - |
+| username | Basic auth username | `string` | - |
+
+## baseLedger.evm.ws.connectRetry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| factor | Exponential backoff factor | `float64` | - |
+| initialDelay | Initial delay before retry | `string` | - |
+| maxDelay | Maximum delay between retries | `string` | - |
+
+## baseLedger.evm.ws.retry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| count | Number of retry attempts | `int` | - |
+| enabled | Whether HTTP retry is enabled | `bool` | - |
+| errorStatusCodes | Regex pattern for status codes to retry | `string` | - |
+| initialDelay | Initial delay before retry | `string` | - |
+| maximumDelay | Maximum delay between retries | `string` | - |
+
+## baseLedger.evm.ws.tls
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| ca | CA certificate content | `string` | - |
+| caFile | Path to CA certificate file | `string` | - |
+| cert | Certificate content | `string` | - |
+| certFile | Path to certificate file | `string` | - |
+| clientAuth | Whether client authentication is required | `bool` | - |
+| enabled | Whether TLS is enabled | `bool` | - |
+| insecureSkipHostVerify | Whether to skip host verification | `bool` | - |
+| key | Private key content | `string` | - |
+| keyFile | Path to private key file | `string` | - |
+| requiredDNAttributes | Required DN attributes for client certificates | `map[string][string]` | - |
+
+## baseLedger.stellar
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerstellarauth) | - |
+| connectionTimeout | Connection timeout | `string` | - |
+| horizonURL | Optional Horizon server URL for deep-history backfill beyond stellar-rpc's retention window | `string` | - |
+| httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
+| networkPassphrase | Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network) | `string` | - |
+| requestTimeout | Request timeout | `string` | - |
+| retry | HTTP retry configuration | [`HTTPRetryConfig`](#baseledgerstellarretry) | - |
+| tls | TLS configuration | [`TLSConfig`](#baseledgerstellartls) | - |
+| url | HTTP client URL | `string` | - |
+
+## baseLedger.stellar.auth
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| password | Basic auth password | `string` | - |
+| username | Basic auth username | `string` | - |
+
+## baseLedger.stellar.retry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| count | Number of retry attempts | `int` | - |
+| enabled | Whether HTTP retry is enabled | `bool` | - |
+| errorStatusCodes | Regex pattern for status codes to retry | `string` | - |
+| initialDelay | Initial delay before retry | `string` | - |
+| maximumDelay | Maximum delay between retries | `string` | - |
+
+## baseLedger.stellar.tls
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| ca | CA certificate content | `string` | - |
+| caFile | Path to CA certificate file | `string` | - |
+| cert | Certificate content | `string` | - |
+| certFile | Path to certificate file | `string` | - |
+| clientAuth | Whether client authentication is required | `bool` | - |
+| enabled | Whether TLS is enabled | `bool` | - |
+| insecureSkipHostVerify | Whether to skip host verification | `bool` | - |
+| key | Private key content | `string` | - |
+| keyFile | Path to private key file | `string` | - |
+| requiredDNAttributes | Required DN attributes for client certificates | `map[string][string]` | - |
 
 ## blockIndexer
 

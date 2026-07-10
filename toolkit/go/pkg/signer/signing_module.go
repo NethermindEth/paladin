@@ -49,6 +49,7 @@ type hdDerivation[C signerapi.ExtensibleConfig] struct {
 	bip44HardenedSegments int
 	bip44Prefix           string
 	hdKeyChain            *hdkeychain.ExtendedKey
+	seed                  []byte // retained alongside hdKeyChain so a second (SLIP-10 ed25519) tree can be derived from the same master seed
 }
 
 type signingModule[C signerapi.ExtensibleConfig] struct {
@@ -84,9 +85,11 @@ type signingModule[C signerapi.ExtensibleConfig] struct {
 func NewSigningModule[C signerapi.ExtensibleConfig](ctx context.Context, conf C, extensions ...*signerapi.Extensions[C]) (_ SigningModule, err error) {
 
 	ecdsaSigner, _ := signers.NewECDSASignerFactory[C]().NewSigner(ctx, conf) // this factory has no errors as it does not parse any config
+	eddsaSigner, _ := signers.NewEdDSASignerFactory[C]().NewSigner(ctx, conf) // this factory has no errors as it does not parse any config
 	sm := &signingModule[C]{
 		signingImplementations: map[string]signerapi.InMemorySigner{
 			algorithms.Prefix_ECDSA: ecdsaSigner,
+			algorithms.Prefix_EDDSA: eddsaSigner,
 		},
 	}
 	keyStoreImplementations := map[string]signerapi.KeyStoreFactory[C]{

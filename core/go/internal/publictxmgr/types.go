@@ -238,8 +238,8 @@ type InMemoryTxStateReadOnly interface {
 	GetPrivateTXOriginator() string
 	GetContractAddress() string
 	GetNonce() uint64
-	GetFrom() pldtypes.EthAddress
-	GetTo() *pldtypes.EthAddress
+	GetFrom() pldtypes.ChainAddress
+	GetTo() *pldtypes.ChainAddress
 	GetData() pldtypes.HexBytes
 	GetValue() *pldtypes.HexUint256
 	BuildEthTX() *ethsigner.Transaction

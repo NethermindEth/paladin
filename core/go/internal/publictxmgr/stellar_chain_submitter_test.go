@@ -1,0 +1,173 @@
+// Copyright © 2026 Kaleido, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package publictxmgr
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
+	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
+	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
+	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/xdr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+const testStellarAccount = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+
+func validStellarInvokeContractPayload(t *testing.T) []byte {
+	hostFunction := xdr.HostFunction{
+		Type: xdr.HostFunctionTypeHostFunctionTypeInvokeContract,
+		InvokeContract: &xdr.InvokeContractArgs{
+			ContractAddress: xdr.ScAddress{
+				Type:       xdr.ScAddressTypeScAddressTypeContract,
+				ContractId: &xdr.ContractId{},
+			},
+			FunctionName: xdr.ScSymbol("test"),
+		},
+	}
+	payload, err := hostFunction.MarshalBinary()
+	require.NoError(t, err)
+	return payload
+}
+
+func newTestStellarSubmitter(t *testing.T) (context.Context, *stellarChainSubmitter, *mocksAndTestControl, func()) {
+	ctx, ptm, m, done := newTestPublicTxManager(t, false, func(mocks *mocksAndTestControl, conf *pldconf.PublicTxManagerConfig) {
+		mocks.disableManagerStart = true
+	})
+	ptm.baseLedger = &mockStellarBaseLedger{}
+	ptm.chainSubmitter = newStellarChainSubmitter(ptm)
+	return ctx, ptm.chainSubmitter.(*stellarChainSubmitter), m, done
+}
+
+type mockStellarBaseLedger struct {
+	getAccountInfo func(ctx context.Context, addr pldtypes.ChainAddress) (*baseledger.AccountInfo, error)
+	submit         func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error)
+}
+
+func (m *mockStellarBaseLedger) Close() {}
+func (m *mockStellarBaseLedger) ChainInfo() baseledger.ChainInfo {
+	return baseledger.ChainInfo{Kind: baseledger.ChainKindStellar, NetworkID: "Test SDF Network ; September 2015"}
+}
+func (m *mockStellarBaseLedger) Call(ctx context.Context, req *baseledger.CallRequest) (*baseledger.CallResult, error) {
+	return nil, fmt.Errorf("unused")
+}
+func (m *mockStellarBaseLedger) GetAccountInfo(ctx context.Context, addr pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+	return m.getAccountInfo(ctx, addr)
+}
+func (m *mockStellarBaseLedger) EstimateResources(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+	return nil, fmt.Errorf("unused")
+}
+func (m *mockStellarBaseLedger) BuildTransaction(ctx context.Context, tx *baseledger.UnsignedChainTx, est *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {
+	return baseledger.SignablePayload{}, fmt.Errorf("unused")
+}
+func (m *mockStellarBaseLedger) Submit(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+	return m.submit(ctx, raw)
+}
+func (m *mockStellarBaseLedger) GetTransactionResult(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+	return nil, fmt.Errorf("unused")
+}
+
+func TestStellarAssignOrderingKey(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		require.Equal(t, addr, got)
+		nonce := pldtypes.HexUint64(42)
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+	nonce, err := submitter.AssignOrderingKey(ctx, addr)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(42), nonce)
+}
+
+func TestStellarPrepareSubmission(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: validStellarInvokeContractPayload(t)}
+	keyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key", KeyHandle: "m/44'/148'/0'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(keyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, keyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	prepared, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, uint64(1), prepared.PublicTxnID)
+	require.NotNil(t, prepared.TransactionHash)
+	assert.NotEmpty(t, prepared.RawTransaction)
+
+	fromAddr, err := keypair.ParseAddress(testStellarAccount)
+	require.NoError(t, err)
+	var envelope xdr.TransactionEnvelope
+	require.NoError(t, envelope.UnmarshalBinary(prepared.RawTransaction))
+	signatures := envelope.Signatures()
+	require.Len(t, signatures, 1)
+	assert.Equal(t, xdr.SignatureHint(fromAddr.Hint()), signatures[0].Hint)
+}
+
+func TestStellarPrepareSubmissionInvalidPayload(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: []byte("nope")}
+	_, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid host function payload")
+}
+
+func TestStellarSubmitBadSeq(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	resultXDR, err := xdr.MarshalBase64(xdr.TransactionResult{Result: xdr.TransactionResultResult{Code: xdr.TransactionResultCodeTxBadSeq}})
+	require.NoError(t, err)
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		return pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), &baseledgerstellar.SubmissionRejectedError{Status: "ERROR", ErrorResultXDR: resultXDR}
+	}
+	prepared := &PreparedSubmission{RawTransaction: []byte{0x01}, TransactionHash: func() *pldtypes.Bytes32 {
+		h := pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+		return &h
+	}()}
+	result, err := submitter.Submit(ctx, prepared)
+	require.NoError(t, err)
+	assert.Equal(t, SubmissionOutcomeNonceTooLow, result.Outcome)
+}
+
+func TestStellarSubmitInsufficientFeeRequiresRetry(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	resultXDR, err := xdr.MarshalBase64(xdr.TransactionResult{Result: xdr.TransactionResultResult{Code: xdr.TransactionResultCodeTxInsufficientFee}})
+	require.NoError(t, err)
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		return pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), &baseledgerstellar.SubmissionRejectedError{Status: "ERROR", ErrorResultXDR: resultXDR}
+	}
+	prepared := &PreparedSubmission{RawTransaction: []byte{0x01}, TransactionHash: func() *pldtypes.Bytes32 {
+		h := pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+		return &h
+	}()}
+	result, err := submitter.Submit(ctx, prepared)
+	require.Error(t, err)
+	assert.Equal(t, SubmissionOutcomeFailedRequiresRetry, result.Outcome)
+	assert.Equal(t, xdr.TransactionResultCodeTxInsufficientFee.String(), result.ErrorReason)
+}

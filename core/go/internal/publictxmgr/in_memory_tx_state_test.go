@@ -42,8 +42,8 @@ func NewTestInMemoryTxState(t *testing.T) InMemoryTxStateManager {
 	oldTransactionData := pldtypes.MustParseHexBytes(testTransactionData)
 	testManagedTx := &DBPublicTxn{
 		Created: oldTime,
-		From:    *oldFrom,
-		To:      oldTo,
+		From:    oldFrom.ChainAddress(),
+		To:      ethAddressChainAddress(oldTo),
 		Nonce:   (*uint64)(&oldNonce),
 		Gas:     oldGasLimit.Uint64(),
 		Value:   oldValue,
@@ -81,8 +81,8 @@ func TestSettersAndGetters(t *testing.T) {
 
 	testManagedTx := &DBPublicTxn{
 		Created: oldTime,
-		From:    *oldFrom,
-		To:      oldTo,
+		From:    oldFrom.ChainAddress(),
+		To:      ethAddressChainAddress(oldTo),
 		Nonce:   (*uint64)(&oldNonce),
 		Gas:     uint64(oldGasLimit),
 		Value:   oldValue,
@@ -107,7 +107,7 @@ func TestSettersAndGetters(t *testing.T) {
 	assert.Equal(t, oldTime, *imts.GetCreatedTime())
 	assert.Equal(t, oldTxHash, *imts.GetTransactionHash())
 	assert.Equal(t, oldNonce.Uint64(), imts.GetNonce())
-	assert.Equal(t, *oldFrom, imts.GetFrom())
+	assert.Equal(t, oldFrom.ChainAddress(), imts.GetFrom())
 	assert.Equal(t, InFlightStatusPending, imts.GetInFlightStatus())
 	assert.Equal(t, oldGasPrice.Int(), imts.GetGasPriceObject().MaxFeePerGas.Int())
 	assert.Equal(t, oldTime, *imts.GetFirstSubmit())
@@ -154,8 +154,8 @@ func TestSettersAndGetters(t *testing.T) {
 
 	// check immutable fields
 	assert.Equal(t, oldNonce.Uint64(), imts.GetNonce())
-	assert.Equal(t, *oldFrom, imts.GetFrom())
-	assert.Equal(t, *oldTo, *imts.GetTo())
+	assert.Equal(t, oldFrom.ChainAddress(), imts.GetFrom())
+	assert.Equal(t, oldTo.ChainAddress(), *imts.GetTo())
 	assert.Equal(t, *oldValue, *imts.GetValue())
 	assert.Equal(t, oldValue, inMemoryTx.mtx.ptx.Value)
 	assert.Equal(t, oldTransactionData, inMemoryTx.mtx.ptx.Data)

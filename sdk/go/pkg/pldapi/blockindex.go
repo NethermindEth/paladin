@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
@@ -20,18 +19,22 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 )
 
-type EthTransactionResult string
+type TransactionResult string
+
+// EthTransactionResult is kept as a compatibility alias while indexed transaction APIs migrate
+// to the chain-neutral TransactionResult name.
+type EthTransactionResult = TransactionResult
 
 const (
-	TXResult_FAILURE EthTransactionResult = "failure"
-	TXResult_SUCCESS EthTransactionResult = "success"
+	TXResult_FAILURE TransactionResult = "failure"
+	TXResult_SUCCESS TransactionResult = "success"
 )
 
-func (lt EthTransactionResult) Enum() pldtypes.Enum[EthTransactionResult] {
-	return pldtypes.Enum[EthTransactionResult](lt)
+func (lt TransactionResult) Enum() pldtypes.Enum[TransactionResult] {
+	return pldtypes.Enum[TransactionResult](lt)
 }
 
-func (pl EthTransactionResult) Options() []string {
+func (pl TransactionResult) Options() []string {
 	return []string{
 		string(TXResult_FAILURE),
 		string(TXResult_SUCCESS),
@@ -50,15 +53,18 @@ type EmbeddedBlockInfo struct {
 }
 
 type IndexedTransaction struct {
-	Hash             pldtypes.Bytes32                    `docstruct:"IndexedTransaction" json:"hash"               gorm:"primaryKey"`
-	BlockNumber      int64                               `docstruct:"IndexedTransaction" json:"blockNumber"`
-	TransactionIndex int64                               `docstruct:"IndexedTransaction" json:"transactionIndex"`
-	From             *pldtypes.EthAddress                `docstruct:"IndexedTransaction" json:"from"`
-	To               *pldtypes.EthAddress                `docstruct:"IndexedTransaction" json:"to,omitempty"`
-	Nonce            uint64                              `docstruct:"IndexedTransaction" json:"nonce"`
-	ContractAddress  *pldtypes.EthAddress                `docstruct:"IndexedTransaction" json:"contractAddress,omitempty"`
-	Result           pldtypes.Enum[EthTransactionResult] `docstruct:"IndexedTransaction" json:"result,omitempty"`
-	Block            *IndexedBlock                       `docstruct:"IndexedTransaction" json:"block,omitempty"        gorm:"foreignKey:number;references:block_number"`
+	Hash                 pldtypes.Bytes32                 `docstruct:"IndexedTransaction" json:"hash"               gorm:"primaryKey"`
+	BlockNumber          int64                            `docstruct:"IndexedTransaction" json:"blockNumber"`
+	TransactionIndex     int64                            `docstruct:"IndexedTransaction" json:"transactionIndex"`
+	From                 *pldtypes.EthAddress             `docstruct:"IndexedTransaction" json:"from"`
+	FromChain            *pldtypes.ChainAddress           `docstruct:"IndexedTransaction" json:"fromChain,omitempty"             gorm:"column:from_chain"`
+	To                   *pldtypes.EthAddress             `docstruct:"IndexedTransaction" json:"to,omitempty"`
+	ToChain              *pldtypes.ChainAddress           `docstruct:"IndexedTransaction" json:"toChain,omitempty"               gorm:"column:to_chain"`
+	Nonce                uint64                           `docstruct:"IndexedTransaction" json:"nonce"`
+	ContractAddress      *pldtypes.EthAddress             `docstruct:"IndexedTransaction" json:"contractAddress,omitempty"`
+	ContractAddressChain *pldtypes.ChainAddress           `docstruct:"IndexedTransaction" json:"contractAddressChain,omitempty"  gorm:"column:contract_address_chain"`
+	Result               pldtypes.Enum[TransactionResult] `docstruct:"IndexedTransaction" json:"result,omitempty"`
+	Block                *IndexedBlock                    `docstruct:"IndexedTransaction" json:"block,omitempty"        gorm:"foreignKey:number;references:block_number"`
 }
 
 type IndexedEvent struct {
@@ -80,6 +86,7 @@ type EventWithData struct {
 	// Things like whitespace etc. subject to change (so should not stored for later comparison)
 	SoliditySignature string `docstruct:"EventWithData" json:"soliditySignature"`
 
-	Address pldtypes.EthAddress `docstruct:"EventWithData" json:"address"`
-	Data    pldtypes.RawJSON    `docstruct:"EventWithData" json:"data"`
+	Address      pldtypes.EthAddress    `docstruct:"EventWithData" json:"address"`
+	AddressChain *pldtypes.ChainAddress `docstruct:"EventWithData" json:"addressChain,omitempty"`
+	Data         pldtypes.RawJSON       `docstruct:"EventWithData" json:"data"`
 }

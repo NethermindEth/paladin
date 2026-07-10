@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
 type ChainAddressKind string
@@ -50,18 +52,18 @@ func NewEVMChainAddress(addr EthAddress) ChainAddress {
 	}
 }
 
-func NewStellarAccountAddress(strkey string) (ChainAddress, error) {
-	if !strings.HasPrefix(strkey, "G") {
-		return ChainAddress{}, fmt.Errorf("stellar account address must start with G")
+func NewStellarAccountAddress(strkeyStr string) (ChainAddress, error) {
+	if !strkey.IsValidEd25519PublicKey(strkeyStr) {
+		return ChainAddress{}, fmt.Errorf("invalid stellar account address (StrKey): %q", strkeyStr)
 	}
-	return ChainAddress{kind: ChainAddressKindStellarAccount, text: strkey}, nil
+	return ChainAddress{kind: ChainAddressKindStellarAccount, text: strkeyStr}, nil
 }
 
-func NewStellarContractAddress(strkey string) (ChainAddress, error) {
-	if !strings.HasPrefix(strkey, "C") {
-		return ChainAddress{}, fmt.Errorf("stellar contract address must start with C")
+func NewStellarContractAddress(strkeyStr string) (ChainAddress, error) {
+	if !strkey.IsValidContractAddress(strkeyStr) {
+		return ChainAddress{}, fmt.Errorf("invalid stellar contract address (StrKey): %q", strkeyStr)
 	}
-	return ChainAddress{kind: ChainAddressKindStellarContract, text: strkey}, nil
+	return ChainAddress{kind: ChainAddressKindStellarContract, text: strkeyStr}, nil
 }
 
 func ParseChainAddress(s string) (*ChainAddress, error) {

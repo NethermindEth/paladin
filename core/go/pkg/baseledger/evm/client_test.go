@@ -142,7 +142,7 @@ func TestBuildTransaction(t *testing.T) {
 }
 
 func TestBuildTransactionRejectsNonEVMAddress(t *testing.T) {
-	from, err := pldtypes.NewStellarAccountAddress("GABC")
+	from, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 
 	c := WrapClient(ethclientmocks.NewEthClient(t))
@@ -210,7 +210,7 @@ func TestEVMCallRequestToTransactionRejectsUnsupportedPayload(t *testing.T) {
 }
 
 func TestEVMCallRequestToTransactionRejectsNonEVMAddresses(t *testing.T) {
-	from, err := pldtypes.NewStellarAccountAddress("GABC")
+	from, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 	_, err = evmCallRequestToTransaction(&baseledger.CallRequest{
 		From:        &from,
@@ -220,7 +220,7 @@ func TestEVMCallRequestToTransactionRejectsNonEVMAddresses(t *testing.T) {
 }
 
 func TestCallRejectsNonEVMToAddress(t *testing.T) {
-	to, err := pldtypes.NewStellarAccountAddress("GABC")
+	to, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 
 	c := WrapClient(ethclientmocks.NewEthClient(t))
@@ -232,7 +232,7 @@ func TestCallRejectsNonEVMToAddress(t *testing.T) {
 }
 
 func TestGetAccountInfoRejectsNonEVMAddress(t *testing.T) {
-	addr, err := pldtypes.NewStellarAccountAddress("GABC")
+	addr, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 
 	c := WrapClient(ethclientmocks.NewEthClient(t))
@@ -242,7 +242,7 @@ func TestGetAccountInfoRejectsNonEVMAddress(t *testing.T) {
 
 func TestEstimateResourcesRejectsNonEVMToAddress(t *testing.T) {
 	from := pldtypes.MustEthAddress("0x1d0cd5b99d2e2a380e52b4000377dd507c6df754").ChainAddress()
-	to, err := pldtypes.NewStellarAccountAddress("GABC")
+	to, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 
 	c := WrapClient(ethclientmocks.NewEthClient(t))
@@ -255,7 +255,7 @@ func TestEstimateResourcesRejectsNonEVMToAddress(t *testing.T) {
 }
 
 func TestEVMCallRequestToTransactionRejectsNonEVMToAddress(t *testing.T) {
-	to, err := pldtypes.NewStellarAccountAddress("GABC")
+	to, err := pldtypes.NewStellarAccountAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	require.NoError(t, err)
 
 	_, err = evmCallRequestToTransaction(&baseledger.CallRequest{

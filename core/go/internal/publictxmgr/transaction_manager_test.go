@@ -85,6 +85,7 @@ func baseMocks(t *testing.T) *mocksAndTestControl {
 	mocks.allComponents.On("BaseLedger").Return(baseledgerevm.WrapClient(mocks.ethClient)).Maybe()
 	mocks.ethClientFactory.On("SharedWS").Return(mocks.ethClient).Maybe()
 	mocks.ethClientFactory.On("HTTPClient").Return(mocks.ethClient).Maybe()
+	mocks.ethClient.On("ChainID").Return(int64(1337)).Maybe()
 	mocks.allComponents.On("BlockIndexer").Return(mocks.blockIndexer).Maybe()
 	mocks.allComponents.On("TxManager").Return(mocks.txManager).Maybe()
 	mocks.allComponents.On("TxManager").Return(mocks.txManager).Maybe()
@@ -922,7 +923,7 @@ func TestSuspendTransactionNoOrchestrator(t *testing.T) {
 	// First, insert a test transaction into the database (omit PublicTxnID - it's auto-generated)
 	dbTX := ptm.p.DB().WithContext(ctx)
 	dbPublicTx := &DBPublicTxn{
-		From:      *testAddress,
+		From:      testAddress.ChainAddress(),
 		Nonce:     &testNonce,
 		Suspended: false,
 	}
@@ -964,7 +965,7 @@ func TestResumeTransactionNoOrchestrator(t *testing.T) {
 	// First, insert a test transaction into the database (suspended) (omit PublicTxnID - it's auto-generated)
 	dbTX := ptm.p.DB().WithContext(ctx)
 	dbPublicTx := &DBPublicTxn{
-		From:      *testAddress,
+		From:      testAddress.ChainAddress(),
 		Nonce:     &testNonce,
 		Suspended: true,
 	}
@@ -1032,7 +1033,7 @@ func TestCheckTransactionCompletedNotCompleted(t *testing.T) {
 	// Insert a transaction without completion (omit PublicTxnID - it's auto-generated)
 	dbTX := ptm.p.DB().WithContext(ctx)
 	dbPublicTx := &DBPublicTxn{
-		From:      *testAddress,
+		From:      testAddress.ChainAddress(),
 		Nonce:     &testNonce,
 		Suspended: false,
 		Completed: nil, // No completion record
@@ -1076,7 +1077,7 @@ func TestCheckTransactionCompletedWithCompletion(t *testing.T) {
 	// Insert a transaction with completion (omit PublicTxnID - it's auto-generated)
 	dbTX := ptm.p.DB().WithContext(ctx)
 	dbPublicTx := &DBPublicTxn{
-		From:      *testAddress,
+		From:      testAddress.ChainAddress(),
 		Nonce:     &testNonce,
 		Suspended: false,
 		Completed: &DBPublicTxnCompletion{
@@ -1290,7 +1291,7 @@ func TestWriteReceivedPublicTransactionSubmissions(t *testing.T) {
 		Where("nonce = ?", testNonce).
 		First(&dbTx).Error
 	assert.NoError(t, err)
-	assert.Equal(t, *testAddress, dbTx.From)
+	assert.Equal(t, testAddress.ChainAddress(), dbTx.From)
 	assert.NotNil(t, dbTx.Nonce)
 	assert.Equal(t, testNonce, *dbTx.Nonce)
 }
@@ -1619,7 +1620,7 @@ func TestUpdateTransactionAlreadyCompleted(t *testing.T) {
 	var pubTxnID uint64
 	err = ptm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		dbTx := &DBPublicTxn{
-			From:  *resolvedKey,
+			From:  resolvedKey.ChainAddress(),
 			Nonce: confutil.P(uint64(100)),
 			Gas:   21000,
 			Completed: &DBPublicTxnCompletion{
@@ -1694,7 +1695,7 @@ func TestUpdateTransactionCheckCompletedError(t *testing.T) {
 	var pubTxnID uint64
 	err := ptm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		dbTx := &DBPublicTxn{
-			From: *testAddress,
+			From: testAddress.ChainAddress(),
 			Gas:  21000,
 		}
 		err := dbTX.DB().WithContext(ctx).Table("public_txns").Create(dbTx).Error
@@ -1752,7 +1753,7 @@ func TestMatchUpdateConfirmedTransactionsCompletionDBError(t *testing.T) {
 	var pubTxnID uint64
 	err := ptm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		dbTx := &DBPublicTxn{
-			From:  *testAddress,
+			From:  testAddress.ChainAddress(),
 			Gas:   21000,
 			Nonce: confutil.P(uint64(100)),
 		}
@@ -1887,7 +1888,7 @@ func TestUpdateTransactionGasEstimateNonRejectedError(t *testing.T) {
 	var pubTxnID uint64
 	err := ptm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		dbTx := &DBPublicTxn{
-			From: *testAddress,
+			From: testAddress.ChainAddress(),
 			Gas:  21000,
 		}
 		err := dbTX.DB().WithContext(ctx).Table("public_txns").Create(dbTx).Error
@@ -1932,7 +1933,7 @@ func TestUpdateTransactionGasEstimateRejectedNoRevertData(t *testing.T) {
 	var pubTxnID uint64
 	err := ptm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		dbTx := &DBPublicTxn{
-			From: *testAddress,
+			From: testAddress.ChainAddress(),
 			Gas:  21000,
 		}
 		err := dbTX.DB().WithContext(ctx).Table("public_txns").Create(dbTx).Error

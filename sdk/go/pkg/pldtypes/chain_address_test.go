@@ -52,3 +52,22 @@ func TestChainAddressParseStellarPrefixes(t *testing.T) {
 	require.Equal(t, ChainAddressKindStellarContract, contract.Kind())
 	require.Equal(t, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4", contract.String())
 }
+
+func TestChainAddressRejectsCorruptedStellarStrKeys(t *testing.T) {
+	// Same payload as the valid account StrKey above, but with the trailing checksum character
+	// altered - must be rejected by real StrKey validation (CRC16-XMODEM), not just a prefix check.
+	_, err := ParseChainAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHG")
+	require.ErrorContains(t, err, "invalid stellar account address")
+
+	// Truncated - too short to be a valid StrKey at all.
+	_, err = NewStellarAccountAddress("GAAAA")
+	require.ErrorContains(t, err, "invalid stellar account address")
+
+	// A validly-checksummed *account* StrKey must not be accepted as a contract address (wrong
+	// version byte), and vice versa.
+	_, err = NewStellarContractAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+	require.ErrorContains(t, err, "invalid stellar contract address")
+
+	_, err = NewStellarAccountAddress("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")
+	require.ErrorContains(t, err, "invalid stellar account address")
+}

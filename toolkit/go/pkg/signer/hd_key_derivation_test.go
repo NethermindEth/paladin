@@ -17,6 +17,8 @@ package signer
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"testing"
 
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
@@ -30,10 +32,77 @@ import (
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	slip10 "github.com/stellar/go-stellar-sdk/tools/stellar-hd-wallet/crypto/derivation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tyler-smith/go-bip39"
 )
+
+// TestSLIP10EdDSAAgainstOfficialTestVector verifies that the imported SLIP-10 dependency
+// (github.com/stellar/go-stellar-sdk/tools/stellar-hd-wallet/crypto/derivation) is wired
+// correctly against SLIP-10's own published "Test vector 1 for ed25519"
+// (https://github.com/satoshilabs/slips/blob/master/slip-0010.md), independently reproduced here
+// from first principles (HMAC-SHA512, not just re-quoted from the spec) so this test does not
+// merely check self-consistency with the dependency it is verifying.
+func TestSLIP10EdDSAAgainstOfficialTestVector(t *testing.T) {
+	seed, err := hex.DecodeString("000102030405060708090a0b0c0d0e0f")
+	require.NoError(t, err)
+
+	expectedMasterPriv := "2b4be7f19ee27bbf30c667b642d5f4aa69fd169872f8fc3059c08ebae2eb19e7"
+	expectedMasterCode := "90046a93de5380a72b5e45010748567d5ea02bbf6522f979e05c0d8d8ca9fffb"
+	expectedChild0Priv := "68e0fe46dfb67e368c75379acec591dad19df3cde26e63b93a8e704f1dade7a3"
+	expectedChild0Code := "8b59aa11380b624e81507a27fedda59fea6d0b779a778918a2fd3590e16e9c69"
+	expectedChild0Pub := "8c8a13df77a28f3445213a0f432fde644acaa215fc72dcdf300d5efaa85d350c" // vector's 0x00 ed25519 marker byte stripped
+
+	hd := &hdDerivation[*signerapi.ConfigNoExt]{seed: seed}
+	ctx := context.Background()
+
+	// Through the package under test's own loadSLIP10PrivateKey (exercises the actual code path
+	// resolveHDWalletKey/signHDWalletKey use), for the m/0' path.
+	privateKey, err := hd.loadSLIP10PrivateKey(ctx, "m/0'")
+	require.NoError(t, err)
+	require.Equal(t, expectedChild0Priv, hex.EncodeToString(privateKey))
+
+	// Cross-check chain code / master key directly against the dependency, and the derived
+	// public key against the vector's published public key.
+	master, err := slip10.NewMasterKey(seed)
+	require.NoError(t, err)
+	require.Equal(t, expectedMasterPriv, hex.EncodeToString(master.Key))
+	require.Equal(t, expectedMasterCode, hex.EncodeToString(master.ChainCode))
+
+	child0, err := master.Derive(0 + slip10.FirstHardenedIndex)
+	require.NoError(t, err)
+	require.Equal(t, expectedChild0Priv, hex.EncodeToString(child0.Key))
+	require.Equal(t, expectedChild0Code, hex.EncodeToString(child0.ChainCode))
+
+	pub := ed25519.NewKeyFromSeed(child0.Key).Public().(ed25519.PublicKey)
+	require.Equal(t, expectedChild0Pub, hex.EncodeToString(pub))
+}
+
+func TestSLIP10RejectsNonHardenedSegment(t *testing.T) {
+	hd := &hdDerivation[*signerapi.ConfigNoExt]{seed: pldtypes.RandBytes(16)}
+	_, err := hd.loadSLIP10PrivateKey(context.Background(), "m/0")
+	assert.Regexp(t, "PD020829", err)
+}
+
+func TestRequiredIdentifiersAlgorithmRejectsMixedPrefixes(t *testing.T) {
+	ctx := context.Background()
+	_, err := requiredIdentifiersAlgorithm(ctx, []*prototk.PublicKeyIdentifierType{
+		{Algorithm: algorithms.ECDSA_SECP256K1},
+		{Algorithm: algorithms.EDDSA_ED25519},
+	})
+	assert.Regexp(t, "PD020830", err)
+
+	algorithm, err := requiredIdentifiersAlgorithm(ctx, []*prototk.PublicKeyIdentifierType{
+		{Algorithm: algorithms.EDDSA_ED25519},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, algorithms.Prefix_EDDSA, algorithm)
+
+	algorithm, err = requiredIdentifiersAlgorithm(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, algorithm)
+}
 
 func TestHDSigningStaticExample(t *testing.T) {
 
@@ -184,7 +253,7 @@ func TestHDSigningDirectResNoPrefix(t *testing.T) {
 	})
 	assert.Regexp(t, "PD020813", err)
 
-	_, err = sm.(*signingModule[*signerapi.ConfigNoExt]).hd.loadHDWalletPrivateKey(ctx, "")
+	_, err = sm.(*signingModule[*signerapi.ConfigNoExt]).hd.loadHDWalletPrivateKey(ctx, "", "")
 	assert.Regexp(t, "PD020813", err)
 
 }
@@ -441,7 +510,7 @@ func TestHDLoadWalletPrivateKeyDeriveError(t *testing.T) {
 	hd.hdKeyChain = xpub
 
 	// Try to load a key handle that requires deriving a hardened child from the xpub
-	_, err = hd.loadHDWalletPrivateKey(ctx, "m/1'")
+	_, err = hd.loadHDWalletPrivateKey(ctx, "m/1'", "")
 	assert.Error(t, err)
 	assert.Regexp(t, "PD020813", err)
 }

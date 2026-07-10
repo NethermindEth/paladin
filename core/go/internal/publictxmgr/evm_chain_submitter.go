@@ -55,16 +55,30 @@ func (s *evmChainSubmitter) AssignOrderingKey(ctx context.Context, from pldtypes
 	return info.OrderingKey.Uint64(), nil
 }
 
-func (s *evmChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, gasPricing *pldapi.PublicTxGasPricing) (*PreparedSubmission, error) {
+func (s *evmChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error) {
+	var gasPricing *pldapi.PublicTxGasPricing
+	if resourceEstimate != nil {
+		gasPricing = resourceEstimate.GasPricing
+	}
 	if gasPricing == nil {
 		gasPricing = &pldapi.PublicTxGasPricing{}
 	}
-	ethTx := buildEthTX(ptx.From, ptx.Nonce, ptx.To, ptx.Data, &pldapi.PublicTxOptions{
+	from, err := ptx.From.EthAddress()
+	if err != nil {
+		return nil, err
+	}
+	var to *pldtypes.EthAddress
+	if ptx.To != nil {
+		if to, err = ptx.To.EthAddress(); err != nil {
+			return nil, err
+		}
+	}
+	ethTx := buildEthTX(*from, ptx.Nonce, to, ptx.Data, &pldapi.PublicTxOptions{
 		Gas:                (*pldtypes.HexUint64)(&ptx.Gas),
 		Value:              ptx.Value,
 		PublicTxGasPricing: *gasPricing,
 	})
-	signedMessage, txHash, err := s.signTx(ctx, ptx.From, ethTx)
+	signedMessage, txHash, err := s.signTx(ctx, *from, ethTx)
 	if err != nil {
 		return nil, err
 	}

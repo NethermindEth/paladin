@@ -648,14 +648,17 @@ func (bi *blockIndexer) writeBatch(ctx context.Context, batch *blockWriterBatch)
 			log.L(ctx).Debugf("Indexed transaction: blockNumber=%d, txIndex=%d, hash=%s, result=%s", block.Number, txIndex, r.TransactionHash, result)
 			txn := IndexedTransactionNotify{
 				IndexedTransaction: pldapi.IndexedTransaction{
-					Hash:             pldtypes.NewBytes32FromSlice(r.TransactionHash),
-					BlockNumber:      int64(r.BlockNumber),
-					TransactionIndex: int64(txIndex),
-					From:             (*pldtypes.EthAddress)(r.From),
-					To:               (*pldtypes.EthAddress)(r.To),
-					Nonce:            uint64(block.Transactions[txIndex].Nonce),
-					ContractAddress:  (*pldtypes.EthAddress)(r.ContractAddress),
-					Result:           result,
+					Hash:                 pldtypes.NewBytes32FromSlice(r.TransactionHash),
+					BlockNumber:          int64(r.BlockNumber),
+					TransactionIndex:     int64(txIndex),
+					From:                 (*pldtypes.EthAddress)(r.From),
+					FromChain:            chainAddressPtrFromEth(r.From),
+					To:                   (*pldtypes.EthAddress)(r.To),
+					ToChain:              chainAddressPtrFromEth(r.To),
+					Nonce:                uint64(block.Transactions[txIndex].Nonce),
+					ContractAddress:      (*pldtypes.EthAddress)(r.ContractAddress),
+					ContractAddressChain: chainAddressPtrFromEth(r.ContractAddress),
+					Result:               pldtypes.Enum[pldapi.TransactionResult](result),
 				},
 				RevertReason: pldtypes.HexBytes(r.RevertReason),
 			}
@@ -930,10 +933,11 @@ func (bi *blockIndexer) GetIndexedTransactionByNonce(ctx context.Context, from p
 	ctx = log.WithComponent(ctx, "blockindexer")
 	var txns []*pldapi.IndexedTransaction
 	db := bi.persistence.DB()
+	fromChain := pldtypes.NewEVMChainAddress(from)
 	err := db.
 		WithContext(ctx).
 		Table("indexed_transactions").
-		Where(`"from" = ?`, from).
+		Where(`"from_chain" = ?`, fromChain.StorageString()).
 		Where("nonce = ?", nonce).
 		Find(&txns).
 		Error
@@ -1044,6 +1048,14 @@ func (bi *blockIndexer) enrichTransactionEvents(ctx context.Context, abi abi.ABI
 	return nil
 }
 
+func chainAddressPtrFromEth(addr *ethtypes.Address0xHex) *pldtypes.ChainAddress {
+	if addr == nil {
+		return nil
+	}
+	chainAddr := pldtypes.NewEVMChainAddress(pldtypes.EthAddress(*addr))
+	return &chainAddr
+}
+
 func (bi *blockIndexer) matchLog(ctx context.Context, abi abi.ABI, in *LogJSONRPC, out *pldapi.EventWithData, source *pldtypes.EthAddress, serializer *abi.Serializer) bool {
 	if !source.IsZero() && !source.Equals((*pldtypes.EthAddress)(in.Address)) {
 		log.L(ctx).Debugf("Event %d/%d/%d does not match source=%s (tx=%s,address=%s)", in.BlockNumber, in.TransactionIndex, in.LogIndex, source, in.TransactionHash, in.Address)
@@ -1063,6 +1075,8 @@ func (bi *blockIndexer) matchLog(ctx context.Context, abi abi.ABI, in *LogJSONRP
 			log.L(ctx).Debugf("Event %d/%d/%d matches ABI event %s matchSource=%v (tx=%s,address=%s)", in.BlockNumber, in.TransactionIndex, in.LogIndex, abiEntry, source, in.TransactionHash, in.Address)
 			if in.Address != nil {
 				out.Address = pldtypes.EthAddress(*in.Address)
+				addressChain := pldtypes.NewEVMChainAddress(out.Address)
+				out.AddressChain = &addressChain
 			}
 			return true
 		} else {

@@ -26,9 +26,11 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/pldmsgs"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
+	slip10 "github.com/stellar/go-stellar-sdk/tools/stellar-hd-wallet/crypto/derivation"
 	"github.com/tyler-smith/go-bip39"
 )
 
@@ -94,6 +96,7 @@ func (sm *signingModule[C]) initHDWallet(ctx context.Context, conf *pldconf.KeyD
 			return i18n.NewError(ctx, pldmsgs.MsgSigningHDSeedMustBe32BytesOrMnemonic)
 		}
 	}
+	sm.hd.seed = seed
 	sm.hd.hdKeyChain, err = hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
 	return err
 }
@@ -155,7 +158,11 @@ func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *prototk.
 		}
 		keyHandle += fmt.Sprintf("/%d%s", derivation, hardenedFlag)
 	}
-	privateKey, err := hd.loadHDWalletPrivateKey(ctx, keyHandle)
+	algorithm, err := requiredIdentifiersAlgorithm(ctx, req.RequiredIdentifiers)
+	if err != nil {
+		return nil, err
+	}
+	privateKey, err := hd.loadHDWalletPrivateKey(ctx, keyHandle, algorithm)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +171,45 @@ func (hd *hdDerivation[C]) resolveHDWalletKey(ctx context.Context, req *prototk.
 	return hd.sm.buildResolveResponseWithIdentifiers(ctx, keyHandle, privateKey, req.RequiredIdentifiers)
 }
 
-func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle string) (privateKey []byte, err error) {
+// algorithmPrefix returns the part of an algorithm string before the first ':' (see
+// getSignerForAlgorithm in signing_module.go, which dispatches signers the same way).
+func algorithmPrefix(algorithm string) string {
+	return strings.ToLower(strings.SplitN(algorithm, ":", 2)[0])
+}
+
+// requiredIdentifiersAlgorithm returns the single algorithm prefix shared by all required
+// identifiers for one key resolution, or "" if none are specified (preserving today's
+// BIP-32/secp256k1-only behavior when a caller does not ask for any specific algorithm).
+// HD-derived private key material is curve-specific (BIP-32/secp256k1 vs SLIP-10/ed25519): a
+// single derived key cannot correctly serve two different curve families even when the numeric
+// path segments match, so mixed-prefix requests are rejected rather than silently reusing one
+// curve's derived bytes as if they were the other's.
+func requiredIdentifiersAlgorithm(ctx context.Context, identifiers []*prototk.PublicKeyIdentifierType) (string, error) {
+	algorithm := ""
+	for _, id := range identifiers {
+		prefix := algorithmPrefix(id.Algorithm)
+		if algorithm == "" {
+			algorithm = prefix
+			continue
+		}
+		if prefix != algorithm {
+			return "", i18n.NewError(ctx, pldmsgs.MsgSigningMixedAlgorithmIdentifiers, algorithm, prefix)
+		}
+	}
+	return algorithm, nil
+}
+
+// loadHDWalletPrivateKey derives private key material for keyHandle, dispatching on the
+// requesting algorithm's prefix: SLIP-10/ed25519 for "eddsa", BIP-32/secp256k1 (unchanged,
+// pre-existing behavior) for everything else, including an unspecified algorithm.
+func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle string, algorithm string) (privateKey []byte, err error) {
+	if algorithmPrefix(algorithm) == algorithms.Prefix_EDDSA {
+		return hd.loadSLIP10PrivateKey(ctx, keyHandle)
+	}
+	return hd.loadBIP32PrivateKey(ctx, keyHandle)
+}
+
+func (hd *hdDerivation[C]) loadBIP32PrivateKey(ctx context.Context, keyHandle string) (privateKey []byte, err error) {
 	segments := strings.Split(keyHandle, "/")
 	if len(segments) < 2 || segments[0] != "m" {
 		return nil, i18n.NewError(ctx, pldmsgs.MsgSignerBIP44DerivationInvalid, keyHandle)
@@ -197,8 +242,41 @@ func (hd *hdDerivation[C]) loadHDWalletPrivateKey(ctx context.Context, keyHandle
 	return privateKey, err
 }
 
+// loadSLIP10PrivateKey derives an ed25519 seed for keyHandle using the go-stellar-sdk's own
+// SLIP-10 implementation (github.com/stellar/go-stellar-sdk/tools/stellar-hd-wallet/crypto/derivation),
+// sharing hd.seed with the BIP-32 tree above (SLIP-10 domain-separates its master key from the
+// same seed via an "ed25519 seed" HMAC key, so there is no cross-contamination between the two
+// trees). SLIP-10 ed25519 derivation is hardened-only, per spec - every path segment must be
+// hardened, and this is enforced explicitly rather than silently treated as non-hardened.
+func (hd *hdDerivation[C]) loadSLIP10PrivateKey(ctx context.Context, keyHandle string) (privateKey []byte, err error) {
+	segments := strings.Split(keyHandle, "/")
+	if len(segments) < 2 || segments[0] != "m" {
+		return nil, i18n.NewError(ctx, pldmsgs.MsgSignerBIP44DerivationInvalid, keyHandle)
+	}
+	key, err := slip10.NewMasterKey(hd.seed)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range segments[1:] {
+		number, isHardened := strings.CutSuffix(s, "'")
+		if !isHardened {
+			return nil, i18n.NewError(ctx, pldmsgs.MsgSigningEdDSANonHardenedSegment, s, keyHandle)
+		}
+		derivationIndex, parseErr := strconv.ParseUint(number, 10, 32)
+		if parseErr != nil || derivationIndex >= uint64(slip10.FirstHardenedIndex) {
+			return nil, i18n.WrapError(ctx, parseErr, pldmsgs.MsgSignerBIP44DerivationInvalid, s)
+		}
+		key, err = key.Derive(uint32(derivationIndex) + slip10.FirstHardenedIndex)
+		if err != nil {
+			return nil, i18n.WrapError(ctx, err, pldmsgs.MsgSignerBIP44DerivationInvalid, s)
+		}
+	}
+	seed := key.RawSeed()
+	return seed[:], nil
+}
+
 func (hd *hdDerivation[C]) signHDWalletKey(ctx context.Context, req *prototk.SignWithKeyRequest) (res *prototk.SignWithKeyResponse, err error) {
-	privateKey, err := hd.loadHDWalletPrivateKey(ctx, req.KeyHandle)
+	privateKey, err := hd.loadHDWalletPrivateKey(ctx, req.KeyHandle, req.Algorithm)
 	if err != nil {
 		return nil, err
 	}

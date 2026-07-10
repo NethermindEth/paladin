@@ -19,6 +19,7 @@ package publictxmgr
 import (
 	"context"
 
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 )
@@ -57,7 +58,7 @@ const (
 // controller own the chain-neutral 80%: polling, balance checks, persistence, retries, and metrics.
 type ChainSubmitter interface {
 	AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error)
-	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, gasPricing *pldapi.PublicTxGasPricing) (*PreparedSubmission, error)
+	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error)
 	Submit(ctx context.Context, ps *PreparedSubmission) (*SubmitResult, error)
 	ActionOnStale(ctx context.Context, ptx *DBPublicTxn) (StaleAction, error)
 }

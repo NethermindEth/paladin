@@ -28,14 +28,17 @@ var IndexedBlockFilters filters.FieldSet = filters.FieldMap{
 }
 
 var IndexedTransactionFilters filters.FieldSet = filters.FieldMap{
-	"hash":             filters.HexBytesField(`"indexed_transactions"."hash"`),
-	"blockNumber":      filters.Int64Field("block_number"),
-	"transactionIndex": filters.Int64Field("transaction_index"),
-	"from":             filters.HexBytesField(`"from"`),
-	"to":               filters.HexBytesField(`"to"`),
-	"nonce":            filters.Int64Field("nonce"),
-	"contractAddress":  filters.HexBytesField("contract_address"),
-	"result":           filters.StringField("result"),
+	"hash":                 filters.HexBytesField(`"indexed_transactions"."hash"`),
+	"blockNumber":          filters.Int64Field("block_number"),
+	"transactionIndex":     filters.Int64Field("transaction_index"),
+	"from":                 filters.HexBytesField(`"from"`),
+	"fromChain":            filters.StringField("from_chain"),
+	"to":                   filters.HexBytesField(`"to"`),
+	"toChain":              filters.StringField("to_chain"),
+	"nonce":                filters.Int64Field("nonce"),
+	"contractAddress":      filters.HexBytesField("contract_address"),
+	"contractAddressChain": filters.StringField("contract_address_chain"),
+	"result":               filters.StringField("result"),
 }
 
 var IndexedEventFilters filters.FieldSet = filters.FieldMap{

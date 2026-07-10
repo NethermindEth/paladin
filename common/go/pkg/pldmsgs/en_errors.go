@@ -148,6 +148,9 @@ var (
 	MsgSigningEmptyPayload                      = pde("PD020825", "No payload supplied for signing")
 	MsgSigningInvalidDomainAlgorithmNoPrefix    = pde("PD020826", "Invalid domain algorithm (no 'domain:' prefix): %s")
 	MsgSigningNoDomainRegisteredWithModule      = pde("PD020827", "Domain '%s' has not been registered in this signing module")
+	MsgSigningUnsupportedEdDSACurve             = pde("PD020828", "Unsupported EdDSA curve: '%s'")
+	MsgSigningEdDSANonHardenedSegment           = pde("PD020829", "SLIP-10 ed25519 derivation requires all path segments to be hardened, segment '%s' in key handle '%s' is not")
+	MsgSigningMixedAlgorithmIdentifiers         = pde("PD020830", "Required identifiers for a single key resolution must share one algorithm prefix, found '%s' and '%s'")
 
 	// Reference markdown PD0209XX
 	MsgReferenceMarkdownMissing = pde("PD020900", "Reference markdown file missing: '%s'")

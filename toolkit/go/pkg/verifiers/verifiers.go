@@ -26,3 +26,6 @@ const HEX_ECDSA_PUBKEY_UNCOMPRESSED = "hex_ecdsa_pubkey_uncompressed"
 
 // ECDSA public key in uncompressed form hex encoded (x and y [FIPS186] in uncompressed form [X9.62] without leading 0x04 "uncompressed" constant prefix)
 const HEX_ECDSA_PUBKEY_UNCOMPRESSED_0X = "hex_ecdsa_pubkey_uncompressed_0x"
+
+// A Stellar StrKey-encoded ed25519 account address (G...)
+const STELLAR_ADDRESS = "stellar_address"

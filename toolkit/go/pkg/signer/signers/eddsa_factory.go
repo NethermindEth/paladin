@@ -1,5 +1,5 @@
 /*
- * Copyright © 2024 Kaleido, Inc.
+ * Copyright © 2026 Kaleido, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
  * the License. You may obtain a copy of the License at
@@ -13,18 +13,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package algorithms
+package signers
 
-// Primary constant used throughout Paladin codebase - ECDSA algorithm with SECP256K1 curve
-const ECDSA_SECP256K1 = Prefix_ECDSA + ":" + Curve_SECP256K1
+import (
+	"context"
 
-const Prefix_ECDSA = "ecdsa"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signerapi"
+)
 
-const Curve_SECP256K1 = "secp256k1"
+func NewEdDSASignerFactory[C signerapi.ExtensibleConfig]() signerapi.InMemorySignerFactory[C] {
+	return &eddsaSignerFactory[C]{}
+}
 
-// EdDSA algorithm with the ed25519 curve - used by the Stellar base ledger (chapter 12)
-const EDDSA_ED25519 = Prefix_EDDSA + ":" + Curve_ED25519
+type eddsaSignerFactory[C signerapi.ExtensibleConfig] struct{}
 
-const Prefix_EDDSA = "eddsa"
-
-const Curve_ED25519 = "ed25519"
+func (sf *eddsaSignerFactory[C]) NewSigner(ctx context.Context, conf C) (signerapi.InMemorySigner, error) {
+	// We have no configuration
+	return &eddsaSigner{}, nil
+}

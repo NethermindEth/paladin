@@ -41,9 +41,11 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/txmgr"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
+	"github.com/LFDT-Paladin/paladin/core/pkg/stellarclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/httpserver"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/metricsserver"
@@ -173,7 +175,7 @@ func (cm *componentManager) Init() (err error) {
 		}
 	}
 
-	if err == nil {
+	if err == nil && cm.conf.BaseLedger.ResolvedType() == pldconf.BaseLedgerTypeEVM {
 		cm.ethClientFactory, err = ethclient.NewEthClientFactory(cm.bgCtx, &cm.conf.Blockchain)
 		err = cm.wrapIfErr(err, msgs.MsgComponentEthClientInitError)
 	}
@@ -182,7 +184,7 @@ func (cm *componentManager) Init() (err error) {
 		cm.persistence, err = persistence.NewPersistence(cm.bgCtx, &cm.conf.DB)
 		err = cm.addIfOpened("database", cm.persistence, err, msgs.MsgComponentDBInitError)
 	}
-	if err == nil {
+	if err == nil && cm.conf.BaseLedger.ResolvedType() == pldconf.BaseLedgerTypeEVM {
 		cm.blockIndexer, err = blockindexer.NewBlockIndexer(cm.bgCtx, &cm.conf.BlockIndexer, &cm.conf.Blockchain.WS, cm.persistence)
 		err = cm.wrapIfErr(err, msgs.MsgComponentBlockIndexerInitError)
 	}
@@ -381,14 +383,19 @@ func (cm *componentManager) stopEthClient() {
 }
 
 // newBaseLedgerClient dispatches construction of the base ledger client on the configured chain
-// kind. Init() already validates cm.conf.BaseLedger.Type and rejects anything other than "evm"
-// today, so only that branch is reachable - the switch exists as the single, obvious extension
-// point for a future chain kind (e.g. "stellar", chapter 12) rather than requiring another
-// restructuring of StartManagers() when that lands.
+// kind. Full node boot remains blocked for type: stellar in Init() until the ledger-indexer work
+// from later Chapter 12 slices lands, but the Stellar base-ledger client itself is real and
+// testable now, so this switch is the single construction point for both supported branches.
 func (cm *componentManager) newBaseLedgerClient() (baseledger.Client, error) {
 	switch cm.conf.BaseLedger.ResolvedType() {
 	case pldconf.BaseLedgerTypeEVM:
 		return baseledgerevm.WrapClient(cm.ethClientFactory.SharedWS()), nil
+	case pldconf.BaseLedgerTypeStellar:
+		client, closeFn, err := stellarclient.NewClient(cm.bgCtx, cm.conf.BaseLedger.Stellar)
+		if err != nil {
+			return nil, err
+		}
+		return baseledgerstellar.WrapClient(client, cm.conf.BaseLedger.Stellar.NetworkPassphrase, closeFn), nil
 	default:
 		return nil, i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerUnsupported, cm.conf.BaseLedger.ResolvedType())
 	}
@@ -396,10 +403,12 @@ func (cm *componentManager) newBaseLedgerClient() (baseledger.Client, error) {
 
 func (cm *componentManager) StartManagers() (err error) {
 
-	// start the eth client before any managers - this connects the WebSocket, and gathers the ChainID
+	// start the EVM client before any managers - this connects the WebSocket, and gathers the ChainID
 	// We have special handling here to allow for concurrent startup of the blockchain node and Paladin
-	err = cm.startEthClient()
-	err = cm.addIfStarted("eth_client", cm.ethClientFactory, err, msgs.MsgComponentEthClientStartError)
+	if cm.ethClientFactory != nil {
+		err = cm.startEthClient()
+		err = cm.addIfStarted("eth_client", cm.ethClientFactory, err, msgs.MsgComponentEthClientStartError)
+	}
 	if err == nil {
 		cm.baseLedger, err = cm.newBaseLedgerClient()
 	}
@@ -608,7 +617,9 @@ func (cm *componentManager) registerRPCModules() {
 	}
 	// We handle block indexer separately (doesn't fit the internal ManagerLifecycle model
 	// as it's currently a standalone re-usable component)
-	cm.rpcServer.Register(cm.BlockIndexer().RPCModule())
+	if cm.BlockIndexer() != nil {
+		cm.rpcServer.Register(cm.BlockIndexer().RPCModule())
+	}
 }
 
 func (cm *componentManager) Stop() {
@@ -626,9 +637,11 @@ func (cm *componentManager) Stop() {
 		log.L(cm.bgCtx).Debugf("Stopped %s", name)
 	}
 
-	log.L(cm.bgCtx).Infof("Stopping eth client")
-	cm.stopEthClient()
-	log.L(cm.bgCtx).Debugf("Stopped eth client")
+	if cm.ethClientFactory != nil {
+		log.L(cm.bgCtx).Infof("Stopping eth client")
+		cm.stopEthClient()
+		log.L(cm.bgCtx).Debugf("Stopped eth client")
+	}
 
 	log.L(cm.bgCtx).Debug("Stopped")
 }

@@ -25,10 +25,10 @@ import (
 // public_transactions
 type DBPublicTxn struct {
 	PublicTxnID     uint64                 `gorm:"column:pub_txn_id;primaryKey"`
-	From            pldtypes.EthAddress    `gorm:"column:from"`
+	From            pldtypes.ChainAddress  `gorm:"column:from"`
 	Nonce           *uint64                `gorm:"column:nonce"`
 	Created         pldtypes.Timestamp     `gorm:"column:created;autoCreateTime:nano"`
-	To              *pldtypes.EthAddress   `gorm:"column:to"`
+	To              *pldtypes.ChainAddress `gorm:"column:to"`
 	Gas             uint64                 `gorm:"column:gas"`
 	FixedGasPricing pldtypes.RawJSON       `gorm:"column:fixed_gas_pricing"`
 	Value           *pldtypes.HexUint256   `gorm:"column:value"`

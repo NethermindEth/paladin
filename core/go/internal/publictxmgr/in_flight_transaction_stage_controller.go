@@ -28,6 +28,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -675,11 +676,11 @@ func (it *inFlightTransactionStageController) TriggerSignTx(ctx context.Context)
 		Value:       it.stateManager.GetValue(),
 		Data:        it.stateManager.GetData(),
 	}
-	gasPricing := it.stateManager.GetGasPriceObject()
+	resourceEstimate := &baseledger.ResourceEstimate{GasPricing: it.stateManager.GetGasPriceObject()}
 	it.executeAsync(func() {
 		var signedMessage []byte
 		var txHash *pldtypes.Bytes32
-		prepared, err := it.chainSubmitter.PrepareSubmission(ctx, ptx, gasPricing)
+		prepared, err := it.chainSubmitter.PrepareSubmission(ctx, ptx, resourceEstimate)
 		if err == nil {
 			signedMessage = prepared.RawTransaction
 			txHash = prepared.TransactionHash

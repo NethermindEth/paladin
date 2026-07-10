@@ -39,10 +39,10 @@ func TestGoldenPublicTxJSONPayload(t *testing.T) {
 
 	ptx := &DBPublicTxn{
 		PublicTxnID:     101,
-		From:            *pldtypes.MustEthAddress("0x1d0cd5b99d2e2a380e52b4000377dd507c6df754"),
+		From:            pldtypes.MustEthAddress("0x1d0cd5b99d2e2a380e52b4000377dd507c6df754").ChainAddress(),
 		Nonce:           &nonce,
 		Created:         pldtypes.TimestampFromUnix(1700000000),
-		To:              pldtypes.MustEthAddress("0x2d0cd5b99d2e2a380e52b4000377dd507c6df754"),
+		To:              ethAddressChainAddress(pldtypes.MustEthAddress("0x2d0cd5b99d2e2a380e52b4000377dd507c6df754")),
 		Gas:             21000,
 		FixedGasPricing: pldtypes.RawJSON(`{"maxFeePerGas":"0x3b9aca00","maxPriorityFeePerGas":"0x3b9aca00"}`),
 		Value:           pldtypes.Uint64ToUint256(1000000000000000000),
@@ -56,7 +56,8 @@ func TestGoldenPublicTxJSONPayload(t *testing.T) {
 		},
 	}
 
-	tx := mapPersistedTransaction(ptx)
+	tx, err := mapPersistedTransaction(ptx)
+	require.NoError(t, err)
 	actual, err := json.Marshal(tx)
 	require.NoError(t, err)
 

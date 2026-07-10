@@ -23,3 +23,13 @@ package signpayloads
 // according to the Bitcoin/Eth standard of 27+recid (27 or 28)
 // denoting an uncompressed public key.
 const OPAQUE_TO_RSV = "opaque:rsv"
+
+// Input:
+// An opaque payload goes into the signing module - conventionally the 32-byte hash to sign
+// (e.g. a Stellar transaction's network-ID-qualified signature payload,
+// txnbuild.Transaction.Hash(networkPassphrase)). No validation, or other processing of the
+// payload is performed before signing.
+// Output:
+// A raw 64-byte ed25519 signature (R||S). Unlike OPAQUE_TO_RSV, EdDSA has no recovery/V byte:
+// the verifier is not recoverable from the signature alone.
+const OPAQUE_TO_EDDSA = "opaque:eddsa"

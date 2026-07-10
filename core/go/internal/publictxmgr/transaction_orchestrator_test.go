@@ -51,11 +51,11 @@ func newTestOrchestrator(t *testing.T, cbs ...func(mocks *mocksAndTestControl, c
 
 func newInflightTransaction(o *orchestrator, nonce uint64, txMods ...func(tx *DBPublicTxn)) (*inFlightTransactionStageController, *inFlightTransactionState) {
 	tx := &DBPublicTxn{
-		From:    o.signingAddress,
+		From:    o.signingAddress.ChainAddress(),
 		Nonce:   &nonce,
 		Gas:     2000,
 		Created: pldtypes.TimestampNow(),
-		To:      pldtypes.EthAddressBytes(pldtypes.RandBytes(20)),
+		To:      ethAddressChainAddress(pldtypes.EthAddressBytes(pldtypes.RandBytes(20))),
 	}
 	for _, txMod := range txMods {
 		txMod(tx)
@@ -222,7 +222,7 @@ func TestAllocateNoncesGetTransactionCountError(t *testing.T) {
 	defer done()
 
 	// nextNonce is nil so allocateNonces will call GetTransactionCount
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
 	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
 		Return(nil, fmt.Errorf("rpc error")).Once()
@@ -251,7 +251,7 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 1))
 	m.db.ExpectCommit()
 
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
 	assert.NoError(t, err)
 	// nextNonce should have advanced by 1 (we allocated nonce 5)
@@ -272,7 +272,7 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	m.db.ExpectExec("WITH nonce_updates").WillReturnError(fmt.Errorf("db transaction error"))
 	m.db.ExpectRollback()
 
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "db transaction error")

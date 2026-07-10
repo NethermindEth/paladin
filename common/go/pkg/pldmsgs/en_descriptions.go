@@ -382,6 +382,7 @@ var (
 	// PaladinConfig field descriptions
 	PaladinConfigStartup          = pdm("PaladinConfig.startup", "Startup configuration")
 	PaladinConfigLog              = pdm("PaladinConfig.log", "Logging configuration")
+	PaladinConfigBaseLedger       = pdm("PaladinConfig.baseLedger", "Base ledger configuration (chain-agnostic; selects and configures the EVM or Stellar backend)")
 	PaladinConfigBlockchain       = pdm("PaladinConfig.blockchain", "Blockchain client configuration")
 	PaladinConfigDB               = pdm("PaladinConfig.db", "Database configuration")
 	PaladinConfigRPCServer        = pdm("PaladinConfig.rpcServer", "RPC server configuration")
@@ -860,4 +861,13 @@ var (
 	FileSystemKeyStoreConfigCache    = pdm("FileSystemKeyStoreConfig.cache", "File system key store cache")
 	FileSystemKeyStoreConfigFileMode = pdm("FileSystemKeyStoreConfig.fileMode", "File system key store file mode")
 	FileSystemKeyStoreConfigDirMode  = pdm("FileSystemKeyStoreConfig.dirMode", "File system key store directory mode")
+
+	// BaseLedgerConfig field descriptions
+	BaseLedgerConfigType    = pdm("BaseLedgerConfig.type", "The base ledger chain kind: 'evm' (default) or 'stellar'")
+	BaseLedgerConfigEVM     = pdm("BaseLedgerConfig.evm", "EVM base ledger client configuration (used when type is 'evm')")
+	BaseLedgerConfigStellar = pdm("BaseLedgerConfig.stellar", "Stellar base ledger client configuration (used when type is 'stellar')")
+
+	// StellarClientConfig field descriptions (url/tls/auth/retry/timeouts come from the inlined
+	// HTTPClientConfig, described separately below)
+	StellarClientConfigNetworkPassphrase = pdm("StellarClientConfig.networkPassphrase", "Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network)")
 )

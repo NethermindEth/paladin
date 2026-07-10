@@ -185,11 +185,11 @@ func (imtxs *inMemoryTxState) GetNonce() uint64 {
 	return *imtxs.mtx.ptx.Nonce
 }
 
-func (imtxs *inMemoryTxState) GetFrom() pldtypes.EthAddress {
+func (imtxs *inMemoryTxState) GetFrom() pldtypes.ChainAddress {
 	return imtxs.mtx.ptx.From
 }
 
-func (imtxs *inMemoryTxState) GetTo() *pldtypes.EthAddress {
+func (imtxs *inMemoryTxState) GetTo() *pldtypes.ChainAddress {
 	return imtxs.mtx.ptx.To
 }
 
@@ -201,13 +201,26 @@ func (imtxs *inMemoryTxState) GetValue() *pldtypes.HexUint256 {
 	return imtxs.mtx.ptx.Value
 }
 
+// BuildEthTX is only meaningful for EVM public transactions - it returns nil if this transaction's
+// from/to addresses are not EVM addresses (there is no current caller of this method; kept as part
+// of the InMemoryTxStateReadOnly contract for future EVM-specific tooling).
 func (imtxs *inMemoryTxState) BuildEthTX() *ethsigner.Transaction {
 	// Builds the ethereum TX using the latest in-memory information that must have been resolved in previous stages
 	ptx := imtxs.mtx.ptx
+	from, err := ptx.From.EthAddress()
+	if err != nil {
+		return nil
+	}
+	var to *pldtypes.EthAddress
+	if ptx.To != nil {
+		if to, err = ptx.To.EthAddress(); err != nil {
+			return nil
+		}
+	}
 	return buildEthTX(
-		ptx.From,
+		*from,
 		ptx.Nonce,
-		ptx.To,
+		to,
 		ptx.Data,
 		&pldapi.PublicTxOptions{
 			Gas:                (*pldtypes.HexUint64)(&ptx.Gas), // fixed in persisted TX
