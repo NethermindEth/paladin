@@ -21,6 +21,16 @@ Structure: introduce `chainKind` in the domain's `ConfigureDomain` handling (fro
 gains the batch-size caps from the M0 benchmarks. Notary `hooks` mode is EVM-only until Sente
 ships (declared in `supported_chain_kinds` behavior).
 
+**Native-asset (SNoto-SAC) verbs:** for token instances configured with a backing classic
+asset (ch. 13 §13.6), the domain adds `shield`/`unshield` handlers alongside `mint`/`burn`:
+`shield` assembles the depositor's SAC-transfer auth entry plus notary-authorized outputs;
+`unshield` runs the **trustline pre-flight** (ch. 12 §12.3 `CheckTrustline`) during
+`AssembleTransaction` and rejects with an actionable error if the recipient lacks an authorized
+trustline. For regulated assets the notary is the natural gatekeeper of `unshield` (approve
+only KYC'd recipients) — mirroring the issuer's own `AUTH_REQUIRED` control, and strongest when
+notary and issuer are the same organization. Issuer flags observed at shield time are recorded
+into the domain receipt.
+
 **Acceptance:** the same domain binary passes the EVM testbed *and* the new Stellar testbed
 (quickstart); a 3-node testnet transfer flow with notary on node 1, parties on nodes 2/3,
 including state distribution, receipts, and a state-resync drill.
@@ -31,6 +41,10 @@ Smaller still, because the cryptography is untouched:
 
 - Prover, witness generation (wasmer), BabyJubJub signer registration
   (`domain:zeto:snark:babyjubjub`), nullifier computation, SMT bookkeeping: **unchanged**.
+- **`deposit`/`withdraw` become the native-asset gateway**: the circuits already exist (they
+  wrap ERC-20 on EVM); on Saladin the same handlers target the SZeto contract's pooled SAC
+  balance (ch. 13 §13.6). `withdraw` gets the same assemble-time trustline pre-flight as
+  SNoto's `unshield`.
 - Chain-kind switch mirrors Noto's: prepared transactions become `SorobanInvoke` with the proof
   in `args_xdr`; events consumed via `ChainEvent`; deploys via SZetoFactory.
 - Batch-size limits from the M0 resource benchmarks constrain `AssembleTransaction` coin
@@ -45,8 +59,7 @@ the unchanged proving stack; nullifier double-spend rejection observed end-to-en
 
 **Honest framing: Sente is the hardest deliverable of Part 2 — comparable in effort to several
 other milestones combined — and is deliberately scheduled last (M6), off the MVP critical
-path.** (Part 3 §20 shows how a Rust engine would make it structurally simpler; that is the
-strongest single argument for the Rust path.)
+path.**
 
 ### What Pente does, translated
 
@@ -54,9 +67,14 @@ Pente embeds the base-ledger VM (Besu's EVM, in-JVM) in a domain plugin; the pri
 world state is a UTXO chain of account-state snapshots; the on-chain contract verifies unanimous
 signatures over transition hashes. The Soroban translation:
 
-- **Embed `soroban-env-host`** — the actual Soroban execution environment, a Rust library
-  *designed* for embedding: pluggable `Storage`/`SnapshotSource`, deterministic metered
-  execution (a budget), controllable `LedgerInfo`. Architecturally friendlier to embed than
+- **Embed `soroban-env-host` via the `soroban-simulation` crate** — the actual Soroban
+  execution environment, a Rust library *designed* for embedding: pluggable
+  `Storage`/`SnapshotSource`, deterministic metered execution (a budget), controllable
+  `LedgerInfo`. `soroban-simulation` (part of `stellar/rs-soroban-env`) is the exact library
+  stellar-rpc's own `simulateTransaction` preflight is built on: it runs the host in
+  **recording mode**, capturing the read/write footprint, resource consumption, and required
+  auth payloads of an invocation over whatever `SnapshotSource` you give it. Sente gives it one
+  backed by the privacy group's Paladin states. Architecturally friendlier to embed than
   Besu's EVM.
 - **Sente is Paladin's first Rust plugin.** Rust produces C-shared libraries (`cdylib`)
   naturally, and the plugin contract is language-neutral gRPC (ch. 5). Work items: a small
@@ -67,7 +85,10 @@ signatures over transition hashes. The Soroban translation:
 - **State model:** the group's state is the set of Soroban ledger entries owned by the group's
   contracts, chunked into UTXO states `SenteEntry{contract_id, key_xdr, val_xdr, seq}` —
   per-*ledger-entry* granularity (finer than Pente's per-account states). Elegant consequence:
-  **the footprint from simulation is exactly the input-state list** for `AssembleTransaction`.
+  **the recording-mode footprint is exactly the input/read state list** for
+  `AssembleTransaction` — read/write-set discovery is a first-class native mechanism on
+  Soroban, where Pente had to hand-build the equivalent bookkeeping around the Besu EVM
+  (`AccountLoader`/`DynamicLoadWorldState` tracking which accounts an execution touched).
 - **Determinism checklist** (all endorsers must re-execute identically):
   - Pin `LedgerInfo{sequence, timestamp}` from assembly time into the endorsed transition.
   - Seed the PRNG from the private transaction ID.
@@ -88,6 +109,36 @@ signatures over transition hashes. The Soroban translation:
   mid-execution calls to public contracts (use the external-call pattern); host features that
   cannot be virtualized identically (TTL interactions, live `prng` beyond the seeded one) are
   disallowed. Pente carries the same philosophy.
+
+### Design note: why not remote `simulateTransaction`?
+
+A natural question: Stellar already has native transaction simulation — could Sente just call
+stellar-rpc's `simulateTransaction` to learn which states an invocation reads and writes,
+instead of embedding an execution environment? No, for four reasons that are architectural, not
+incidental:
+
+1. **Wrong state.** The RPC endpoint executes against the *public ledger*. Sente's contracts
+   and their storage exist only as privacy-group Paladin states — they are not deployed on the
+   public network, and the RPC API has no mechanism to inject a substitute state snapshot (no
+   analogue of `eth_call`'s state overrides). The simulation would simply fail to find the
+   contract.
+2. **Endorsement is local re-execution, not delegation.** Every group member must independently
+   re-execute the transition with pinned `LedgerInfo`, PRNG seed, and protocol version, and get
+   byte-identical results before signing. A remote node's simulation offers none of that
+   control, and its output is not attributable — an endorsement must attest "I verified this",
+   never "an RPC told me".
+3. **Privacy.** Sending private function arguments and private contract code to RPC
+   infrastructure — even self-hosted, and certainly shared — defeats the purpose of the domain.
+4. **Determinism drift.** RPC simulation reflects whatever host version and network settings
+   that node runs at that moment; endorsers hitting different nodes (or the same node at
+   different times) could legitimately diverge.
+
+The resolution is the reframe above: Sente **does** use native Stellar simulation — the very
+same `soroban-simulation`/recording-mode engine that powers `simulateTransaction` — just
+embedded in-process and pointed at the group's private `SnapshotSource` instead of the public
+ledger. Same engine, different state source. Remote `simulateTransaction` remains exactly where
+it belongs: in the public-transaction pipeline (ch. 12 §12.1), footprinting the *anchor*
+transactions Sente eventually submits on-chain.
 
 ### Internal phasing (within M6, ~6 em total)
 

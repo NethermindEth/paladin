@@ -178,6 +178,14 @@ public Ethereum) + outage allowance. Consortium rule of thumb: `T_B ≈ now+2h`,
 **Zeto/SZeto legs** slot in via their `delegateLock` + proof-carrying `transferLocked` prepared
 transactions — HTLC is the natural mode for notary-less domains.
 
+**Native-asset legs.** A settlement leg (in an SAtom on Stellar, or a cross-ledger swap) may
+also be a plain **SAC `transfer`** of a classic asset — no privacy domain at all: e.g. a
+private SNoto bond delivered against *public* USDC. The payer pre-signs the SAC-transfer auth
+entry at prepare time (with an expiration covering the settlement window), and the recipient's
+trustline is pre-flighted at prepare (ch. 12 §12.3) so the leg cannot fail on a missing
+trustline at execute time. This makes Saladin useful for DvP even when one side of the trade
+never adopts a privacy domain.
+
 ## 15.4 Light-client bridges (research track — not on the roadmap)
 
 - **Stellar → EVM: hard.** SCP has no succinct global finality artifact (quorum slices are

@@ -176,7 +176,71 @@ Two design rules, printed in bold for domain authors:
   parent-owner `require_auth` — a faithful mirror of `IdentityRegistry.sol` for the future
   `registries/stellar` plugin.
 
-## 13.6 Acceptance criteria
+## 13.6 Native Stellar assets & the SAC
+
+Everything above concerns tokens whose ledger of record *is* the domain (as Noto/Zeto are on
+EVM). But Stellar's economy runs on **classic assets** — natively issued tokens identified by
+`code:issuer` (plus **XLM**, the protocol asset) — held by `G…` accounts via **trustlines**: an
+explicit opt-in ledger entry the holder creates with a `ChangeTrust` operation, which the issuer
+may additionally gate (`AUTH_REQUIRED`), freeze (`AUTH_REVOCABLE`), or claw back
+(`AUTH_CLAWBACK_ENABLED`). A privacy layer that cannot touch USDC-on-Stellar or tokenized
+deposits issued as classic assets would miss the point. Saladin supports them through the
+**Stellar Asset Contract (SAC)** — the built-in Soroban contract every classic asset exposes
+(SEP-41 token interface: `transfer`, `balance`, plus issuer-admin `mint`, `clawback`,
+`set_authorized`).
+
+The facts that make the design work (verified against the SAC specification, CAP-46-6):
+
+- For `G…` holders, SAC transfers read/write the **trustline** — it must exist and be
+  authorized. For **`C…` (contract) holders, the balance is contract data — no trustline at
+  all.** If the issuer has `AUTH_REQUIRED`, a contract balance must be `set_authorized` by the
+  issuer before it can receive — the issuer keeps exactly the control it has in classic Stellar.
+- Contract balances are **permanently clawback-enabled at creation** iff the issuer had
+  `AUTH_CLAWBACK_ENABLED` set (unlike trustlines, this cannot later be disabled per-balance).
+- XLM's SAC involves no trustlines at all.
+
+### The shield/unshield pattern
+
+The domain contract holds a **pooled SAC contract balance**; private C-UTXOs represent claims
+on the pool, 1:1:
+
+- **Shield (deposit):** `snoto.deposit(from: Address, amount: i128, outputs: Vec<BytesN<32>>, …)`
+  performs `sac.transfer(from → pool)` (authorized by the depositor's auth entry — for a `G…`
+  depositor that is their classic account signature) and admits the output state IDs under
+  notary authorization. Amount and depositor are public — exactly the disclosure profile of
+  Zeto's `deposit` on EVM.
+- **Private transfers** then proceed entirely inside the domain (states, notary/proofs) with
+  no trustline involvement — the pool is a contract holder.
+- **Unshield (withdraw):** burns input state IDs and performs `sac.transfer(pool →
+  recipient)`. A `G…` recipient **must already hold an authorized trustline** — checked
+  *before assembly* by the node (ch. 12's trustline pre-flight), so failures are clear errors,
+  not on-chain reverts.
+
+SZeto's case is even more direct: **Zeto's `deposit`/`withdraw` circuits already exist** for
+exactly this purpose on EVM (wrapping ERC-20); on Saladin they wire to the SAC instead —
+same circuits, same proofs, different pool. The deposit/withdraw entry points live **in the
+SNoto/SZeto contracts themselves** (as Zeto does on EVM), not in a separate gateway contract —
+one fewer trust boundary, and the pool's footprint stays inside the domain's own keys
+(decision log, ch. 16).
+
+### Regulated-asset caveats (read before shielding a real-world asset)
+
+- **Issuer `AUTH_REQUIRED`:** the pool contract itself must be `set_authorized` by the issuer
+  before the first shield — an explicit issuer-onboarding step for the domain instance.
+- **Clawback/freeze are pool-wide.** If the issuer has `AUTH_CLAWBACK_ENABLED`, the pool's
+  contract balance is permanently clawback-capable: an issuer clawback (or
+  `set_authorized(false)` freeze) hits the *pooled* balance backing **all** shielded holders at
+  once — a systemic event the domain cannot prevent. Consequences: (a) for regulated assets the
+  practical deployment is **notary–issuer organizational alignment** (the party trusted to
+  approve transfers is the party who could claw back anyway); (b) the node should record issuer
+  flags at shield time and surface them in receipts; (c) the legal/disclosure documentation
+  must state this plainly. For trust-minimized deployments, restrict shielding to
+  clawback-free assets (risk R21, ch. 17).
+- **Privacy boundary:** trustlines are public (holder ↔ asset linkage), and shield/unshield
+  endpoints and amounts are public. What is private is everything *between* — holdings and
+  transfers inside the pool. The pool's total (= total shielded supply) is public.
+
+## 13.7 Acceptance criteria
 
 1. Contract unit tests (soroban-sdk testutils) cover: double-spend rejection, replayed `tx_id`
    rejection, lock lifecycle (create → prepare → delegate → spend/cancel), unauthorized-notary
@@ -192,6 +256,13 @@ Two design rules, printed in bold for domain authors:
    committed to domain config defaults.
 6. Reproducible Wasm builds (pinned rustc + `stellar contract build` profile) with recorded
    code hashes.
+7. Native-asset E2E: shield a classic asset → private transfers → unshield to a trustline-holding
+   `G…` account; unshield to an account *without* a trustline rejected at pre-flight, not
+   on-chain.
+8. `AUTH_REQUIRED` asset flow: pool `set_authorized` by issuer, then shield/unshield succeed;
+   without it, shield fails with a decoded, actionable error.
+9. Clawback-flagged asset test: document (in test output) the issuer's ability to claw back the
+   pool balance; receipts record issuer flags captured at shield time.
 
 ---
 

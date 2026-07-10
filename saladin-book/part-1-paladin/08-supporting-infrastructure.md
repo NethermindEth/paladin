@@ -55,8 +55,8 @@ Recap from chapter 3, plus operational detail:
 - Helm charts in `operator/charts`; a kind-based local cluster config (`paladin-kind.yaml`)
   brings up a full 3-node network with domains and registries in minutes.
 
-Part 2 adds Stellar-flavored CRDs; Part 3 keeps this operator wholesale (it is engine-agnostic —
-it deploys containers and submits RPC calls).
+Part 2 adds Stellar-flavored CRDs; the operator itself is engine-agnostic (it deploys containers
+and submits RPC calls).
 
 ## 8.5 Testing infrastructure
 

@@ -2,8 +2,7 @@
 
 The development-risk register for the whole Part 2 program (port + interop). Scales: likelihood
 (L) and impact (I) each Low/Med/High. **EWI** = early-warning indicator. Ordered roughly by
-severity within each group. (Part 3 has its own register for the Rust path, ch. 21; Part 4's
-post-quantum register is ch. 33.)
+severity within each group.
 
 ## 17.1 Correctness & protocol risks
 
@@ -38,6 +37,9 @@ post-quantum register is ch. 33.)
 | R17 | **Cross-language hashing determinism** (typed-data digests must match across Rust contract, Go engine, and any future implementation, or interop payloads fork). | M | M | one canonical spec + shared vector files consumed by all implementations' CI | hand-rolled hashing without a vector file in review |
 | R18 | **Fee surge vs HTLC deadlines** (underbid inclusion during surge pricing stalls a leg inside its window). | M | M | fee-bump escalation policy; headroom multipliers on simulation; Δ sized for worst-case fee-retry cycles | fee-related failures in load tests; time-to-inclusion p99 nearing Δ/4 |
 | R19 | **Testnet quarterly resets** (certainty, not risk: all data wiped ~quarterly). | H | L–M | everything rebuildable from one script (deploy+fund+seed); primary testing on local quickstart; reset dates on the team calendar | env rebuild time >1 h |
+| R20 | **Recipient trustline missing/unauthorized blocks unshield** (native assets, ch. 13 §13.6): a withdrawal to a `G…` account without an existing, authorized, non-full trustline fails — a liveness/UX failure class with no EVM analogue. | M | M | assemble-time trustline pre-flight (`CheckTrustline`, ch. 12 §12.3) with actionable errors; `ChangeTrust` tooling for local identities; docs for asset issuers on the approval flow | unshield failures reaching the chain instead of pre-flight; support tickets about "stuck withdrawals" |
+| R21 | **Issuer clawback/freeze of the pooled SAC balance** (native assets): with `AUTH_CLAWBACK_ENABLED`, the pool's contract balance is *permanently* clawback-capable — one issuer action hits **all** shielded holders; `set_authorized(false)` freezes shield/unshield entirely. | L–M | H | asset-policy allowlist per domain instance (default: clawback-free assets only); notary–issuer organizational alignment for regulated assets; record issuer flags at shield time into receipts; plain-language legal disclosure | a shieldable asset with clawback flag appearing without an alignment agreement; issuer-flag changes observed on a backing asset |
+| R22 | **Classic-op scope creep in the BLI**: `XDR_CLASSIC_OPS` (added for trustlines/accounts) becomes a backdoor for DEX offers, claimable balances, payment paths — dragging classic-Stellar semantics into the chain-agnostic core. | M | M | written non-goal list (ch. 12 §12.3); code review gate: classic ops limited to ChangeTrust/SetTrustLineFlags/Payment/CreateAccount; anything else needs a design doc | PRs adding new classic op types without a design doc |
 
 ## 17.4 Timeline sanity check
 

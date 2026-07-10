@@ -11,7 +11,9 @@ Mirrors `ethclient`'s role. RPC methods used: `simulateTransaction`, `sendTransa
 `getTransaction(s)`, `getLedgers`, `getEvents`, `getLedgerEntries`, `getLatestLedger`,
 `getFeeStats`, `getNetwork`, `getHealth`.
 
-**The canonical invocation pipeline** (vs. EVM's estimate→sign→send):
+**The canonical invocation pipeline** (vs. EVM's estimate→sign→send) — `simulateTransaction`
+here is powered by the same `soroban-simulation` recording-mode library Sente later embeds
+in-process for private execution (ch. 14 §14.3):
 
 ```mermaid
 flowchart LR
@@ -83,7 +85,32 @@ account, waits for inclusion (new orchestrator stage `StageRestore`; persisted
 **Confirmation matching** works unchanged: TxID is a 32-byte hash on both chains, matched from
 ingested ledgers.
 
-## 12.3 The Stellar ingestor
+## 12.3 Classic operations, accounts & trustlines
+
+Native-asset support (ch. 13 §13.6) needs a handful of **classic operations** — `ChangeTrust`,
+`SetTrustLineFlags`, occasionally `Payment`/`CreateAccount` — which are *not* Soroban
+invocations (and are exempt from the one-op rule: a classic transaction may carry up to 100
+operations).
+
+- **BLI addition (deliberately narrow):** one new payload kind,
+  `PayloadEncoding.XDR_CLASSIC_OPS` — an XDR-encoded list of classic operations for
+  `UnsignedChainTx`. It rides the same submitter path (sequence assignment, fees, fee-bump on
+  stale) but **skips simulation/footprint entirely** (classic ops have neither). ⚠️
+  Scope-creep warning (risk R22): this is for account/trustline plumbing, not a gateway to
+  classic-Stellar features — payments channels, offers/DEX, claimable balances stay out of the
+  BLI.
+- **Account & trustline utilities** (node-level, exposed as admin RPC/ops tooling):
+  - `ChangeTrust` for a local identity (signed by that identity's key — a trustline can only be
+    created by its holder), used before an unshield to a fresh account;
+  - issuer-side helpers for regulated assets: `SetTrustLineFlags` (approve/freeze a `G…`
+    holder) and SAC `set_authorized` (authorize the domain pool or a contract holder);
+  - channel-account bootstrap (already in §12.2) shares this machinery.
+- **Trustline pre-flight:** `stellarclient.CheckTrustline(account, asset) → {exists,
+  authorized, limitHeadroom}` via `getLedgerEntries` — called by domains at assembly so an
+  unshield to a missing/frozen/full trustline fails fast with an actionable error instead of an
+  on-chain failure burning fees. (XLM: trivially true.)
+
+## 12.4 The Stellar ingestor
 
 - **Source of truth: `getLedgers` polling** (~2 s interval; ledgers close ~5 s) — *not*
   `getEvents` alone, because the publictxmgr needs transaction results, not only events. Each
@@ -109,7 +136,7 @@ ingested ledgers.
   event-stream matching remains a bytes32 SQL comparison, exactly like keccak topics today.
   `friendly_signature` renders as e.g. `snoto.transfer#v0`.
 
-## 12.4 Contract discovery and registries
+## 12.5 Contract discovery and registries
 
 - **`SaladinFactory` contract** (ch. 13) is the `PaladinRegisterSmartContract_V0` equivalent:
   `register(tx_id, instance, config)` emits event topics `("reg", tx_id)` with
@@ -120,7 +147,7 @@ ingested ledgers.
   `registries/stellar` plugin mirroring `registries/evm` — reading an on-chain identity-registry
   contract (ch. 13) — is scheduled but low-priority; static registry suffices through M5.
 
-## 12.5 Node operations additions
+## 12.6 Node operations additions
 
 - **`ttlJanitor`** background task: scans TTLs of domain-owned ledger entries
   (`getLedgerEntries` → `liveUntilLedgerSeq`) and submits batch `extend_ttl` keepalives below
@@ -132,7 +159,7 @@ ingested ledgers.
 - Local dev: `stellar/quickstart` docker image (RPC + Horizon + core, accelerated ledgers) joins
   `testinfra/docker-compose-test.yml` beside Besu.
 
-## 12.6 Acceptance criteria
+## 12.7 Acceptance criteria
 
 1. On a local quickstart network: `ptx_sendTransaction` (public, Soroban invoke) →
    receipt with correct TxID; visible via `bidx_`-equivalent ledger queries.
@@ -147,6 +174,10 @@ ingested ledgers.
 6. Throughput: ≥ N parallel in-flight submissions with a channel-account pool of N, no
    `txBAD_SEQ` storms.
 7. Sequencer re-endorsement path on auth-entry expiry exercised by an integration test.
+8. Classic-op path: a `ChangeTrust` submitted via `XDR_CLASSIC_OPS` (no simulation) confirms
+   through the same submitter/indexer machinery; fee-bump on stale works for classic txs too.
+9. Trustline pre-flight: `CheckTrustline` correctly distinguishes missing / unauthorized /
+   limit-exhausted trustlines against a quickstart network with an `AUTH_REQUIRED` test asset.
 
 ---
 

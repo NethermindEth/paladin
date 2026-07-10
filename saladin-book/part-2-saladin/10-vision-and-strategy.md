@@ -21,8 +21,7 @@ Two ways to get there:
 The fork is faster to a demo and slower to everything else. Since interop with EVM Paladin is an
 explicit goal, and since LF Decentralized Trust governance makes upstreaming a well-motivated
 abstraction realistic, **we choose A** and treat time-to-demo pressure with milestone design
-(chapter 16) rather than architectural debt. (Part 3 examines the more radical option C — a Rust
-rewrite — and when it would win.)
+(chapter 16) rather than architectural debt.
 
 The load-bearing fact from Part 1: **the chain coupling is concentrated** in four places —
 `ethclient`, `blockindexer`, `publictxmgr`, and the shared types/protos. The distributed

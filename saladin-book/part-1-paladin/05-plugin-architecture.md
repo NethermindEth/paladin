@@ -102,11 +102,11 @@ Same envelope pattern, smaller vocabularies:
 Three consequences worth stating explicitly:
 
 1. **Language neutrality is proven** — Go and Java plugins already coexist. A Rust plugin
-   (Part 2's Sente; Part 3's everything) is a new binding to an existing, stable protocol, not a
+   (Part 2's Sente) is a new binding to an existing, stable protocol, not a
    new architecture.
 2. **The protocol is engine-implementation-agnostic** — nothing in the protos says "the engine is
-   Go". Part 3's Rust engine could serve the same `PluginController` and load today's compiled
-   Noto/Zeto plugins unchanged.
+   Go" — a differently implemented engine could serve the same `PluginController` and load
+   today's compiled Noto/Zeto plugins unchanged.
 3. **The protocol is *mostly* chain-agnostic** — the exceptions are precisely the EVM-shaped
    messages listed in 5.2, which is why chapter 11 evolves those messages first and leaves the
    rest of the protocol alone.

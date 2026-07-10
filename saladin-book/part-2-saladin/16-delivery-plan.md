@@ -15,10 +15,10 @@ contracts, QA/infra support. "em" = engineer-month.
 | **M2** | BLI + proto v2 + EVM behind BLI | ch. 11 §§11.2–11.3, 11.6; ethclient/blockindexer/publictxmgr refactored | 4 em | Paladin-on-Besu with **unmodified domain binaries** on the new core | upstream Gradle CI green; domain-binary compat test |
 | **M3** | Stellar backend | ch. 12 complete: stellarclient, ed25519 signing, ingestor, submitter (channel accounts, fee-bump, restore), SaladinFactory, quickstart docker in testinfra | 4 em | raw Soroban invoke submitted & indexed via `ptx_` APIs on local quickstart | ch. 12 acceptance criteria 1–6 |
 | **M4** | SNoto end-to-end | SNoto contract, Noto chain-kind switch, typed-data libs (3 impls + vectors), ttlJanitor | 3 em | private notarized transfer across 3 Saladin nodes on Stellar testnet | 3-node testnet CI job; state-resync drill; ch. 13/14 SNoto criteria |
-| **M5** | SZeto + SAtom | SZeto verifier + nullifiers; SAtom + factory; DvP SNoto⇄SZeto | 3.5 em | anonymous ZK transfer; atomic DvP on testnet | batch caps enforced from M0 numbers; failing-leg revert test |
+| **M5** | SZeto + SAtom + native-asset gateway | SZeto verifier + nullifiers; SAtom + factory; DvP SNoto⇄SZeto; SAC shield/unshield in SNoto & SZeto, `XDR_CLASSIC_OPS` + trustline tooling (ch. 12 §12.3, ch. 13 §13.6) | 4.5 em | anonymous ZK transfer; atomic DvP; shield→private→unshield of a classic asset on testnet | batch caps enforced from M0 numbers; failing-leg revert test; AUTH_REQUIRED asset flow green |
 | **M6** | Sente | ch. 14 §14.3 phases S1–S4 | 6 em | private Soroban contract in a 3-member group + atomic external call to SNoto | determinism audit; endorsement-divergence chaos test |
 
-**Port total ≈ 24.5 em**, ~9–12 months wall-clock (M0 ∥ M1; M3 overlaps M2 tail; M6 off the MVP
+**Port total ≈ 25.5 em**, ~9–12 months wall-clock (M0 ∥ M1; M3 overlaps M2 tail; M6 off the MVP
 path).
 
 ## 16.3 Interop phases (ch. 15, incremental)
@@ -74,6 +74,8 @@ monthly; measure rebase pain as a metric.
 | 11 | Sente engine | embed soroban-env-host in a Rust gRPC plugin (cdylib; sidecar fallback) | JNI-wrap in Java (pointless); re-implement Wasm metering (madness) |
 | 12 | Zeto crypto | keep circom/Groth16/BN254/BabyJubJub/Poseidon; rewrite verifier only | new proof system (discards audited circuits; host fns exist) |
 | 13 | Interop first mode | notary-coordinated settlement | HTLC-first (griefing/free-option UX; notary adds zero trust in Noto deployments) |
+| 14 | Native-asset custody | pooled SAC contract balance held by the domain contract itself; shield/unshield verbs in SNoto/SZeto | separate gateway contract (extra trust boundary, split footprint); per-user wrapped balances (leaks holder set, defeats pooling privacy) |
+| 15 | Sente read/write-set discovery | embed `soroban-simulation` (recording-mode host) over a Paladin-state `SnapshotSource` (ch. 14 §14.3) | remote stellar-rpc simulateTransaction (public-ledger state only, no injection API, non-deterministic across endorsers, leaks private payloads); hand-rolled read/write tracking (Pente-style — redundant, recording mode already does it) |
 
 ---
 

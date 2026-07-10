@@ -19,8 +19,7 @@ The runnable artifact is a Java process:
   (`PluginJNA.java`), Java plugins as JARs (`PluginJAR.java`).
 
 Why this shape? One process can then host Go *and* Java plugin code with a uniform lifecycle,
-while the engine stays a pure-Go library. (Part 3 revisits whether this triple-runtime — JVM + Go
-+ C ABI — is worth keeping.)
+while the engine stays a pure-Go library.
 
 ## 3.2 Component manager and lifecycle
 
@@ -176,8 +175,7 @@ RPCs). Delivery into managers can be transactional with the indexing commit (pre
 
 The **TypeScript SDK** (`sdk/typescript`) and **Go SDK** (`sdk/go`) wrap this surface; the web UI
 (`ui/client`) consumes it too. This API is the de-facto compatibility contract: anything that
-preserves it keeps every existing app, SDK, and the UI working — a fact both Part 2 and Part 3
-lean on.
+preserves it keeps every existing app, SDK, and the UI working — a fact Part 2 leans on.
 
 ---
 

@@ -128,8 +128,8 @@ reach the chain, Paladin serializes assembly per contract through a **coordinato
 
 > **Port-relevant observation.** Nothing in the sequencer knows about the EVM: it deals in domain
 > payloads, verifier strings, and opaque prepared transactions. It is the most valuable single
-> asset Part 2 inherits unchanged — and the most dangerous component to reimplement in Part 3,
-> because its wire protocol's precise semantics live in this Go code rather than a formal spec.
+> asset Part 2 inherits unchanged. Note that its wire protocol's precise semantics live in this
+> Go code rather than a formal specification.
 
 ## 4.4 Public (non-private) transactions
 

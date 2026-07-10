@@ -121,7 +121,7 @@ type LedgerUnit struct {         // one EVM block / one Stellar ledger
 type IndexedChainEvent struct {
     Sequence, TxIndex, EventIndex int64
     Emitter  pldtypes.ChainAddress
-    Selector pldtypes.Bytes32     // EVM: topic0. Stellar: derived symbol hash (ch. 12 §12.3)
+    Selector pldtypes.Bytes32     // EVM: topic0. Stellar: derived symbol hash (ch. 12 §12.4)
     Topics   [][]byte             // raw topics (EVM topics[1:], Stellar SCVal XDR topics)
     Data     []byte
 }

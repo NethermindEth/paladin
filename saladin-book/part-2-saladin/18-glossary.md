@@ -50,6 +50,11 @@ Consolidated definitions for the whole book. Terms are also defined at first use
 - **Footprint** — the declared set of ledger entries a Soroban transaction reads/writes.
 - **simulateTransaction** — RPC that dry-runs an invocation, returning footprint, resource
   needs, fees, and required authorizations.
+- **Recording mode / `soroban-simulation`** — the native simulation library
+  (`stellar/rs-soroban-env`): soroban-env-host executing over a pluggable `SnapshotSource`
+  while recording the footprint, resources, and auth payloads. Powers stellar-rpc's
+  simulateTransaction — and, embedded in-process over private state, Sente's read/write-set
+  discovery (ch. 14 §14.3).
 - **Resource fee / inclusion fee** — Soroban's fee components (computed resources + market
   inclusion); **fee-bump transaction** — a wrapper paying a higher fee for an already-signed tx.
 - **Ledger entry** — a keyed storage record; **TTL / rent** — its paid lifetime;
@@ -65,6 +70,19 @@ Consolidated definitions for the whole book. Terms are also defined at first use
   **quickstart** — the all-in-one Stellar docker image for local networks.
 - **CAP** — Core Advancement Proposal (Stellar's protocol-change process); **Protocol 22/25/26**
   — network upgrades (BLS12-381; BN254 + Poseidon; BN254 MSM + scalar arithmetic).
+- **Classic asset** — a natively issued Stellar token (`code:issuer`), incl. **XLM** (the
+  protocol asset, trustline-free); **trustline** — the holder-created opt-in ledger entry a
+  `G…` account needs to hold a classic asset; **ChangeTrust** — the classic operation creating
+  it; **classic operation** — a non-Soroban Stellar operation (up to 100 per transaction).
+- **Issuer flags** — per-asset controls: **AUTH_REQUIRED** (issuer must approve each
+  trustline/contract balance), **AUTH_REVOCABLE** (issuer can freeze), **AUTH_CLAWBACK_ENABLED**
+  (issuer can **clawback** — confiscate balances; contract balances are permanently
+  clawback-capable if created under this flag).
+- **SAC (Stellar Asset Contract)** — the built-in Soroban contract exposing every classic asset
+  through the **SEP-41** token interface; `G…` holders' balances are their trustlines,
+  contract (`C…`) holders' balances are contract data (no trustline).
+- **Shield / unshield** — moving a native asset into / out of a privacy domain's pooled SAC
+  balance in exchange for private states (deposit/withdraw in Zeto's vocabulary).
 
 ## Cryptography
 
@@ -119,8 +137,7 @@ Consolidated definitions for the whole book. Terms are also defined at first use
 
 ## Saladin terms (this book)
 
-- **Saladin** — Paladin ported to Stellar/Soroban (Part 2); **Saladin-rs** — the hypothetical
-  Rust-native engine (Part 3).
+- **Saladin** — Paladin ported to Stellar/Soroban (Part 2).
 - **BLI (Base Ledger Interface)** — the chain-agnostic abstraction of ch. 11
   (`baseledger.Client`, `Ingestor`, `ChainSubmitter`).
 - **ChainAddress** — the discriminated variable-length address type replacing bare `EthAddress`.
@@ -137,123 +154,6 @@ Consolidated definitions for the whole book. Terms are also defined at first use
 - **Δ (delta)** — the mandatory gap between the two HTLC deadlines (`T_A − T_B ≥ Δ`).
 - **em** — engineer-month.
 
-## Post-quantum cryptography (Part 4)
-
-- **CRQC (cryptographically relevant quantum computer)** — a quantum computer large enough to
-  run Shor's algorithm against real key sizes; **Shor's algorithm** — quantum algorithm that
-  fully breaks discrete-log and factoring (all elliptic-curve crypto); **Grover's algorithm** —
-  quantum brute-force speedup that merely halves effective hash/symmetric security exponents.
-- **HNDL (harvest now, decrypt later)** — recording encrypted traffic today to decrypt once a
-  CRQC exists; **Mosca inequality** — you are exposed when data-lifetime + migration-time
-  exceeds time-to-CRQC.
-- **ML-KEM (FIPS 203)** — NIST's lattice key-encapsulation mechanism (Kyber); **ML-DSA
-  (FIPS 204)** — NIST's lattice signature (Dilithium); **SLH-DSA (FIPS 205)** — NIST's stateless
-  hash-based signature (SPHINCS+); **FN-DSA (FIPS 206, draft)** — the Falcon lattice signature;
-  **HQC** — code-based KEM alternate selected 2025; **CNSA 2.0** — the U.S. national-security
-  PQ migration timeline (prefer by 2030, complete by 2033).
-- **Hybrid signature / dual signature** — classical + PQ signature pair over one message, both
-  required to verify (AND semantics); **hybrid KEM** — combining classical ECDH and a PQ KEM
-  shared secret in one KDF (e.g. **X25519MLKEM768** in TLS 1.3).
-- **KDF tree** — hardened-only HKDF-based key-derivation hierarchy replacing BIP-32 for PQ keys
-  (no public/xpub derivation exists for lattice keys).
-- **Noir** — Aztec's high-level zkDSL, QZeto's circuit language; **ProveKit** — World
-  Foundation's client-side proving stack (Noir → R1CS → Spartan + WHIR); **Spartan** — a
-  sumcheck-based transparent SNARK; **sumcheck** — the interactive-proof workhorse protocol
-  behind it; **WHIR** — a hash-based polynomial commitment scheme (FRI lineage), plausibly
-  post-quantum; **STARK** — hash-based transparent proof family (zkVMs: SP1, RISC Zero, Stwo);
-  **Binius** — binary-field proving system (watched, no DSL yet); **Poseidon2 / Skyscraper** —
-  arithmetization-friendly hashes used in-circuit and in WHIR Merkle trees.
-- **Plausibly post-quantum** — soundness resting only on hash/symmetric assumptions (no
-  discrete logs, pairings, or trusted setup), without a proof of quantum hardness.
-
-## Qaladin terms (Part 4)
-
-- **Qaladin** — the greenfield Rust, chain-agnostic, hybrid post-quantum privacy sidecar
-  (Part 4); crates are `qaladin-*`.
-- **QNoto / QZeto / QAtom** — the Qaladin analogues of Noto / Zeto / Atom; **Qente** — the
-  private-execution-group domain (Pente/Sente analogue), dual-VM at v1: **qente-evm** (revm —
-  private Solidity) and **qente-soroban** (soroban-env-host — private Soroban, per-ledger-entry
-  `QenteEntry` states).
-- **QenteExternalCall** — Qente's private→public bridge (PenteExternalCall analogue): calls
-  emitted by private contracts, carried in the transition's `external_calls`, executed by the
-  group's anchor contract atomically with the transition.
-- **GroupVm** — Qente's pluggable group-VM seam: built-in engines (revm, soroban-env-host) plus
-  out-of-process engine implementations via a gRPC VM-plugin protocol; **vm_fingerprint** — the
-  implementation+version hash pinned into every transition so mismatched engines refuse to
-  endorse rather than diverge; **N-version diversity** — the opt-in group policy where members
-  deliberately run different engine implementations so a single-engine bug halts endorsement
-  instead of corrupting state.
-- **QSIG_HYBRID_V1** — Qaladin's dual-signature envelope (classical + ML-DSA-65, AND-verified,
-  stripping-resistant).
-- **QALADIN_TYPED_DATA_V1** — the typed-structured-data signing format (EIP-712 /
-  SALADIN_TYPED_DATA_V0 successor) with the algorithm suite bound into the digest.
-- **qid** — a hybrid identity's 20-byte verifier: hash of both public keys certified together.
-- **QANCHOR** — the settlement pattern anchoring a 32-byte hash of the full hybrid attestation
-  bundle (and archived proof) on-chain while classical components are verified natively;
-  precompile-ready evidence for post-quantum audit.
-- **Mode W / G / G+A** — QZeto on-chain verification modes: raw WHIR (PQ-pure), Groth16-wrapped
-  (cheap, classical soundness), wrapped + archived raw proof (the launch posture).
-- **ChainCaps** — the capability-discovery structure of the Qaladin base-ledger trait (PQ
-  precompile presence, verifier budgets, finality model).
-- **Note key / nullifier key (`sk_note`, `nk`)** — QZeto's hash-based in-circuit ownership
-  secrets, replacing BabyJubJub keypairs; nullifiers become hash PRFs over (nk, commitment).
-- **Downgrade policy / classical-only** — per-peer rules and trust labels governing interop
-  with classical Paladin/Saladin networks; every classical acceptance is an audited event.
-- **Freeze / attest / re-issue** — the asset-migration flow from a classical domain to its
-  Qaladin analogue.
-
-## Finance & adoption terms (Part 5)
-
-- **Repo (repurchase agreement)** — sale of securities with a binding agreement to repurchase at
-  a set date and price; economically a collateralized loan. **Haircut** — the discount applied
-  to collateral value; **margin call** — the demand for additional collateral when values move.
-- **Tri-party agent** — a neutral agent managing collateral selection, valuation, and
-  substitution between two counterparties; **rehypothecation** — re-pledging collateral one has
-  received, controllable as policy in ch. 36.
-- **CSD / ICSD** — (international) central securities depository, the registrar-of-record
-  infrastructure for securities; **corporate action** — an issuer event affecting holders
-  (coupon, call, redemption).
-- **DvP / PvP** — delivery-versus-payment / payment-versus-payment: both legs settle or neither.
-- **Settlement finality** — the legally recognized point of irrevocability (e.g. SFD
-  designation in the EU); distinct from technical finality.
-- **LEI** — Legal Entity Identifier, the ISO 17442 organization identifier; **ISO 20022** — the
-  financial-messaging standard (settlement, payments, reporting) institutions integrate against.
-- **RWA (real-world asset)** — an off-chain asset represented by an on-chain token under a legal
-  wrapper; **ERC-3643** — the permissioned-token standard for compliant RWA tokenization.
-- **MiCA / DORA / Basel SCO60** — EU crypto-asset market regulation (in force 2024); EU digital
-  operational resilience act (applies 2025); the Basel prudential standard for banks'
-  cryptoasset exposures (effective 2026), whose classification drives capital treatment.
-- **Design partner** — an early institutional adopter co-funding a blueprint in exchange for
-  influence and priority; **product pack** — a product-level library atop Qaladin domains
-  (ch. 36 §36.6), outside the core engine program.
-- **Open core / BSL** — commercial OSS models: open core keeps the engine open with paid edges;
-  BSL (Business Source License) is source-available with delayed open-sourcing — ch. 37 §37.4
-  chooses open core with **open ABIs at the plugin seams**.
-
-## Regulatory & privacy-law terms (Part 5)
-
-- **VASP (virtual asset service provider)** — FATF's term for a regulated crypto intermediary;
-  the Travel Rule's addressee.
-- **CASP (crypto-asset service provider)** — MiCA's VASP-equivalent licensing category (Title V).
-- **Travel Rule / FATF Recommendation 16** — the AML rule requiring originator/beneficiary
-  identifying information to travel with a transfer above a jurisdictional threshold (§38.5).
-- **IVMS101** — the interVASP data model standardizing Travel Rule message payloads.
-- **OFAC / SDN list** — the U.S. Treasury sanctions authority and its Specially Designated
-  Nationals list; the reference list for sanctions screening (§38.4).
-- **BSA / FinCEN / MSB** — the U.S. Bank Secrecy Act, its regulator, and the Money Services
-  Business registration category AML/Travel-Rule obligations attach to.
-- **DPIA (data protection impact assessment)** — GDPR's mandated risk assessment for high-risk
-  processing; §38.6 gives its coding-agent checklist form.
-- **Crypto-shredding / crypto-erasure** — rendering ciphertext permanently unreadable by
-  deleting its decryption key; the engineering primitive for erasure where ciphertext itself
-  cannot be removed (§38.6).
-- **Controller / processor** — GDPR's two roles for personal-data handling; the institution is
-  always controller, Nethermind is processor only under the managed-service model (§35.1).
-- **SCC / adequacy decision** — GDPR's two lawful bases for cross-border personal-data transfer.
-- **Pseudonymization / anonymization** — GDPR's distinction between reversibly-linked data
-  (registry `qid`/hash bundles) and data stripped of a re-identification path; the architecture
-  is pseudonymization-by-hash, not anonymization, until the off-chain link is deleted.
-
 ---
 
-*Next: [Part 3, Chapter 19 — Rationale & scope](../part-3-rust-port/19-rust-port-rationale.md)*
+*Back to the [Table of contents](../README.md).*

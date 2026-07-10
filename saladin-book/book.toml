@@ -1,6 +1,6 @@
 [book]
 title = "Saladin — Programmable Privacy for Stellar Soroban"
-description = "Technical implementation plan: Paladin today, the Stellar/Soroban port (Saladin), a Rust-native alternative (Saladin-rs), a post-quantum chain-agnostic greenfield (Qaladin), and its adoption & monetization strategy."
+description = "Technical implementation plan: Paladin today and the Stellar/Soroban port (Saladin)."
 authors = ["LFDT-Paladin / Saladin book contributors"]
 src = "."
 language = "en"
