@@ -28,6 +28,37 @@ runs:
       cache-dependency-path: |
         **/*.sum
 
+  # Set up Rust (Soroban contracts, soroban/). Pinned explicitly here (rather than relying on
+  # dtolnay/rust-toolchain's own rust-toolchain.toml auto-discovery, which only looks at the repo
+  # root) to match soroban/rust-toolchain.toml exactly - keep these two in lockstep. NOT 1.91.0:
+  # stellar-cli rejects it (known wasm miscompilation), along with 1.81-1.83.
+  - name: Install Rust toolchain
+    uses: dtolnay/rust-toolchain@1.92.0
+    with:
+      targets: wasm32v1-none
+      components: clippy, rustfmt
+
+  - name: Cache Cargo registry
+    uses: actions/cache@v4
+    with:
+      path: |
+        ~/.cargo/registry
+        ~/.cargo/git
+      key: cargo-${{ runner.os }}-${{ hashFiles('soroban/Cargo.lock') }}
+      restore-keys: |
+        cargo-${{ runner.os }}-
+
+  - name: Install Stellar CLI
+    shell: bash
+    run: |
+      curl -LO https://github.com/stellar/stellar-cli/releases/download/v26.0.0/stellar-cli-26.0.0-x86_64-unknown-linux-gnu.tar.gz
+      tar xzf stellar-cli-26.0.0-x86_64-unknown-linux-gnu.tar.gz
+      mkdir -p "${PWD}/stellar-cli/bin"
+      chmod +x stellar
+      mv stellar "${PWD}/stellar-cli/bin/"
+      echo "${PWD}/stellar-cli/bin" >> $GITHUB_PATH
+      rm stellar-cli-26.0.0-x86_64-unknown-linux-gnu.tar.gz
+
   # Set up Gradle
   - name: Setup Gradle
     uses: gradle/actions/setup-gradle@v4

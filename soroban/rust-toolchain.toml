@@ -1,0 +1,12 @@
+# Pinned exact version (not a floating "stable" channel) so Wasm builds stay reproducible
+# (chapter 13 acceptance criterion 6) - bump this in lockstep with soroban-sdk's own MSRV
+# whenever Cargo.toml's soroban-sdk dependency version changes, and keep
+# .github/actions/setup/action.yaml's Rust-toolchain step in sync with the same version.
+#
+# NOT 1.81, 1.82, 1.83, or 1.91.0: stellar-cli hard-rejects those (`stellar contract build`
+# fails with "use a rust version other than 1.81, 1.82, 1.83 or 1.91.0") due to a known wasm
+# miscompilation in those specific rustc releases.
+[toolchain]
+channel = "1.92.0"
+targets = ["wasm32v1-none"]
+components = ["rustc", "cargo", "rustfmt", "clippy", "rust-src"]
