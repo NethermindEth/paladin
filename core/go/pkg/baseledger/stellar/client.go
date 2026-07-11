@@ -37,6 +37,7 @@ type rpcClient interface {
 	SendTransaction(ctx context.Context, req protocol.SendTransactionRequest) (protocol.SendTransactionResponse, error)
 	GetTransaction(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error)
 	LoadAccount(ctx context.Context, address string) (txnbuild.Account, error)
+	GetLedgerEntries(ctx context.Context, req protocol.GetLedgerEntriesRequest) (protocol.GetLedgerEntriesResponse, error)
 }
 
 // Client implements baseledger.Client for Stellar/Soroban. Unlike the EVM client,
@@ -68,40 +69,56 @@ func (c *Client) ChainInfo() baseledger.ChainInfo {
 	}
 }
 
-// buildTransaction decodes payload as an XDR-encoded xdr.HostFunction (the payload kind this
-// client accepts, PayloadEncodingXDRInvokeContractArgs) and wraps it in a single
-// InvokeHostFunction operation sourced from `from`'s current sequence number - the "build" half
-// shared by Call, EstimateResources, and BuildTransaction.
+// buildTransaction decodes payload according to payloadKind and wraps the result in a transaction
+// sourced from `from`'s current sequence number - the "build" half shared by Call,
+// EstimateResources, and BuildTransaction. Two payload kinds are supported: an XDR-encoded
+// xdr.HostFunction (PayloadEncodingXDRInvokeContractArgs, a single Soroban invocation) or a plain
+// XDR array of classic operations (PayloadEncodingXDRClassicOps, chapter 12 §12.3 - see
+// classic_ops.go).
 func (c *Client) buildTransaction(ctx context.Context, from *pldtypes.ChainAddress, payloadKind baseledger.PayloadEncoding, payload []byte) (*txnbuild.Transaction, error) {
 	if from == nil {
 		return nil, fmt.Errorf("a source account (from) is required to build a stellar transaction")
 	}
-	if payloadKind != baseledger.PayloadEncodingXDRInvokeContractArgs {
+	fromAddr := from.String()
+	var ops []txnbuild.Operation
+	switch payloadKind {
+	case baseledger.PayloadEncodingXDRInvokeContractArgs:
+		var hostFunction xdr.HostFunction
+		if err := hostFunction.UnmarshalBinary(payload); err != nil {
+			return nil, fmt.Errorf("invalid host function payload: %w", err)
+		}
+		ops = []txnbuild.Operation{&txnbuild.InvokeHostFunction{
+			HostFunction:  hostFunction,
+			SourceAccount: fromAddr,
+		}}
+	case baseledger.PayloadEncodingXDRClassicOps:
+		classicOps, err := DecodeClassicOperations(payload)
+		if err != nil {
+			return nil, err
+		}
+		ops = classicOps
+	default:
 		return nil, fmt.Errorf("unsupported stellar payload kind %q", payloadKind)
 	}
-	var hostFunction xdr.HostFunction
-	if err := hostFunction.UnmarshalBinary(payload); err != nil {
-		return nil, fmt.Errorf("invalid host function payload: %w", err)
-	}
-	fromAddr := from.String()
 	account, err := c.rpc.LoadAccount(ctx, fromAddr)
 	if err != nil {
 		return nil, err
 	}
-	op := &txnbuild.InvokeHostFunction{
-		HostFunction:  hostFunction,
-		SourceAccount: fromAddr,
-	}
 	return txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        account,
 		IncrementSequenceNum: true,
-		Operations:           []txnbuild.Operation{op},
+		Operations:           ops,
 		BaseFee:              txnbuild.MinBaseFee,
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
 	})
 }
 
 func (c *Client) Call(ctx context.Context, req *baseledger.CallRequest) (*baseledger.CallResult, error) {
+	if req.PayloadKind == baseledger.PayloadEncodingXDRClassicOps {
+		// Classic operations (ChangeTrust, Payment, ...) have no return value to simulate - "call"
+		// is a Soroban-invocation-only concept here.
+		return nil, fmt.Errorf("classic operations do not support Call - only %q", baseledger.PayloadEncodingXDRInvokeContractArgs)
+	}
 	transaction, err := c.buildTransaction(ctx, req.From, req.PayloadKind, req.Payload)
 	if err != nil {
 		return nil, err
@@ -149,6 +166,12 @@ func (c *Client) GetAccountInfo(ctx context.Context, addr pldtypes.ChainAddress)
 }
 
 func (c *Client) EstimateResources(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+	if tx.PayloadKind == baseledger.PayloadEncodingXDRClassicOps {
+		// Classic operations have no footprint/resource fee to simulate (chapter 12 §12.3) - the
+		// classic per-operation base fee (txnbuild.MinBaseFee, buildTransaction's default) is all
+		// that's needed, so there's nothing to estimate beyond an empty ResourceEstimate.
+		return &baseledger.ResourceEstimate{}, nil
+	}
 	transaction, err := c.buildTransaction(ctx, &tx.From, tx.PayloadKind, tx.Payload)
 	if err != nil {
 		return nil, err
@@ -205,7 +228,7 @@ func (c *Client) BuildTransaction(ctx context.Context, tx *baseledger.UnsignedCh
 		return baseledger.SignablePayload{}, err
 	}
 	return baseledger.SignablePayload{
-		PayloadKind: baseledger.PayloadEncodingXDRInvokeContractArgs,
+		PayloadKind: tx.PayloadKind,
 		Payload:     hash[:],
 	}, nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
@@ -36,15 +37,13 @@ import (
 )
 
 // stellarChainSubmitter is the Stellar/Soroban implementation of ChainSubmitter (chapter 12
-// foundational slice, §12.1/§12.2). Like evmChainSubmitter, it wraps the owning pubTxManager to
-// reuse its already-constructed baseLedger client and key manager.
+// foundational slice, §12.1/§12.2, plus §12.3's classic operations). Like evmChainSubmitter, it
+// wraps the owning pubTxManager to reuse its already-constructed baseLedger client and key
+// manager.
 //
 // Deliberately out of scope for this slice (see chapter 12's "Implementation status" callout):
 // channel-account pooling (one signing identity = one source account today), fee-bump
-// transactions, and the restore-preamble submission stage (see ActionOnStale below). Classic
-// operations and trustline preflight are also not handled - ptx.Data is assumed to be an
-// XDR-encoded xdr.HostFunction (baseledger.PayloadEncodingXDRInvokeContractArgs), the only
-// payload kind the Stellar baseledger.Client accepts today.
+// transactions, and the restore-preamble submission stage (see ActionOnStale below).
 type stellarChainSubmitter struct {
 	ptm *pubTxManager
 }
@@ -64,48 +63,74 @@ func (s *stellarChainSubmitter) AssignOrderingKey(ctx context.Context, from pldt
 	return info.OrderingKey.Uint64(), nil
 }
 
-// buildStellarTx builds the unsigned InvokeHostFunction transaction envelope for ptx. ptx.Nonce is
-// used directly as the transaction's sequence number (the same "assigned nonce is the value to
-// use, not a value to increment from" convention buildEthTX follows) by seeding SimpleAccount one
-// below it and letting IncrementSequenceNum do the +1 arithmetic, rather than hand-computing it
-// here and in AssignOrderingKey.
+// buildStellarTx builds the unsigned transaction envelope for ptx. ptx.Nonce is used directly as
+// the transaction's sequence number (the same "assigned nonce is the value to use, not a value to
+// increment from" convention buildEthTX follows) by seeding SimpleAccount one below it and letting
+// IncrementSequenceNum do the +1 arithmetic, rather than hand-computing it here and in
+// AssignOrderingKey.
+//
+// Two payload kinds are supported (chapter 12 §12.3): a single Soroban InvokeHostFunction
+// (pldapi.PublicTxPayloadKindXDRInvokeContractArgs, the default when ptx.PayloadKind is unset -
+// every Stellar public tx before classic-ops support implicitly used this kind) or a plain XDR
+// array of classic operations (pldapi.PublicTxPayloadKindXDRClassicOps), decoded via
+// baseledgerstellar.DecodeClassicOperations - the same codec baseledger/stellar.Client.
+// buildTransaction uses, exported specifically so this isn't a second, independent implementation.
 func buildStellarTx(ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*txnbuild.Transaction, error) {
 	if ptx.Nonce == nil {
 		return nil, fmt.Errorf("a sequence number (nonce) is required to build a stellar transaction")
 	}
-	var hostFunction xdr.HostFunction
-	if err := hostFunction.UnmarshalBinary(ptx.Data); err != nil {
-		return nil, fmt.Errorf("invalid host function payload: %w", err)
-	}
 	fromAddr := ptx.From.String()
-	op := &txnbuild.InvokeHostFunction{
-		HostFunction:  hostFunction,
-		SourceAccount: fromAddr,
+	payloadKind := ptx.PayloadKind.V()
+	if payloadKind == "" {
+		payloadKind = pldapi.PublicTxPayloadKindXDRInvokeContractArgs
 	}
-	if resourceEstimate != nil && resourceEstimate.Soroban != nil {
-		soroban := resourceEstimate.Soroban
-		if len(soroban.TransactionDataXDR) > 0 {
-			var sorobanData xdr.SorobanTransactionData
-			if err := sorobanData.UnmarshalBinary(soroban.TransactionDataXDR); err != nil {
-				return nil, fmt.Errorf("invalid soroban transaction data: %w", err)
-			}
-			op.Ext = xdr.TransactionExt{V: 1, SorobanData: &sorobanData}
+
+	var ops []txnbuild.Operation
+	switch payloadKind {
+	case pldapi.PublicTxPayloadKindXDRInvokeContractArgs:
+		var hostFunction xdr.HostFunction
+		if err := hostFunction.UnmarshalBinary(ptx.Data); err != nil {
+			return nil, fmt.Errorf("invalid host function payload: %w", err)
 		}
-		if len(soroban.AuthEntriesXDR) > 0 {
-			auth := make([]xdr.SorobanAuthorizationEntry, len(soroban.AuthEntriesXDR))
-			for i, raw := range soroban.AuthEntriesXDR {
-				if err := auth[i].UnmarshalBinary(raw); err != nil {
-					return nil, fmt.Errorf("invalid soroban auth entry %d: %w", i, err)
+		op := &txnbuild.InvokeHostFunction{
+			HostFunction:  hostFunction,
+			SourceAccount: fromAddr,
+		}
+		if resourceEstimate != nil && resourceEstimate.Soroban != nil {
+			soroban := resourceEstimate.Soroban
+			if len(soroban.TransactionDataXDR) > 0 {
+				var sorobanData xdr.SorobanTransactionData
+				if err := sorobanData.UnmarshalBinary(soroban.TransactionDataXDR); err != nil {
+					return nil, fmt.Errorf("invalid soroban transaction data: %w", err)
 				}
+				op.Ext = xdr.TransactionExt{V: 1, SorobanData: &sorobanData}
 			}
-			op.Auth = auth
+			if len(soroban.AuthEntriesXDR) > 0 {
+				auth := make([]xdr.SorobanAuthorizationEntry, len(soroban.AuthEntriesXDR))
+				for i, raw := range soroban.AuthEntriesXDR {
+					if err := auth[i].UnmarshalBinary(raw); err != nil {
+						return nil, fmt.Errorf("invalid soroban auth entry %d: %w", i, err)
+					}
+				}
+				op.Auth = auth
+			}
 		}
+		ops = []txnbuild.Operation{op}
+	case pldapi.PublicTxPayloadKindXDRClassicOps:
+		classicOps, err := baseledgerstellar.DecodeClassicOperations(ptx.Data)
+		if err != nil {
+			return nil, err
+		}
+		ops = classicOps
+	default:
+		return nil, fmt.Errorf("unsupported stellar payload kind %q", payloadKind)
 	}
+
 	account := txnbuild.NewSimpleAccount(fromAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
 	return txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        &account,
 		IncrementSequenceNum: true,
-		Operations:           []txnbuild.Operation{op},
+		Operations:           ops,
 		BaseFee:              txnbuild.MinBaseFee,
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
 	})

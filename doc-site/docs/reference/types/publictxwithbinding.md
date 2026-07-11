@@ -19,6 +19,7 @@ title: PublicTxWithBinding
 | `localId` | A locally generated numeric ID for the public transaction. Unique within the node | `uint64` |
 | `to` | The target contract address (optional) | [`EthAddress`](simpletypes.md#ethaddress) |
 | `data` | The pre-encoded calldata (optional) | [`HexBytes`](simpletypes.md#hexbytes) |
+| `payloadKind` | Disambiguates the shape of 'data' for base ledgers with more than one payload kind (optional; empty means the base ledger's implicit default kind) | `"FUNCTION_CALL_DATA", "XDR_INVOKE_CONTRACT_ARGS", "XDR_CLASSIC_OPS"` |
 | `from` | The sender's Ethereum address | [`EthAddress`](simpletypes.md#ethaddress) |
 | `nonce` | The transaction nonce | [`HexUint64`](simpletypes.md#hexuint64) |
 | `created` | The creation time | [`Timestamp`](simpletypes.md#timestamp) |

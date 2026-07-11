@@ -33,11 +33,15 @@ type DBPublicTxn struct {
 	FixedGasPricing pldtypes.RawJSON       `gorm:"column:fixed_gas_pricing"`
 	Value           *pldtypes.HexUint256   `gorm:"column:value"`
 	Data            pldtypes.HexBytes      `gorm:"column:data"`
-	Suspended       bool                   `gorm:"column:suspended"` // excluded from processing because it's suspended by user
-	Dispatcher      string                 `gorm:"column:dispatcher"`
-	RestoreTxHash   *pldtypes.Bytes32      `gorm:"column:restore_tx_hash"`
-	Completed       *DBPublicTxnCompletion `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
-	Submissions     []*DBPubTxnSubmission  `gorm:"foreignKey:pub_txn_id"`
+	// PayloadKind disambiguates Data's shape for chains with more than one payload kind (chapter
+	// 12 §12.3) - empty means the base ledger's implicit default kind. See
+	// pldapi.PublicTxPayloadKind's doc comment.
+	PayloadKind   pldtypes.Enum[pldapi.PublicTxPayloadKind] `gorm:"column:payload_kind"`
+	Suspended     bool                                      `gorm:"column:suspended"` // excluded from processing because it's suspended by user
+	Dispatcher    string                                    `gorm:"column:dispatcher"`
+	RestoreTxHash *pldtypes.Bytes32                         `gorm:"column:restore_tx_hash"`
+	Completed     *DBPublicTxnCompletion                    `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
+	Submissions   []*DBPubTxnSubmission                     `gorm:"foreignKey:pub_txn_id"`
 	// Binding is only on queries by transaction (GORM doesn't seem to allow us to define a separate struct for this) and
 	// to pass Paladin TX info to the sequencer
 	Binding *DBPublicTxnBinding `gorm:"foreignKey:pub_txn_id;references:pub_txn_id;"`

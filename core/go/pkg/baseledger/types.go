@@ -37,6 +37,12 @@ type PayloadEncoding string
 const (
 	PayloadEncodingFunctionCallData      PayloadEncoding = "FUNCTION_CALL_DATA"
 	PayloadEncodingXDRInvokeContractArgs PayloadEncoding = "XDR_INVOKE_CONTRACT_ARGS"
+	// PayloadEncodingXDRClassicOps is a deliberately narrow payload kind (chapter 12 §12.3) for
+	// classic Stellar operations needed for native-asset/trustline plumbing - not a gateway to
+	// classic-Stellar features generally. Payload is a plain XDR array of xdr.Operation; see
+	// baseledger/stellar.DecodeClassicOperations/EncodeClassicOperations for the codec, which
+	// only supports CreateAccount/Payment/ChangeTrust/SetTrustLineFlags.
+	PayloadEncodingXDRClassicOps PayloadEncoding = "XDR_CLASSIC_OPS"
 )
 
 type TxID = pldtypes.Bytes32

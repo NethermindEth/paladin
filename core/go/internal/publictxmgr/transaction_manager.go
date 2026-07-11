@@ -349,6 +349,7 @@ func (ptm *pubTxManager) WriteNewTransactions(ctx context.Context, dbTX persiste
 			Gas:             txi.Gas.Uint64(),
 			Value:           txi.Value,
 			Data:            txi.Data,
+			PayloadKind:     txi.PayloadKind,
 			Dispatcher:      ptm.nodeName,
 			FixedGasPricing: pldtypes.JSONString(txi.PublicTxGasPricing),
 		}
@@ -421,6 +422,7 @@ func (ptm *pubTxManager) WriteReceivedPublicTransactionSubmissions(ctx context.C
 			Gas:             tx.Gas.Uint64(),
 			Value:           tx.Value,
 			Data:            tx.Data,
+			PayloadKind:     tx.PayloadKind,
 			Dispatcher:      tx.Dispatcher,
 			Created:         tx.Created,
 			FixedGasPricing: pldtypes.JSONString(tx.PublicTxGasPricing),
@@ -708,13 +710,14 @@ func mapPersistedTransaction(ptx *DBPublicTxn) (*pldapi.PublicTx, error) {
 		}
 	}
 	tx := &pldapi.PublicTx{
-		LocalID:    &ptx.PublicTxnID,
-		From:       *from,
-		Created:    ptx.Created,
-		To:         to,
-		Nonce:      (*pldtypes.HexUint64)(ptx.Nonce),
-		Data:       ptx.Data,
-		Dispatcher: ptx.Dispatcher,
+		LocalID:     &ptx.PublicTxnID,
+		From:        *from,
+		Created:     ptx.Created,
+		To:          to,
+		Nonce:       (*pldtypes.HexUint64)(ptx.Nonce),
+		Data:        ptx.Data,
+		PayloadKind: ptx.PayloadKind,
+		Dispatcher:  ptx.Dispatcher,
 		PublicTxOptions: pldapi.PublicTxOptions{
 			Gas:                (*pldtypes.HexUint64)(&ptx.Gas),
 			Value:              ptx.Value,
@@ -818,11 +821,14 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 	}
 
 	newPtx := &DBPublicTxn{
-		From:            from.ChainAddress(),
-		To:              ethAddressChainAddress(tx.To),
-		Gas:             tx.Gas.Uint64(),
-		Value:           tx.Value,
-		Data:            publicTxData,
+		From:  from.ChainAddress(),
+		To:    ethAddressChainAddress(tx.To),
+		Gas:   tx.Gas.Uint64(),
+		Value: tx.Value,
+		Data:  publicTxData,
+		// UpdateTransaction only changes gas/data of an already-existing pending tx, not its
+		// fundamental payload kind - preserve whatever the existing record already had.
+		PayloadKind:     ptxs[0].PayloadKind,
 		FixedGasPricing: pldtypes.JSONString(tx.PublicTxGasPricing),
 	}
 

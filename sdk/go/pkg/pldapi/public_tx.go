@@ -39,10 +39,47 @@ type PublicTxGasPricing struct {
 	MaxFeePerGas         *pldtypes.HexUint256 `docstruct:"PublicTxGasPricing" json:"maxFeePerGas,omitempty"`
 }
 
+// PublicTxPayloadKind distinguishes the shape of PublicTxInput/PublicTx.Data across base ledger
+// chain kinds. EVM has exactly one kind (calldata); Stellar has two (a Soroban host-function
+// invocation, or a plain XDR array of classic operations for native-asset/trustline plumbing,
+// chapter 12 §12.3 of the Saladin port). Empty means the base ledger's implicit default kind
+// (FUNCTION_CALL_DATA for EVM, XDR_INVOKE_CONTRACT_ARGS for Stellar) - matches the exact string
+// values of core/go/pkg/baseledger.PayloadEncoding, which callers convert to/from at the
+// publictxmgr boundary.
+type PublicTxPayloadKind string
+
+const (
+	PublicTxPayloadKindFunctionCallData      PublicTxPayloadKind = "FUNCTION_CALL_DATA"
+	PublicTxPayloadKindXDRInvokeContractArgs PublicTxPayloadKind = "XDR_INVOKE_CONTRACT_ARGS"
+	PublicTxPayloadKindXDRClassicOps         PublicTxPayloadKind = "XDR_CLASSIC_OPS"
+)
+
+func (k PublicTxPayloadKind) Enum() pldtypes.Enum[PublicTxPayloadKind] {
+	return pldtypes.Enum[PublicTxPayloadKind](k)
+}
+
+func (k PublicTxPayloadKind) Options() []string {
+	return []string{
+		string(PublicTxPayloadKindFunctionCallData),
+		string(PublicTxPayloadKindXDRInvokeContractArgs),
+		string(PublicTxPayloadKindXDRClassicOps),
+	}
+}
+
+// Default lets pldtypes.Enum.Validate() (called by both the gorm driver.Valuer on write and the
+// sql.Scanner on read) accept and round-trip an empty PayloadKind rather than rejecting it - "" is
+// itself a legitimate, meaningful persisted value here (the base ledger's implicit default kind),
+// not a placeholder for one specific kind, so it must not be coerced into one of the named
+// constants above.
+func (k PublicTxPayloadKind) Default() string {
+	return ""
+}
+
 type PublicTxInput struct {
-	From *pldtypes.EthAddress `docstruct:"PublicTxInput" json:"from"`           // resolved signing account
-	To   *pldtypes.EthAddress `docstruct:"PublicTxInput" json:"to,omitempty"`   // target contract address, or nil for deploy
-	Data pldtypes.HexBytes    `docstruct:"PublicTxInput" json:"data,omitempty"` // the pre-encoded calldata
+	From        *pldtypes.EthAddress               `docstruct:"PublicTxInput" json:"from"`                  // resolved signing account
+	To          *pldtypes.EthAddress               `docstruct:"PublicTxInput" json:"to,omitempty"`          // target contract address, or nil for deploy
+	Data        pldtypes.HexBytes                  `docstruct:"PublicTxInput" json:"data,omitempty"`        // the pre-encoded calldata
+	PayloadKind pldtypes.Enum[PublicTxPayloadKind] `docstruct:"PublicTxInput" json:"payloadKind,omitempty"` // empty means the base ledger's implicit default kind
 	PublicTxOptions
 }
 
@@ -59,19 +96,20 @@ type PublicTxSubmissionData struct {
 }
 
 type PublicTx struct {
-	LocalID         *uint64                     `docstruct:"PublicTx" json:"localId,omitempty"` // only a local DB identifier for the public transaction. Not directly related to nonce order
-	To              *pldtypes.EthAddress        `docstruct:"PublicTx" json:"to,omitempty"`
-	Data            pldtypes.HexBytes           `docstruct:"PublicTx" json:"data,omitempty"`
-	From            pldtypes.EthAddress         `docstruct:"PublicTx" json:"from"`
-	Nonce           *pldtypes.HexUint64         `docstruct:"PublicTx" json:"nonce"`
-	Created         pldtypes.Timestamp          `docstruct:"PublicTx" json:"created"`
-	Dispatcher      string                      `docstruct:"PublicTx" json:"dispatcher"`
-	CompletedAt     *pldtypes.Timestamp         `docstruct:"PublicTx" json:"completedAt,omitempty"` // only once confirmed
-	TransactionHash *pldtypes.Bytes32           `docstruct:"PublicTx" json:"transactionHash"`       // only once confirmed
-	Success         *bool                       `docstruct:"PublicTx" json:"success,omitempty"`     // only once confirmed
-	RevertData      pldtypes.HexBytes           `docstruct:"PublicTx" json:"revertData,omitempty"`  // only once confirmed, if available
-	Submissions     []*PublicTxSubmissionData   `docstruct:"PublicTx" json:"submissions,omitempty"`
-	Activity        []TransactionActivityRecord `docstruct:"PublicTx" json:"activity,omitempty"`
+	LocalID         *uint64                            `docstruct:"PublicTx" json:"localId,omitempty"` // only a local DB identifier for the public transaction. Not directly related to nonce order
+	To              *pldtypes.EthAddress               `docstruct:"PublicTx" json:"to,omitempty"`
+	Data            pldtypes.HexBytes                  `docstruct:"PublicTx" json:"data,omitempty"`
+	PayloadKind     pldtypes.Enum[PublicTxPayloadKind] `docstruct:"PublicTx" json:"payloadKind,omitempty"` // empty means the base ledger's implicit default kind
+	From            pldtypes.EthAddress                `docstruct:"PublicTx" json:"from"`
+	Nonce           *pldtypes.HexUint64                `docstruct:"PublicTx" json:"nonce"`
+	Created         pldtypes.Timestamp                 `docstruct:"PublicTx" json:"created"`
+	Dispatcher      string                             `docstruct:"PublicTx" json:"dispatcher"`
+	CompletedAt     *pldtypes.Timestamp                `docstruct:"PublicTx" json:"completedAt,omitempty"` // only once confirmed
+	TransactionHash *pldtypes.Bytes32                  `docstruct:"PublicTx" json:"transactionHash"`       // only once confirmed
+	Success         *bool                              `docstruct:"PublicTx" json:"success,omitempty"`     // only once confirmed
+	RevertData      pldtypes.HexBytes                  `docstruct:"PublicTx" json:"revertData,omitempty"`  // only once confirmed, if available
+	Submissions     []*PublicTxSubmissionData          `docstruct:"PublicTx" json:"submissions,omitempty"`
+	Activity        []TransactionActivityRecord        `docstruct:"PublicTx" json:"activity,omitempty"`
 	PublicTxOptions
 }
 

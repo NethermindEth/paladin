@@ -28,6 +28,7 @@ type fakeRPC struct {
 	simulateTransaction func(ctx context.Context, req protocol.SimulateTransactionRequest) (protocol.SimulateTransactionResponse, error)
 	sendTransaction     func(ctx context.Context, req protocol.SendTransactionRequest) (protocol.SendTransactionResponse, error)
 	getTransaction      func(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error)
+	getLedgerEntries    func(ctx context.Context, req protocol.GetLedgerEntriesRequest) (protocol.GetLedgerEntriesResponse, error)
 }
 
 func (f *fakeRPC) LoadAccount(ctx context.Context, address string) (txnbuild.Account, error) {
@@ -46,6 +47,10 @@ func (f *fakeRPC) GetTransaction(ctx context.Context, req protocol.GetTransactio
 	return f.getTransaction(ctx, req)
 }
 
+func (f *fakeRPC) GetLedgerEntries(ctx context.Context, req protocol.GetLedgerEntriesRequest) (protocol.GetLedgerEntriesResponse, error) {
+	return f.getLedgerEntries(ctx, req)
+}
+
 // validInvokeContractPayload is a minimal, correctly XDR-encoded xdr.HostFunction (invoking a
 // zero-value contract ID with no arguments) - enough to exercise buildTransaction's decode/encode
 // path without needing a real deployed contract, since the fakes below never inspect the built
@@ -62,6 +67,17 @@ func validInvokeContractPayload(t *testing.T) []byte {
 		},
 	}
 	payload, err := hostFunction.MarshalBinary()
+	require.NoError(t, err)
+	return payload
+}
+
+// validClassicOpsPayload is a minimal, correctly XDR-encoded []xdr.Operation containing a single
+// Payment - enough to exercise the classic-ops decode path without needing the full asset/issuer
+// plumbing exercised by classic_ops_test.go.
+func validClassicOpsPayload(t *testing.T) []byte {
+	payload, err := EncodeClassicOperations([]txnbuild.Operation{
+		&txnbuild.Payment{Destination: testAccount, Amount: "1", Asset: txnbuild.NativeAsset{}},
+	})
 	require.NoError(t, err)
 	return payload
 }
@@ -155,6 +171,17 @@ func TestCallRejectsUnsupportedPayloadKind(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported stellar payload kind")
 }
 
+func TestCallRejectsClassicOps(t *testing.T) {
+	from := *pldtypes.MustParseChainAddress(testAccount)
+	c := WrapClient(&fakeRPC{}, "", nil)
+	_, err := c.Call(context.Background(), &baseledger.CallRequest{
+		From:        &from,
+		PayloadKind: baseledger.PayloadEncodingXDRClassicOps,
+		Payload:     validClassicOpsPayload(t),
+	})
+	require.ErrorContains(t, err, "classic operations do not support Call")
+}
+
 func TestGetAccountInfo(t *testing.T) {
 	ctx := context.Background()
 	addr := *pldtypes.MustParseChainAddress(testAccount)
@@ -222,6 +249,60 @@ func TestEstimateResourcesRequiresRestore(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, res.Soroban.RequiresRestore)
+}
+
+func TestEstimateResourcesClassicOpsSkipsSimulation(t *testing.T) {
+	ctx := context.Background()
+	from := *pldtypes.MustParseChainAddress(testAccount)
+
+	// No loadAccount/simulateTransaction fakes are supplied - if EstimateResources called either
+	// (rather than short-circuiting for classic ops), this test would nil-pointer panic.
+	c := WrapClient(&fakeRPC{}, "", nil)
+
+	res, err := c.EstimateResources(ctx, &baseledger.UnsignedChainTx{
+		From:        from,
+		PayloadKind: baseledger.PayloadEncodingXDRClassicOps,
+		Payload:     validClassicOpsPayload(t),
+	})
+	require.NoError(t, err)
+	require.Equal(t, &baseledger.ResourceEstimate{}, res)
+}
+
+func TestBuildTransactionClassicOps(t *testing.T) {
+	ctx := context.Background()
+	from := *pldtypes.MustParseChainAddress(testAccount)
+
+	rpc := &fakeRPC{loadAccount: fakeAccountLoader(41)}
+	c := WrapClient(rpc, "Test SDF Network ; September 2015", nil)
+
+	payload, err := c.BuildTransaction(ctx, &baseledger.UnsignedChainTx{
+		From:        from,
+		PayloadKind: baseledger.PayloadEncodingXDRClassicOps,
+		Payload:     validClassicOpsPayload(t),
+	}, nil)
+	require.NoError(t, err)
+	// BuildTransaction must echo back the input payload kind rather than hardcoding the
+	// Soroban-invoke kind - regression test for a bug caught during classic-ops integration.
+	require.Equal(t, baseledger.PayloadEncodingXDRClassicOps, payload.PayloadKind)
+	require.Len(t, payload.Payload, 32)
+}
+
+func TestBuildTransactionInternalClassicOpsOperationCount(t *testing.T) {
+	ctx := context.Background()
+	from := *pldtypes.MustParseChainAddress(testAccount)
+
+	rpc := &fakeRPC{loadAccount: fakeAccountLoader(41)}
+	c := WrapClient(rpc, "Test SDF Network ; September 2015", nil)
+
+	payload, err := EncodeClassicOperations([]txnbuild.Operation{
+		&txnbuild.Payment{Destination: testAccount, Amount: "1", Asset: txnbuild.NativeAsset{}},
+		&txnbuild.CreateAccount{Destination: testAccount, Amount: "10"},
+	})
+	require.NoError(t, err)
+
+	transaction, err := c.buildTransaction(ctx, &from, baseledger.PayloadEncodingXDRClassicOps, payload)
+	require.NoError(t, err)
+	require.Len(t, transaction.Operations(), 2)
 }
 
 func TestBuildTransactionReturnsSignaturePayload(t *testing.T) {
