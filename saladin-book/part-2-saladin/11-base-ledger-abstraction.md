@@ -6,21 +6,22 @@ concrete packages, interfaces, proto messages, and migration steps.
 
 > **Implementation status.** The `baseledger` package, the EVM `Client` implementation, the
 > `ChainAddress` type, the proto v2 additions (§11.6), and the `ChainSubmitter` seam (§11.3) are
-> implemented on the `saladin` branch. Chapter 12's foundational slice is also implemented, which
-> pulled forward part of §11.4's manager migration: `DBPublicTxn.From`/`.To` (and the
+> implemented on the `saladin` branch. Chapter 12's backend slice has also landed, which pulled
+> forward part of §11.4's manager migration: `DBPublicTxn.From`/`.To` (and the
 > `InMemoryTxStateReadOnly` interface) are now `pldtypes.ChainAddress`, discovered as a genuine
 > blocking requirement for a Stellar `ChainSubmitter` to resolve a real signing address from a
 > persisted transaction record, not merely a nice-to-have. The boundary conversions back to the
 > EVM-shaped `pldapi.PublicTx` API type (which remains `EthAddress`-typed, out of scope) are
 > fallible and documented at each call site (`mapPersistedTransaction`, the submission-writer
 > sequencer handoff, etc.). `orchestrator.signingAddress` and the nonce-allocation/balance-check
-> cluster were deliberately left `EthAddress`-typed — not forced to change, consistent with
-> channel-account pooling still being deferred (ch. 12 §12.2). Three design details evolved from
-> this chapter's original text during implementation — noted inline where they occur (§11.3's
-> `ChainSubmitter` signatures; §11.4's `ChainAddress` storage format; the manager migration just
-> described). Not yet started: the `ledgerindexer` split (§11.3's `Ingestor`) and full
-> `componentmgr` node boot for `type: stellar` (blocked on that same ledger indexer) — still
-> scoped to their originally planned milestones (ch. 16).
+> cluster were deliberately left `EthAddress`-typed, because the public/domain-facing API remains
+> EVM-shaped even though the Stellar backend now uses channel-account pooling internally. Three
+> design details evolved from this chapter's original text during implementation — noted inline
+> where they occur (§11.3's `ChainSubmitter` signatures; §11.4's `ChainAddress` storage format; the
+> manager migration just described). The `ledgerindexer` split sketched in §11.3 is now partially
+> realized for Stellar as a narrow ingestor/writer path rather than a full chain-neutral consumer
+> interface; the remaining work is the event-stream/query/discovery side described in Chapter 12,
+> not basic `type: stellar` node boot.
 
 ## 11.1 Design principles
 
@@ -56,7 +57,7 @@ baseLedger:
   stellar:
     rpcURL: https://stellar-rpc.example
     networkPassphrase: "Public Global Stellar Network ; September 2015"
-    horizonURL: https://horizon.example    # optional: deep-history backfill
+    # no Horizon URL: this repo is RPC-only; deep-history/backfill remains a separate archive/indexer concern
   # evm: { ws: ..., http: ... }            # the existing EthClientConfig shape, nested
 ```
 

@@ -6,28 +6,32 @@ submitter. Everything here lives in `core/go/pkg/stellarclient`,
 on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the deprecated
 `github.com/stellar/go` — already migrated, no further tracking needed).
 
-> **Implementation status.** A **foundational slice** is implemented on the `saladin` branch:
-> §12.1's `stellarclient` (a thin constructor over the SDK's own `*rpcclient.Client`, no Horizon
-> dependency at all), `baseledger/stellar.Client` (all six `baseledger.Client` methods, real - not
-> stubbed - including `GetTransactionResult`), the ed25519 signing extension
+> **Implementation status.** A substantial Chapter 12 backend slice is now implemented on the
+> `saladin` branch. §12.1's `stellarclient` is in place as a thin constructor over the SDK's own
+> `*rpcclient.Client` with no Horizon dependency at all; `baseledger/stellar.Client` implements all
+> six `baseledger.Client` methods; the ed25519 signing extension
 > (`algorithms.EDDSA_ED25519`/`verifiers.STELLAR_ADDRESS`/`signpayloads.OPAQUE_TO_EDDSA`,
-> `toolkit/go/pkg/signer/signers/eddsa.go`) with SLIP-10 HD derivation via the SDK's own
-> `tools/stellar-hd-wallet/crypto/derivation` (verified against the official test vectors), and a
-> basic §12.2 `ChainSubmitter`
-> (`core/go/internal/publictxmgr/stellar_chain_submitter.go` - note: not `stellar_submitter.go` as
-> earlier drafts of this chapter named it) covering sequence-number assignment, transaction
-> build/sign/submit, and `xdr.TransactionResultCode`-based error classification, unit-tested with
-> mocks. `componentmgr.newBaseLedgerClient` has a real, working `stellar` branch, and
-> `publictxmgr`'s chain-submitter construction switches on `ChainInfo().Kind` - both wired and
-> tested in isolation, but full node boot for `type: stellar` is still rejected in `Init()`
-> pending the ledger indexer (below).
+> `toolkit/go/pkg/signer/signers/eddsa.go`) is wired with SLIP-10 HD derivation via the SDK's own
+> `tools/stellar-hd-wallet/crypto/derivation` and verified against the official test vectors.
+> §12.2's submitter is no longer just a basic skeleton: `core/go/internal/publictxmgr/
+> stellar_chain_submitter.go` now covers sequence assignment, channel-account pooling and bootstrap,
+> transaction build/sign/submit, restore-preamble handling, classic-op submission, and
+> `xdr.TransactionResultCode`-based error classification. §12.3's narrow classic-operations codec
+> (`XDR_CLASSIC_OPS`) and trustline pre-flight helper (`CheckTrustline`) are also implemented.
+> §12.4's backend ingestion path exists too: `baseledger/stellar.Ingestor` polls `getLedgers`, and
+> `core/go/internal/ledgerindexer/stellar` persists final ledgers into the same indexed tables used
+> by the EVM path. `componentmgr` now boots this Stellar-specific ledger indexer for
+> `baseLedger.type: stellar`, and `publictxmgr` switches submitter construction on
+> `ChainInfo().Kind`.
 >
-> **Explicitly deferred** (no code yet): channel-account pooling, fee-bump transactions, and the
-> restore-preamble submission stage (all §12.2); classic operations and trustline preflight
-> (§12.3); the ledger ingestor (§12.4); the `registries/stellar` plugin (§12.5, already marked
-> low-priority - static registry suffices); `ttlJanitor` and the operator/quickstart additions
-> (§12.6). None of §12.7's acceptance criteria have been exercised - there has been no
-> live-network or quickstart testing of this slice, only mocked unit tests.
+> **Still remaining:** fee-bump transactions and the auth-entry-expiry re-endorsement path in
+> §12.2; the consumer-facing/query/event-stream side of §12.4 (the current Stellar ledger indexer
+> is a narrow write/orchestration path, not a full replacement for the EVM `BlockIndexer`
+> interface); retention-gap fail-loud behavior and real backfill handling; `SnapshotContractState`;
+> the `registries/stellar` plugin and the domain/registry event-stream integration in §12.5;
+> `ttlJanitor` and the operator/quickstart additions in §12.6; and all live-network / quickstart
+> acceptance work in §12.7. The current verification bar is unit tests and targeted package tests,
+> not end-to-end network exercises.
 
 ## 12.1 `stellarclient`
 
