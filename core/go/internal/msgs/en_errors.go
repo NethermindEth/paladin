@@ -283,6 +283,8 @@ var (
 	MsgDomainABIRecoverRequestSignature       = pde("PD011638", "Invalid signature")
 	MsgDomainABIEncodingTypedDataInvalid      = pde("PD011639", "EIP-712 typed data V4 encoding request invalid")
 	MsgDomainABIEncodingTypedDataFail         = pde("PD011640", "EIP-712 typed data V4 encoding request failed")
+	MsgDomainSaladinTypedDataInvalid          = pde("PD011669", "SALADIN_TYPED_DATA_V0 encoding request invalid")
+	MsgDomainSaladinTypedDataFail             = pde("PD011670", "SALADIN_TYPED_DATA_V0 encoding request failed")
 	MsgDomainInvalidSchemaID                  = pde("PD011641", "Invalid schema ID '%s'")
 	MsgDomainInvalidEvents                    = pde("PD011642", "Events ABI is invalid")
 	MsgDomainSigningDisabled                  = pde("PD011643", "Domain signing it not enabled for domain '%s'")
@@ -311,6 +313,10 @@ var (
 	MsgDomainInvalidPGroupTxCannotRedirect    = pde("PD011666", "Resulting wrapped function call must target the same smart contract (contract=%s,addr=%s)")
 	MsgDomainUnsupportedStateQualifier        = pde("PD011667", "Unsupported state qualifier '%s'")
 	MsgDomainUnsupportedChainKind             = pde("PD011668", "Domain '%s' does not support configured base ledger kind '%s' (supported kinds: %s)")
+	MsgDomainXDRSCValEncodingInvalid          = pde("PD011671", "XDR_SCVAL encoding request invalid")
+	MsgDomainXDRSCValEncodingFail             = pde("PD011672", "XDR_SCVAL encoding request failed")
+	MsgDomainXDRSCValDecodingInvalid          = pde("PD011673", "XDR_SCVAL decoding request invalid")
+	MsgDomainXDRSCValDecodingFail             = pde("PD011674", "XDR_SCVAL decoding request failed")
 
 	// Entrypoint PD0117XX
 	MsgEntrypointUnknownRunMode = pde("PD011700", "Unknown run mode '%s'")

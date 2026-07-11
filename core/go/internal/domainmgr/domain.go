@@ -16,10 +16,13 @@
 package domainmgr
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -43,11 +46,53 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/query"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/saladintypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/scspec"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
+
+type saladinTypedDataDefinition struct {
+	NetworkPassphrase string `json:"network_passphrase"`
+	ContractID        string `json:"contract_id"`
+	TypeName          string `json:"type_name"`
+}
+
+// xdrSCValDefinition is the Definition envelope for EncodingType_XDR_SCVAL. Both fields are
+// base64-encoded XDR (SEP-48 mandates no JSON schema for spec type definitions, so this mirrors
+// the existing SALADIN_TYPED_DATA_V0 case's own "small envelope of base64/string fields" shape
+// rather than inventing one). SpecXDRBase64 may be empty for payloads with no Udt references.
+type xdrSCValDefinition struct {
+	SpecXDRBase64 string `json:"spec_xdr_base64"`
+	TypeXDRBase64 string `json:"type_xdr_base64"`
+}
+
+func parseXDRSCValDefinition(def xdrSCValDefinition) (*scspec.Spec, xdr.ScSpecTypeDef, error) {
+	var specXDR []byte
+	if def.SpecXDRBase64 != "" {
+		var err error
+		specXDR, err = base64.StdEncoding.DecodeString(def.SpecXDRBase64)
+		if err != nil {
+			return nil, xdr.ScSpecTypeDef{}, fmt.Errorf("invalid spec_xdr_base64: %w", err)
+		}
+	}
+	spec, err := scspec.ParseSpecXDR(specXDR)
+	if err != nil {
+		return nil, xdr.ScSpecTypeDef{}, err
+	}
+	typeXDR, err := base64.StdEncoding.DecodeString(def.TypeXDRBase64)
+	if err != nil {
+		return nil, xdr.ScSpecTypeDef{}, fmt.Errorf("invalid type_xdr_base64: %w", err)
+	}
+	var t xdr.ScSpecTypeDef
+	if _, err := xdr.Unmarshal(bytes.NewReader(typeXDR), &t); err != nil {
+		return nil, xdr.ScSpecTypeDef{}, fmt.Errorf("invalid type_xdr_base64 content: %w", err)
+	}
+	return spec, t, nil
+}
 
 type domain struct {
 	ctx       context.Context
@@ -466,6 +511,49 @@ func (d *domain) EncodeData(ctx context.Context, encRequest *prototk.EncodeDataR
 		if err != nil {
 			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainABIEncodingTypedDataFail))
 		}
+	case prototk.EncodingType_SALADIN_TYPED_DATA_V0:
+		var def saladinTypedDataDefinition
+		err := json.Unmarshal([]byte(encRequest.Definition), &def)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainSaladinTypedDataInvalid))
+		}
+		body := strings.TrimSpace(encRequest.Body)
+		payloadXDR, err := base64.StdEncoding.DecodeString(body)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainSaladinTypedDataInvalid))
+		}
+		var scVal xdr.ScVal
+		if _, err = xdr.Unmarshal(bytes.NewReader(payloadXDR), &scVal); err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainSaladinTypedDataInvalid))
+		}
+		var canonicalPayload bytes.Buffer
+		_, err = xdr.Marshal(&canonicalPayload, scVal)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainSaladinTypedDataInvalid))
+		}
+		digest, err := saladintypes.DigestXDR(def.NetworkPassphrase, def.ContractID, def.TypeName, canonicalPayload.Bytes())
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainSaladinTypedDataFail))
+		}
+		abiData = digest[:]
+	case prototk.EncodingType_XDR_SCVAL:
+		var def xdrSCValDefinition
+		if err := json.Unmarshal([]byte(encRequest.Definition), &def); err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValEncodingInvalid))
+		}
+		spec, typeDef, err := parseXDRSCValDefinition(def)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValEncodingInvalid))
+		}
+		scVal, err := spec.FromJSON(json.RawMessage(encRequest.Body), typeDef)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValEncodingFail))
+		}
+		var scValBuf bytes.Buffer
+		if _, err = xdr.Marshal(&scValBuf, scVal); err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValEncodingFail))
+		}
+		abiData = scValBuf.Bytes()
 	default:
 		return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.NewError(ctx, msgs.MsgDomainABIEncodingRequestInvalidType, encRequest.EncodingType))
 	}
@@ -586,6 +674,23 @@ func (d *domain) DecodeData(ctx context.Context, decRequest *prototk.DecodeDataR
 		}
 		if err != nil {
 			return nil, i18n.WrapError(ctx, err, msgs.MsgDomainABIDecodingRequestFail)
+		}
+	case prototk.EncodingType_XDR_SCVAL:
+		var def xdrSCValDefinition
+		if err := json.Unmarshal([]byte(decRequest.Definition), &def); err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValDecodingInvalid))
+		}
+		spec, typeDef, err := parseXDRSCValDefinition(def)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValDecodingInvalid))
+		}
+		var scVal xdr.ScVal
+		if _, err = xdr.Unmarshal(bytes.NewReader(decRequest.Data), &scVal); err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValDecodingInvalid))
+		}
+		body, err = spec.ToJSON(scVal, typeDef)
+		if err != nil {
+			return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.WrapError(ctx, err, msgs.MsgDomainXDRSCValDecodingFail))
 		}
 	default:
 		return nil, plugins.NewPluginError(prototk.Header_INVALID_INPUT, i18n.NewError(ctx, msgs.MsgDomainABIDecodingRequestInvalidType, decRequest.EncodingType))

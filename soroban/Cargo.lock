@@ -1177,7 +1177,14 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "saladin-typed-data"
 version = "0.0.0"
 dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
  "soroban-sdk",
+ "stellar-strkey 0.0.13",
 ]
 
 [[package]]

@@ -1,0 +1,162 @@
+[
+  {
+    "name": "bool_true",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.BoolTrue",
+    "payload_scval_xdr_base64": "AAAAAAAAAAE=",
+    "digest_hex": "94bf864ce2c20717e4dbfb53f94bdc178a892030701cdcc49718d2946b454c73"
+  },
+  {
+    "name": "bool_false",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.BoolFalse",
+    "payload_scval_xdr_base64": "AAAAAAAAAAA=",
+    "digest_hex": "c95b6c4ae4e5582dca29e2985dcea387a319a4cf41899fde9175397555158437"
+  },
+  {
+    "name": "u32_small",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.U32",
+    "payload_scval_xdr_base64": "AAAAAwAAAAc=",
+    "digest_hex": "b458696c523056772b67fcbbea95ad3c1cae731ab5c4bb21df392425c9f149b8"
+  },
+  {
+    "name": "i32_negative",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.I32",
+    "payload_scval_xdr_base64": "AAAABP////k=",
+    "digest_hex": "9ecc677a4a70318425029ed164b398468b2cecf44ead92d4ab2c716761d5095b"
+  },
+  {
+    "name": "u64_large",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.U64",
+    "payload_scval_xdr_base64": "AAAABQAAAAAHW80V",
+    "digest_hex": "b7136daae7e27e12ad19aa11e730a3a51b251711d62c031addc5d0e8aff50676"
+  },
+  {
+    "name": "i64_negative",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.I64",
+    "payload_scval_xdr_base64": "AAAABv/////4pDLr",
+    "digest_hex": "c86e2ce9d827c9b513ef0a1f36452dea2c71da692f692fbcbd5f5e23346e339a"
+  },
+  {
+    "name": "u128_parts",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.U128",
+    "payload_scval_xdr_base64": "AAAACQAAAAAAAAABAAAAAAAAAAI=",
+    "digest_hex": "10523505063f622eac3f2fee666bed6eb11305638a488a03960c6df35c118bf6"
+  },
+  {
+    "name": "i128_parts",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.I128",
+    "payload_scval_xdr_base64": "AAAACv/////////+AAAAAAAAAAM=",
+    "digest_hex": "1226f42b7b34d4c61710fe989ea7c7f9cf089470160e309402905a23d9d89ecf"
+  },
+  {
+    "name": "bytes_hello",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Bytes",
+    "payload_scval_xdr_base64": "AAAADQAAAAVoZWxsbwAAAA==",
+    "digest_hex": "e423c1ed9fc58917f4eb65ceee15bfb51dbfeeb0064b9fba4dd8dc10c27e59b8"
+  },
+  {
+    "name": "string_alpha",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.String",
+    "payload_scval_xdr_base64": "AAAADgAAAAVhbHBoYQAAAA==",
+    "digest_hex": "92c5a92a6a1b3dc4d6525ad827773b126662afa439b510f5d697db06bf18756e"
+  },
+  {
+    "name": "symbol_transfer",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Symbol",
+    "payload_scval_xdr_base64": "AAAADwAAAAh0cmFuc2Zlcg==",
+    "digest_hex": "c7d078c725797e1e0ca92da37c5cf68abf757fdc6c72562f7747d27db8da92c8"
+  },
+  {
+    "name": "vec_empty",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.EmptyVec",
+    "payload_scval_xdr_base64": "AAAAEAAAAAEAAAAA",
+    "digest_hex": "0051ac88d3230809c40e944d977ea0e1f2c26419110794c35231081036ad481b"
+  },
+  {
+    "name": "vec_scalars",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Vec",
+    "payload_scval_xdr_base64": "AAAAEAAAAAEAAAADAAAAAwAAAAEAAAAAAAAAAQAAAA4AAAABdgAAAA==",
+    "digest_hex": "1baf347d32ba97ddb81bf25a113c6df616a3685ebfd8cecaf41f00a09fd55b4d"
+  },
+  {
+    "name": "map_single",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Map",
+    "payload_scval_xdr_base64": "AAAAEQAAAAEAAAABAAAADwAAAAFrAAAAAAAABQAAAAAAAAAJ",
+    "digest_hex": "dc3ff93c9f6c756a24ba5d8e5e9a5fe0f15fee6efd5bc0901a7d5a868057abf5"
+  },
+  {
+    "name": "map_nested",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.NestedMap",
+    "payload_scval_xdr_base64": "AAAAEQAAAAEAAAABAAAADgAAAAVpbm5lcgAAAAAAABAAAAABAAAAAgAAAA8AAAABYQAAAAAAAAMAAAAF",
+    "digest_hex": "68a2e0b4739651bef79e39b0eabe3bf851f83c4e2b7ddac36bdbb72032422035"
+  },
+  {
+    "name": "address_contract",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.ContractAddress",
+    "payload_scval_xdr_base64": "AAAAEgAAAAEREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMA==",
+    "digest_hex": "102e6df56309bbdd5cfb9b9194ee86e017b61d27a215e75bbdc6351898580edd"
+  },
+  {
+    "name": "address_account",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.AccountAddress",
+    "payload_scval_xdr_base64": "AAAAEgAAAAAAAAAAIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEE=",
+    "digest_hex": "90c4a1be49b97ab2e1011d81de2ee35cbe75180a00c93e1553fbb5e8e1c66d1d"
+  },
+  {
+    "name": "void",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Void",
+    "payload_scval_xdr_base64": "AAAAAQ==",
+    "digest_hex": "5b48e9f236d74b0889aad30b1f07c9cf2f2d2780d77a483f84fb6f243f996dc9"
+  },
+  {
+    "name": "duration",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Duration",
+    "payload_scval_xdr_base64": "AAAACAAAAAAAAABj",
+    "digest_hex": "9605530cd0ad126bfbc9812b6a75a93ae1f09f07d03668649114700589cbbbda"
+  },
+  {
+    "name": "timepoint",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.Timepoint",
+    "payload_scval_xdr_base64": "AAAABwAAAAAAADA5",
+    "digest_hex": "c11f6d6222e6f2de24603e6e6a7deed234924ca0c36478e86c461751e3109937"
+  }
+]

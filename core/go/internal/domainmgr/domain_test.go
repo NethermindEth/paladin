@@ -16,6 +16,7 @@
 package domainmgr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -969,6 +971,143 @@ func TestEncodeABIDataFailCases(t *testing.T) {
 		Body:         `{!!!bad`,
 	})
 	assert.Regexp(t, "PD011639", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_SALADIN_TYPED_DATA_V0,
+		Definition:   `{!!!bad`,
+		Body:         `AAAAAAAAAAE=`,
+	})
+	assert.Regexp(t, "PD011669", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_SALADIN_TYPED_DATA_V0,
+		Definition:   `{"network_passphrase":"Test SDF Network ; September 2015","contract_id":"not-a-contract","type_name":"snoto.Transfer"}`,
+		Body:         `AAAAAAAAAAE=`,
+	})
+	assert.Regexp(t, "PD011670", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_SALADIN_TYPED_DATA_V0,
+		Definition:   `{"network_passphrase":"Test SDF Network ; September 2015","contract_id":"CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB","type_name":"snoto.Transfer"}`,
+		Body:         `!!!bad`,
+	})
+	assert.Regexp(t, "PD011669", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   `{!!!bad`,
+		Body:         `1`,
+	})
+	assert.Regexp(t, "PD011671", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   `{"type_xdr_base64":"not-base64!!"}`,
+		Body:         `1`,
+	})
+	assert.Regexp(t, "PD011671", err)
+	_, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   fmt.Sprintf(`{"type_xdr_base64":"%s"}`, mustB64XDR(t, xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32})),
+		Body:         `"not a number"`,
+	})
+	assert.Regexp(t, "PD011672", err)
+}
+
+func TestEncodeSaladinTypedData(t *testing.T) {
+	td, done := newTestDomain(t, false, goodDomainConf(), mockSchemas())
+	defer done()
+	d := td.d
+	ctx := td.ctx
+
+	res, err := d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_SALADIN_TYPED_DATA_V0,
+		Definition:   `{"network_passphrase":"Test SDF Network ; September 2015","contract_id":"CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB","type_name":"snoto.BoolTrue"}`,
+		Body:         `AAAAAAAAAAE=`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "94bf864ce2c20717e4dbfb53f94bdc178a892030701cdcc49718d2946b454c73", fmt.Sprintf("%x", res.Data))
+}
+
+func mustB64XDR(t *testing.T, v interface{}) string {
+	t.Helper()
+	s, err := xdr.MarshalBase64(v)
+	require.NoError(t, err)
+	return s
+}
+
+func TestEncodeXDRSCVal(t *testing.T) {
+	td, done := newTestDomain(t, false, goodDomainConf(), mockSchemas())
+	defer done()
+	d := td.d
+	ctx := td.ctx
+
+	// A plain primitive needs no spec entries at all.
+	res, err := d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   fmt.Sprintf(`{"type_xdr_base64":"%s"}`, mustB64XDR(t, xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32})),
+		Body:         `42`,
+	})
+	require.NoError(t, err)
+	var scVal xdr.ScVal
+	_, err = xdr.Unmarshal(bytes.NewReader(res.Data), &scVal)
+	require.NoError(t, err)
+	require.Equal(t, xdr.ScValTypeScvU32, scVal.Type)
+	require.Equal(t, xdr.Uint32(42), *scVal.U32)
+
+	// A named-field struct Udt needs the spec entries so the Udt reference resolves, and encodes
+	// as a sorted Map keyed by field name.
+	structEntry := xdr.ScSpecEntry{
+		Kind: xdr.ScSpecEntryKindScSpecEntryUdtStructV0,
+		UdtStructV0: &xdr.ScSpecUdtStructV0{
+			Name: "Transfer",
+			Fields: []xdr.ScSpecUdtStructFieldV0{
+				{Name: "amount", Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU64}},
+			},
+		},
+	}
+	res, err = d.EncodeData(ctx, &prototk.EncodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition: fmt.Sprintf(`{"spec_xdr_base64":"%s","type_xdr_base64":"%s"}`,
+			mustB64XDR(t, structEntry),
+			mustB64XDR(t, xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeUdt, Udt: &xdr.ScSpecTypeUdt{Name: "Transfer"}}),
+		),
+		Body: `{"amount":100}`,
+	})
+	require.NoError(t, err)
+	_, err = xdr.Unmarshal(bytes.NewReader(res.Data), &scVal)
+	require.NoError(t, err)
+	require.Equal(t, xdr.ScValTypeScvMap, scVal.Type)
+}
+
+func TestDecodeXDRSCVal(t *testing.T) {
+	td, done := newTestDomain(t, false, goodDomainConf(), mockSchemas())
+	defer done()
+	d := td.d
+	ctx := td.ctx
+
+	u32 := xdr.Uint32(7)
+	scVal := xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &u32}
+	var buf bytes.Buffer
+	_, err := xdr.Marshal(&buf, scVal)
+	require.NoError(t, err)
+
+	res, err := d.DecodeData(ctx, &prototk.DecodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   fmt.Sprintf(`{"type_xdr_base64":"%s"}`, mustB64XDR(t, xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32})),
+		Data:         buf.Bytes(),
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `7`, res.Body)
+
+	_, err = d.DecodeData(ctx, &prototk.DecodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   `{!!!bad`,
+		Data:         buf.Bytes(),
+	})
+	assert.Regexp(t, "PD011673", err)
+
+	_, err = d.DecodeData(ctx, &prototk.DecodeDataRequest{
+		EncodingType: prototk.EncodingType_XDR_SCVAL,
+		Definition:   fmt.Sprintf(`{"type_xdr_base64":"%s"}`, mustB64XDR(t, xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress})),
+		Data:         buf.Bytes(),
+	})
+	assert.Regexp(t, "PD011674", err)
 }
 
 func TestDecodeABIDataFailCases(t *testing.T) {
