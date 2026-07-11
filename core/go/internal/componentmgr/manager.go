@@ -17,6 +17,7 @@ package componentmgr
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"runtime"
 	"time"
@@ -48,12 +49,19 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/core/pkg/stellarclient"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/httpserver"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/metricsserver"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/rpcserver"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
+	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/txnbuild"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 type ComponentManager interface {
@@ -83,9 +91,18 @@ type componentManager struct {
 	// blockIndexer/stellarLedgerIndexer is non-nil, chosen by cm.conf.BaseLedger.ResolvedType().
 	stellarLedgerIndexer   *ledgerindexerstellar.Indexer
 	stellarIngestorRPClose func()
-	rpcServer              rpcserver.RPCServer
-	metricsServer          metricsserver.MetricsServer
-	metricsManager         metrics.Metrics
+	// stellarEventStreamMgr is the type: stellar counterpart to blockIndexer's own event-stream
+	// registration/dispatch machinery, returned from EventStreamManager() for a Stellar-configured
+	// node. Constructed alongside stellarLedgerIndexer in initStellarLedgerIndexer, and wired into
+	// it via SetEventStreamEngine so writeLedger can tap it after each ledger commits.
+	stellarEventStreamMgr *ledgerindexerstellar.EventStreamEngine
+	// stellarTTLJanitor is the type: stellar-only ttlJanitor background task (chapter 12 §12.6) -
+	// nil for type: evm, exactly like stellarLedgerIndexer.
+	stellarTTLJanitor        *baseledgerstellar.TTLJanitor
+	stellarTTLJanitorRPClose func()
+	rpcServer                rpcserver.RPCServer
+	metricsServer            metricsserver.MetricsServer
+	metricsManager           metrics.Metrics
 
 	// managers
 	stateManager             components.StateManager
@@ -401,16 +418,112 @@ func (cm *componentManager) initStellarLedgerIndexer() error {
 	ingestor := baseledgerstellar.NewIngestor(rpc, cm.conf.BaseLedger.Stellar.NetworkPassphrase, pollInterval)
 	ingestRetry := retry.NewRetryIndefinite(&ingestorConf.Retry)
 	cm.stellarLedgerIndexer = ledgerindexerstellar.NewIndexer(cm.bgCtx, ingestor, cm.persistence, ingestRetry, insertDBBatchSize)
-	return nil
+	cm.stellarEventStreamMgr = ledgerindexerstellar.NewEventStreamEngine(cm.bgCtx, cm.persistence, ingestRetry)
+	cm.stellarLedgerIndexer.SetEventStreamEngine(cm.stellarEventStreamMgr)
+	// Registered as "started" (rather than stopped ad-hoc in Stop()) so it's torn down in the same
+	// pass as every other background component - crucially, before the "opened" map's database
+	// close a few lines later in Stop().
+	return cm.addIfStarted("stellar_event_stream_engine", cm.stellarEventStreamMgr, nil, msgs.MsgComponentBlockIndexerInitError)
 }
 
 // startStellarLedgerIndexer is the type: stellar counterpart to startBlockIndexer - it feeds the
 // same PreCommitHandlers (collected the same way buildInternalEventStreams collects them for
 // blockIndexer.Start) so publictxmgr's confirmation-matching needs zero Stellar-specific changes.
+// It also reloads any persisted PTX blockchain event listeners, exactly like startBlockIndexer does
+// via txManager.LoadBlockchainEventListeners - now that EventStreamManager() gives txmgr a working,
+// non-nil event-stream engine on Stellar too.
 func (cm *componentManager) startStellarLedgerIndexer() error {
 	preCommitHandlers := cm.collectPreCommitHandlers()
 	err := cm.stellarLedgerIndexer.Start(preCommitHandlers...)
-	return cm.addIfStarted("stellar_ledger_indexer", cm.stellarLedgerIndexer, err, msgs.MsgComponentBlockIndexerStartError)
+	err = cm.addIfStarted("stellar_ledger_indexer", cm.stellarLedgerIndexer, err, msgs.MsgComponentBlockIndexerStartError)
+	if err == nil {
+		err = cm.txManager.LoadBlockchainEventListeners()
+	}
+	return err
+}
+
+// startStellarTTLJanitor constructs and starts the type: stellar ttlJanitor background task
+// (chapter 12 §12.6). Unlike startStellarLedgerIndexer (which reuses a connection built during
+// Init()), construction happens here, at StartManagers time - mirroring newBaseLedgerClient's own
+// timing - because resolving the janitor's signer identity needs the key manager already started
+// (see keyManager.Start() a few steps earlier in StartManagers), which Init() runs well before.
+//
+// A missing ttlJanitor.signer is deliberately not a startup failure: with no domain yet
+// registering keys via TTLJanitor.Watch (this slice's "Implementation status"), the janitor simply
+// polls an empty watch list and never needs to sign anything, exactly like an unset
+// channelAccounts.funder only fails the first time a channel account actually needs creating.
+func (cm *componentManager) startStellarTTLJanitor() error {
+	stellarConf := cm.conf.BaseLedger.Stellar
+	rpc, closeFn, err := stellarclient.NewClient(cm.bgCtx, stellarConf)
+	if err != nil {
+		return cm.wrapIfErr(err, msgs.MsgComponentTTLJanitorInitError)
+	}
+	cm.stellarTTLJanitorRPClose = closeFn
+
+	janitorConf := stellarConf.TTLJanitor
+	defaults := pldconf.StellarClientDefaults.TTLJanitor
+	pollInterval := confutil.DurationMin(janitorConf.PollInterval, time.Second, *defaults.PollInterval)
+	threshold := confutil.IntMin(janitorConf.Threshold, 1, *defaults.Threshold)
+	extendBy := confutil.IntMin(janitorConf.ExtendBy, 1, *defaults.ExtendBy)
+	batchSize := confutil.IntMin(janitorConf.BatchSize, 1, *defaults.BatchSize)
+
+	cfg := baseledgerstellar.TTLJanitorConfig{
+		PollInterval: pollInterval,
+		Threshold:    uint32(threshold), //nolint:gosec // bounded to >=1 above
+		ExtendBy:     uint32(extendBy),  //nolint:gosec // bounded to >=1 above
+		BatchSize:    batchSize,
+	}
+
+	signerIdentifier := confutil.StringNotEmpty(janitorConf.Signer, "")
+	if signerIdentifier == "" {
+		log.L(cm.bgCtx).Warnf("baseLedger.stellar.ttlJanitor.signer is not configured - the TTL janitor will start, but cannot extend any watched entry's TTL until it is set")
+	} else {
+		sourceAccount, sign, resolveErr := cm.buildStellarTTLJanitorSigner(signerIdentifier, stellarConf.NetworkPassphrase)
+		if resolveErr != nil {
+			return cm.wrapIfErr(resolveErr, msgs.MsgComponentTTLJanitorInitError)
+		}
+		cfg.SourceAccount = sourceAccount
+		cfg.Sign = sign
+	}
+
+	cm.stellarTTLJanitor = baseledgerstellar.NewTTLJanitor(rpc, stellarConf.NetworkPassphrase, cfg)
+	cm.stellarTTLJanitor.Start(cm.bgCtx)
+	return cm.addIfStarted("stellar_ttl_janitor", cm.stellarTTLJanitor, nil, msgs.MsgComponentTTLJanitorInitError)
+}
+
+// buildStellarTTLJanitorSigner resolves signerIdentifier's Stellar account address and returns a
+// TxSigner closure bound to it. Signing follows exactly the same convention
+// stellarChainSubmitter.signAndSerializeStellarTx uses (EDDSA_ED25519 / STELLAR_ADDRESS /
+// OPAQUE_TO_EDDSA, decorated with the signing address's key hint) - duplicated here rather than
+// shared because that method is private to a *stellarChainSubmitter, and the janitor has no
+// PreparedSubmission/DBPublicTxn of its own to route through the public-tx-manager machinery.
+func (cm *componentManager) buildStellarTTLJanitorSigner(signerIdentifier, networkPassphrase string) (string, baseledgerstellar.TxSigner, error) {
+	resolvedKey, err := cm.keyManager.ResolveKeyNewDatabaseTX(cm.bgCtx, signerIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to resolve TTL janitor signer %q: %w", signerIdentifier, err)
+	}
+	sourceAccount := resolvedKey.Verifier.Verifier
+
+	sign := func(ctx context.Context, tx *txnbuild.Transaction) (*txnbuild.Transaction, error) {
+		hash, hashErr := tx.Hash(networkPassphrase)
+		if hashErr != nil {
+			return nil, hashErr
+		}
+		keyMapping, lookupErr := cm.keyManager.ReverseKeyLookup(ctx, cm.persistence.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, sourceAccount)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		signature, signErr := cm.keyManager.Sign(ctx, keyMapping, signpayloads.OPAQUE_TO_EDDSA, pldtypes.HexBytes(hash[:]))
+		if signErr != nil {
+			return nil, signErr
+		}
+		fromAddr, parseErr := keypair.ParseAddress(sourceAccount)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return tx.AddSignatureDecorated(xdr.NewDecoratedSignature(signature, fromAddr.Hint()))
+	}
+	return sourceAccount, sign, nil
 }
 
 func (cm *componentManager) collectPreCommitHandlers() []blockindexer.PreCommitHandler {
@@ -556,6 +669,10 @@ func (cm *componentManager) CompleteStart() error {
 		case pldconf.BaseLedgerTypeStellar:
 			err = cm.startStellarLedgerIndexer()
 		}
+	}
+
+	if err == nil && cm.conf.BaseLedger.ResolvedType() == pldconf.BaseLedgerTypeStellar {
+		err = cm.startStellarTTLJanitor()
 	}
 
 	// We need the domains to have initialised before we can use them in the sequencer
@@ -705,6 +822,12 @@ func (cm *componentManager) Stop() {
 		log.L(cm.bgCtx).Debugf("Closed stellar ledger indexer RPC client")
 	}
 
+	if cm.stellarTTLJanitorRPClose != nil {
+		log.L(cm.bgCtx).Infof("Closing stellar TTL janitor RPC client")
+		cm.stellarTTLJanitorRPClose()
+		log.L(cm.bgCtx).Debugf("Closed stellar TTL janitor RPC client")
+	}
+
 	log.L(cm.bgCtx).Debug("Stopped")
 }
 
@@ -741,6 +864,17 @@ func (cm *componentManager) RPCServer() rpcserver.RPCServer {
 
 func (cm *componentManager) BlockIndexer() blockindexer.BlockIndexer {
 	return cm.blockIndexer
+}
+
+func (cm *componentManager) EventStreamManager() blockindexer.EventStreamManager {
+	switch cm.conf.BaseLedger.ResolvedType() {
+	case pldconf.BaseLedgerTypeEVM:
+		return cm.blockIndexer
+	case pldconf.BaseLedgerTypeStellar:
+		return cm.stellarEventStreamMgr
+	default:
+		return nil
+	}
 }
 
 func (cm *componentManager) LedgerIndexReady(ctx context.Context) error {

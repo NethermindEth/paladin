@@ -88,6 +88,7 @@ var (
 	MsgComponentBaseLedgerUnsupported                = pde("PD010045", "Base ledger type '%s' is parsed but not implemented yet")
 	MsgComponentBaseLedgerInvalidType                = pde("PD010046", "Invalid base ledger type '%s'")
 	MsgComponentBaseLedgerStellarConfigMissing       = pde("PD010047", "baseLedger.stellar configuration is required when baseLedger.type is 'stellar'")
+	MsgComponentTTLJanitorInitError                  = pde("PD010048", "Error initializing Stellar TTL janitor")
 
 	// States PD0101XX
 	MsgStateInvalidLength             = pde("PD010101", "Invalid hash len expected=%d actual=%d")

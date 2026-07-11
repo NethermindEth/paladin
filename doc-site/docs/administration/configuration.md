@@ -172,6 +172,7 @@
 | requestTimeout | Request timeout | `string` | - |
 | retry | HTTP retry configuration | [`HTTPRetryConfig`](#baseledgerstellarretry) | - |
 | tls | TLS configuration | [`TLSConfig`](#baseledgerstellartls) | - |
+| ttlJanitor | Configuration for the Soroban contract storage TTL janitor background task | [`TTLJanitorConfig`](#baseledgerstellarttljanitor) | - |
 | url | HTTP client URL | `string` | - |
 
 ## baseLedger.stellar.auth
@@ -229,6 +230,16 @@
 | key | Private key content | `string` | - |
 | keyFile | Path to private key file | `string` | - |
 | requiredDNAttributes | Required DN attributes for client certificates | `map[string][string]` | - |
+
+## baseLedger.stellar.ttlJanitor
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| batchSize | Maximum number of ledger entries combined into a single extend_ttl transaction | `int` | - |
+| extendBy | Number of ledgers, counted from the current ledger, to extend a queued entry's TTL to cover | `int` | - |
+| pollInterval | Interval between checks of the watched ledger entries' TTLs | `string` | - |
+| signer | Identifier of the local signing key used to source and sign extend_ttl transactions - required before the janitor can extend any entry | `string` | - |
+| threshold | Number of ledgers remaining before expiry below which a watched entry is queued for a TTL extension | `int` | - |
 
 ## blockIndexer
 

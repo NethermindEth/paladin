@@ -415,6 +415,27 @@ task componentTestWithGasSQLite(type: GasComponentTest, dependsOn: [
     args '-tags', "testdbsqlite,besu_paid_gas" // uses paid gas, and a fixed signing identity
 }
 
+// componentTestStellarSQLite brings up stellar_quickstart (testinfra/docker-compose-test.yml,
+// alongside besu_free/besu_gas) plus the 3-node Stellar-backed config below
+// (config/stellar.node{1,2,3}.config.yaml, mirroring sqlite.node{1,2,3}.config.yaml's Besu setup -
+// each with its own signing identity and a shared "root" identity for channel-account funding).
+// There is no Go component test targeting these configs yet (chapter 12/§12.7 quickstart
+// acceptance work is still outstanding on the saladin branch - see saladin-book ch.12 §12.7), so
+// -run is pinned to a not-yet-existing test name: this is a safe no-op ("ok ... [no tests to run]")
+// that wires up the infra/config plumbing ahead of that follow-up Go work, rather than silently
+// re-running the existing SQLite suite under a misleading name.
+task componentTestStellarSQLite(type: ComponentTest, dependsOn: [
+        makeMocks,
+        ':testinfra:startTestInfra',
+        setupCoverage,
+        goGet,
+        copyContracts, // Ensure this task depends on copying the test contracts
+    ]) {
+    mustRunAfter 'componentTestPostgres', 'componentTestWithGasSQLite' // these tests cannot run concurrently
+    args '-tags', "testdbsqlite,stellar_quickstart" // uses the stellar_quickstart standalone network
+    args '-run', '^TestStellarComponentTest' // no matching test exists yet - see comment above
+}
+
 task coordinationTestPostgres(type: CoordinationTest, dependsOn: [
         makeMocks,
         ':testinfra:startTestInfra',

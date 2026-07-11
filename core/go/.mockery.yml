@@ -17,10 +17,11 @@ packages:
   github.com/LFDT-Paladin/paladin/core/pkg/persistence:
     config:
       all: true
-  github.com/LFDT-Paladin/paladin/core/pkg/blockindexer:    
+  github.com/LFDT-Paladin/paladin/core/pkg/blockindexer:
     interfaces:
       BlockIndexer:
       EventStream:
+      EventStreamManager:
   github.com/LFDT-Paladin/paladin/core/pkg/ethclient:
     config:
       all: true

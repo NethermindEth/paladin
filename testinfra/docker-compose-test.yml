@@ -102,6 +102,30 @@ services:
       - --rpc-ws-host=0.0.0.0
       - --min-gas-price=1000000000
 
+  # Stellar quickstart standalone network (chapter 12 §12.6/§12.7) - core + stellar-rpc only.
+  # Started with `--enable rpc` (not `horizon`): in `--local` mode core always runs regardless of
+  # `--enable`, but horizon/friendbot only run if `horizon` is requested - so leaving it off here
+  # means Horizon never starts in this container at all. This codebase has deliberately migrated
+  # off Horizon entirely (see saladin-book ch.12 §12.1) and must not grow a dependency on it again;
+  # Paladin's baseLedger.stellar.url talks to stellar-rpc directly.
+  # `--local` runs a single-validator standalone network using the well-known
+  # "Standalone Network ; February 2017" passphrase, with ledgers closing roughly every 1s.
+  # NOTE: image/tag/flags reflect the stellar/quickstart docs (https://github.com/stellar/quickstart)
+  # as of this writing - reconfirm against current SDF docs before relying on this beyond local dev.
+  stellar_quickstart:
+    image: stellar/quickstart:testing
+    ports:
+      - 8000:8000  # stellar-rpc (Soroban RPC), served at /soroban/rpc - no Horizon on this port
+    command:
+      - --local
+      - --enable
+      - rpc
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 10s bash -c ':> /dev/tcp/localhost/8000'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 volumes:
   besu_free_data:
     driver: local

@@ -160,7 +160,7 @@ func TestInternalEventStreamDeliveryAtHeadWithSourceAddress(t *testing.T) {
 				testABI[1],
 				testABI[2],
 			},
-			Address: sourceContractAddress,
+			Address: chainAddrPtr(sourceContractAddress),
 		}},
 	}
 
@@ -516,7 +516,7 @@ func TestUpsertInternalEventStreamMismatchExistingSourceAddress(t *testing.T) {
 			Name: "testing",
 			Sources: []EventStreamSource{{
 				ABI:     a,
-				Address: pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				Address: chainAddrPtr(pldtypes.MustEthAddress(pldtypes.RandHex(20))),
 			}},
 		},
 	})
@@ -1315,8 +1315,8 @@ func TestEventSourcesHashing(t *testing.T) {
 		Name:   "goPurple",
 		Inputs: abi.ParameterArray{},
 	}
-	address1 := pldtypes.RandAddress()
-	address2 := pldtypes.RandAddress()
+	address1 := chainAddrPtr(pldtypes.RandAddress())
+	address2 := chainAddrPtr(pldtypes.RandAddress())
 
 	mustHash := func(ess EventSources) string {
 		hash, err := ess.Hash(context.Background())

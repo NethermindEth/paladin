@@ -48,13 +48,9 @@ import (
 )
 
 type BlockIndexer interface {
+	EventStreamManager
 	Start(...*InternalEventStream) error
 	Stop()
-	AddEventStream(ctx context.Context, dbTX persistence.DBTX, stream *InternalEventStream) (EventStream, error)
-	RemoveEventStream(ctx context.Context, id uuid.UUID) error
-	QueryEventStreamDefinitions(ctx context.Context, dbTX persistence.DBTX, esType pldtypes.Enum[EventStreamType], jq *query.QueryJSON) ([]*EventStreamDefinition, error)
-	StartEventStream(ctx context.Context, id uuid.UUID) error
-	StopEventStream(ctx context.Context, id uuid.UUID) error
 	GetIndexedBlockByNumber(ctx context.Context, number uint64) (*pldapi.IndexedBlock, error)
 	GetIndexedTransactionByHash(ctx context.Context, hash pldtypes.Bytes32) (*pldapi.IndexedTransaction, error)
 	GetIndexedTransactionByNonce(ctx context.Context, from pldtypes.EthAddress, nonce uint64) (*pldapi.IndexedTransaction, error)
@@ -70,7 +66,6 @@ type BlockIndexer interface {
 	GetBlockListenerHeight(ctx context.Context) (highest uint64, err error)
 	GetConfirmedBlockHeight(ctx context.Context) (confirmed pldtypes.HexUint64, err error)
 	GetLatestConfirmedBlockMetadata(ctx context.Context) (*ConfirmedBlockMetadata, error)
-	GetEventStreamStatus(ctx context.Context, id uuid.UUID) (*EventStreamStatus, error)
 	RPCModule() *rpcserver.RPCModule
 }
 
@@ -1024,7 +1019,7 @@ func (bi *blockIndexer) getConfirmedTransactionReceipt(ctx context.Context, tx e
 	return receipt, nil
 }
 
-func (bi *blockIndexer) enrichTransactionEvents(ctx context.Context, abi abi.ABI, source *pldtypes.EthAddress, tx pldtypes.Bytes32, events []*pldapi.EventWithData, serializer *abi.Serializer, indefiniteRetry bool) error {
+func (bi *blockIndexer) enrichTransactionEvents(ctx context.Context, abi abi.ABI, source *pldtypes.ChainAddress, tx pldtypes.Bytes32, events []*pldapi.EventWithData, serializer *abi.Serializer, indefiniteRetry bool) error {
 	// Get the TX receipt with all the logs
 	var receipt *TXReceiptJSONRPC
 	err := bi.retry.Do(ctx, func(attempt int) (_ bool, err error) {
@@ -1056,10 +1051,29 @@ func chainAddressPtrFromEth(addr *ethtypes.Address0xHex) *pldtypes.ChainAddress 
 	return &chainAddr
 }
 
-func (bi *blockIndexer) matchLog(ctx context.Context, abi abi.ABI, in *LogJSONRPC, out *pldapi.EventWithData, source *pldtypes.EthAddress, serializer *abi.Serializer) bool {
-	if !source.IsZero() && !source.Equals((*pldtypes.EthAddress)(in.Address)) {
-		log.L(ctx).Debugf("Event %d/%d/%d does not match source=%s (tx=%s,address=%s)", in.BlockNumber, in.TransactionIndex, in.LogIndex, source, in.TransactionHash, in.Address)
+// chainAddressesEqual is a nil-safe equality check for *pldtypes.ChainAddress. Unlike EthAddress,
+// ChainAddress.Equals is a value-receiver method, so calling it directly on a nil pointer panics -
+// this helper is used anywhere either side might be nil (e.g. an unaddressed event source).
+func chainAddressesEqual(a, b *pldtypes.ChainAddress) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
 		return false
+	}
+	return a.Equals(b)
+}
+
+func (bi *blockIndexer) matchLog(ctx context.Context, abi abi.ABI, in *LogJSONRPC, out *pldapi.EventWithData, source *pldtypes.ChainAddress, serializer *abi.Serializer) bool {
+	if source != nil && !source.IsZero() {
+		var inAddrChain pldtypes.ChainAddress
+		if in.Address != nil {
+			inAddrChain = pldtypes.NewEVMChainAddress(pldtypes.EthAddress(*in.Address))
+		}
+		if !source.Equals(&inAddrChain) {
+			log.L(ctx).Debugf("Event %d/%d/%d does not match source=%s (tx=%s,address=%s)", in.BlockNumber, in.TransactionIndex, in.LogIndex, source, in.TransactionHash, in.Address)
+			return false
+		}
 	}
 	// This is one that matches our signature, but we need to check it against our ABI list.
 	// We stop at the first entry that parses it, and it's perfectly fine and expected that

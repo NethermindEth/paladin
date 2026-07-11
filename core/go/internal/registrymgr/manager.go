@@ -41,9 +41,9 @@ type registryManager struct {
 
 	conf *pldconf.RegistryManagerInlineConfig
 
-	p            persistence.Persistence
-	blockIndexer blockindexer.BlockIndexer
-	rpcModule    *rpcserver.RPCModule
+	p              persistence.Persistence
+	eventStreamMgr blockindexer.EventStreamManager
+	rpcModule      *rpcserver.RPCModule
 
 	// We provide a high level of customization of how the nodes are looked up in the registry
 	registryTransportLookups map[string]*transportLookup
@@ -88,7 +88,7 @@ func (rm *registryManager) PreInit(pic components.PreInitComponents) (_ *compone
 }
 
 func (rm *registryManager) PostInit(c components.AllComponents) error {
-	rm.blockIndexer = c.BlockIndexer()
+	rm.eventStreamMgr = c.EventStreamManager()
 	return nil
 }
 

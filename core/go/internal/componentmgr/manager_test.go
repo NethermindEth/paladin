@@ -228,6 +228,23 @@ func TestInitOKStellar(t *testing.T) {
 	// Not ready until at least one ledger has been indexed
 	require.Error(t, cm.LedgerIndexReady(context.Background()))
 
+	// EventStreamManager() gives domainmgr/registrymgr/txmgr a working, non-nil event-stream
+	// registration surface on a Stellar node too - unlike BlockIndexer() itself, which stays nil.
+	esm := cm.EventStreamManager()
+	require.NotNil(t, esm)
+	_, err = esm.AddEventStream(context.Background(), cm.Persistence().NOTX(), &blockindexer.InternalEventStream{
+		Definition: &blockindexer.EventStreamDefinition{
+			Name: "test_stream",
+			Sources: []blockindexer.EventStreamSource{{
+				Selectors: []pldtypes.Bytes32{pldtypes.RandBytes32()},
+			}},
+		},
+		HandlerDBTX: func(ctx context.Context, dbTX persistence.DBTX, batch *blockindexer.EventDeliveryBatch) error {
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
 	cm.Stop()
 }
 

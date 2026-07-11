@@ -52,6 +52,7 @@ func newTestRegistryManager(t *testing.T, realDB bool, conf *pldconf.RegistryMan
 		allComponents: componentsmocks.NewAllComponents(t),
 	}
 	mc.allComponents.On("BlockIndexer").Return(mc.blockIndexer).Maybe()
+	mc.allComponents.On("EventStreamManager").Return(mc.blockIndexer).Maybe()
 	mc.allComponents.On("MetricsManager").Return(mm).Maybe()
 
 	var p persistence.Persistence

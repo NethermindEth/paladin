@@ -34,6 +34,7 @@ type StellarClientConfig struct {
 	NetworkPassphrase string                `json:"networkPassphrase"`
 	Ingestor          StellarIngestorConfig `json:"ingestor"`
 	ChannelAccounts   ChannelAccountsConfig `json:"channelAccounts"`
+	TTLJanitor        TTLJanitorConfig      `json:"ttlJanitor"`
 }
 
 // ChannelAccountsConfig configures the per-signing-identity channel-account pool (chapter 12
@@ -64,6 +65,22 @@ type StellarIngestorConfig struct {
 	Retry             RetryConfig `json:"retry"`
 }
 
+// TTLJanitorConfig configures the ttlJanitor background task (chapter 12 §12.6): a poller that
+// keeps a caller-registered set of Soroban contract storage ledger entries from being archived by
+// submitting batched extend_ttl (ExtendFootprintTtlOp) keepalives for any entry that has fallen
+// below Threshold ledgers remaining before expiry. Signer is the identifier of a local signing key
+// - resolved the same way ChannelAccountsConfig.Funder is - whose account both sources and signs
+// every extend_ttl transaction the janitor submits; like Funder, an unset Signer only becomes a
+// hard failure the first time the janitor actually has an entry to extend (today, with no domain
+// yet registering keys via TTLJanitor.Watch, that never happens).
+type TTLJanitorConfig struct {
+	PollInterval *string `json:"pollInterval"`
+	Threshold    *int    `json:"threshold"`
+	ExtendBy     *int    `json:"extendBy"`
+	BatchSize    *int    `json:"batchSize"`
+	Signer       *string `json:"signer"`
+}
+
 type BaseLedgerConfig struct {
 	Type    BaseLedgerType       `json:"type"`
 	EVM     *EthClientConfig     `json:"evm"`
@@ -86,6 +103,13 @@ var StellarClientDefaults = StellarClientConfig{
 		// Funder has no default: an unset funder is a hard failure the first time a channel
 		// account needs to be created (see stellarChainSubmitter.AssignOrderingKeys) - there is no
 		// safe default identity to fund new accounts from.
+	},
+	TTLJanitor: TTLJanitorConfig{
+		PollInterval: confutil.P("30s"),
+		Threshold:    confutil.P(1000),
+		ExtendBy:     confutil.P(100000),
+		BatchSize:    confutil.P(50),
+		// Signer has no default, for the same reason ChannelAccounts.Funder has none.
 	},
 }
 

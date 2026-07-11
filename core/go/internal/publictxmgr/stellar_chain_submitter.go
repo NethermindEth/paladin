@@ -40,7 +40,7 @@ import (
 )
 
 // stellarChainSubmitter is the Stellar/Soroban implementation of ChainSubmitter (chapter 12
-// foundational slice, §12.1/§12.2 including channel-account pooling, plus §12.3's classic
+// backend implementation, §12.1/§12.2 including channel-account pooling, plus §12.3's classic
 // operations and §12.2's restore-preamble stage). Like evmChainSubmitter, it wraps the owning
 // pubTxManager to reuse its already-constructed baseLedger client and key manager.
 //

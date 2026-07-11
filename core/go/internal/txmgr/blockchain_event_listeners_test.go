@@ -42,6 +42,7 @@ var mockABI = abi.ABI{{
 }}
 
 var mockAddress = pldtypes.RandAddress()
+var mockAddressChain = func() *pldtypes.ChainAddress { ca := mockAddress.ChainAddress(); return &ca }()
 
 func mockEventStream(t *testing.T, definition *blockindexer.EventStreamDefinition) *blockindexermocks.EventStream {
 	h := blockindexermocks.NewEventStream(t)
@@ -222,7 +223,7 @@ func TestCreateBlockchainEventListener(t *testing.T) {
 		assert.Equal(t, "1m", *def.Config.BatchTimeout)
 		assert.Equal(t, json.RawMessage(`4`), def.Config.FromBlock)
 		assert.Equal(t, mockABI, def.Sources[0].ABI)
-		assert.Equal(t, mockAddress, def.Sources[0].Address)
+		assert.Equal(t, mockAddress.ChainAddress(), *def.Sources[0].Address)
 	})
 	err = txm.CreateBlockchainEventListener(ctx, &pldapi.BlockchainEventListener{
 		Name: "bel1",
@@ -266,7 +267,7 @@ func TestQueryBlockchainEventListeners(t *testing.T) {
 			},
 			Sources: blockindexer.EventSources{{
 				ABI:     mockABI,
-				Address: mockAddress,
+				Address: mockAddressChain,
 			}},
 		}}, nil).Once()
 	mockQuery.Run(func(args mock.Arguments) {

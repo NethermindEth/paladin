@@ -880,6 +880,7 @@ var (
 	StellarClientConfigNetworkPassphrase = pdm("StellarClientConfig.networkPassphrase", "Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network)")
 	StellarClientConfigIngestor          = pdm("StellarClientConfig.ingestor", "Configuration for the Stellar ledger ingestor")
 	StellarClientConfigChannelAccounts   = pdm("StellarClientConfig.channelAccounts", "Configuration for the per-signing-identity channel-account pool")
+	StellarClientConfigTTLJanitor        = pdm("StellarClientConfig.ttlJanitor", "Configuration for the Soroban contract storage TTL janitor background task")
 
 	// StellarIngestorConfig field descriptions
 	StellarIngestorConfigPollInterval      = pdm("StellarIngestorConfig.pollInterval", "Interval between getLedgers polls (stellar-rpc has no push/subscription mode)")
@@ -890,4 +891,11 @@ var (
 	ChannelAccountsConfigPoolSize        = pdm("ChannelAccountsConfig.poolSize", "Number of derived channel accounts to maintain per signing identity")
 	ChannelAccountsConfigFunder          = pdm("ChannelAccountsConfig.funder", "Identifier of the local signing key used to fund newly created channel accounts - required before any channel account can be created")
 	ChannelAccountsConfigStartingBalance = pdm("ChannelAccountsConfig.startingBalance", "Initial XLM balance given to a newly created channel account")
+
+	// TTLJanitorConfig field descriptions
+	TTLJanitorConfigPollInterval = pdm("TTLJanitorConfig.pollInterval", "Interval between checks of the watched ledger entries' TTLs")
+	TTLJanitorConfigThreshold    = pdm("TTLJanitorConfig.threshold", "Number of ledgers remaining before expiry below which a watched entry is queued for a TTL extension")
+	TTLJanitorConfigExtendBy     = pdm("TTLJanitorConfig.extendBy", "Number of ledgers, counted from the current ledger, to extend a queued entry's TTL to cover")
+	TTLJanitorConfigBatchSize    = pdm("TTLJanitorConfig.batchSize", "Maximum number of ledger entries combined into a single extend_ttl transaction")
+	TTLJanitorConfigSigner       = pdm("TTLJanitorConfig.signer", "Identifier of the local signing key used to source and sign extend_ttl transactions - required before the janitor can extend any entry")
 )

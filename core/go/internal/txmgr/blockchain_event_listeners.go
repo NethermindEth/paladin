@@ -75,7 +75,7 @@ func (tm *txManager) LoadBlockchainEventListeners() error {
 		if lastPageEnd != nil {
 			q = q.GreaterThan("name", *lastPageEnd)
 		}
-		page, err := tm.blockIndexer.QueryEventStreamDefinitions(ctx, tm.p.NOTX(), ES_TYPE, q.Query())
+		page, err := tm.eventStreamMgr.QueryEventStreamDefinitions(ctx, tm.p.NOTX(), ES_TYPE, q.Query())
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func (tm *txManager) loadBlockchainEventListener(ctx context.Context, es *blocki
 	}
 
 	var err error
-	el.eventStream, err = tm.blockIndexer.AddEventStream(ctx, dbTX, &blockindexer.InternalEventStream{
+	el.eventStream, err = tm.eventStreamMgr.AddEventStream(ctx, dbTX, &blockindexer.InternalEventStream{
 		Type:        blockindexer.IESTypeEventStreamNOTX,
 		Definition:  es,
 		HandlerNOTX: el.handleEventBatch,
@@ -124,7 +124,7 @@ func (tm *txManager) stopBlockchainEventListeners() {
 	defer tm.blockchainEventListenerLock.Unlock()
 
 	for _, el := range tm.blockchainEventListeners {
-		if err := tm.blockIndexer.StopEventStream(tm.bgCtx, el.eventStream.ID()); err != nil {
+		if err := tm.eventStreamMgr.StopEventStream(tm.bgCtx, el.eventStream.ID()); err != nil {
 			log.L(tm.bgCtx).Errorf("Error stopping event listener '%s': %s", el.eventStream.Definition().Name, err)
 		}
 	}
@@ -147,7 +147,7 @@ func (tm *txManager) CreateBlockchainEventListener(ctx context.Context, spec *pl
 }
 
 func (tm *txManager) QueryBlockchainEventListeners(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.BlockchainEventListener, error) {
-	eventStreams, err := tm.blockIndexer.QueryEventStreamDefinitions(ctx, dbTX, ES_TYPE, jq)
+	eventStreams, err := tm.eventStreamMgr.QueryEventStreamDefinitions(ctx, dbTX, ES_TYPE, jq)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (tm *txManager) StartBlockchainEventListener(ctx context.Context, name stri
 	if el == nil {
 		return i18n.NewError(ctx, msgs.MsgTxMgrBlockchainEventListenerNotLoaded, name)
 	}
-	return tm.blockIndexer.StartEventStream(ctx, el.eventStream.ID())
+	return tm.eventStreamMgr.StartEventStream(ctx, el.eventStream.ID())
 }
 
 func (tm *txManager) StopBlockchainEventListener(ctx context.Context, name string) error {
@@ -186,7 +186,7 @@ func (tm *txManager) StopBlockchainEventListener(ctx context.Context, name strin
 	if el == nil {
 		return i18n.NewError(ctx, msgs.MsgTxMgrBlockchainEventListenerNotLoaded, name)
 	}
-	return tm.blockIndexer.StopEventStream(ctx, el.eventStream.ID())
+	return tm.eventStreamMgr.StopEventStream(ctx, el.eventStream.ID())
 }
 
 func (tm *txManager) DeleteBlockchainEventListener(ctx context.Context, name string) error {
@@ -196,7 +196,7 @@ func (tm *txManager) DeleteBlockchainEventListener(ctx context.Context, name str
 	if el == nil {
 		return i18n.NewError(ctx, msgs.MsgTxMgrBlockchainEventListenerNotLoaded, name)
 	}
-	err := tm.blockIndexer.RemoveEventStream(ctx, el.eventStream.ID())
+	err := tm.eventStreamMgr.RemoveEventStream(ctx, el.eventStream.ID())
 	if err == nil {
 		delete(tm.blockchainEventListeners, name)
 	}
@@ -211,7 +211,7 @@ func (tm *txManager) GetBlockchainEventListenerStatus(ctx context.Context, name 
 		return nil, i18n.NewError(ctx, msgs.MsgTxMgrBlockchainEventListenerNotLoaded, name)
 	}
 
-	status, err := tm.blockIndexer.GetEventStreamStatus(ctx, el.eventStream.ID())
+	status, err := tm.eventStreamMgr.GetEventStreamStatus(ctx, el.eventStream.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +263,21 @@ func (tm *txManager) mapEventStream(el *pldapi.BlockchainEventListener) *blockin
 	}
 
 	for _, source := range el.Sources {
+		// Blockchain event listeners are an EVM-only PTX concept today (registries/stellar is out
+		// of scope) - BlockchainEventListenerSource carries both the original EVM Address and the
+		// chain-neutral AddressChain, so prefer AddressChain if a caller has set it directly and
+		// otherwise derive it from the EVM Address.
+		var addrChain *pldtypes.ChainAddress
+		switch {
+		case source.AddressChain != nil:
+			addrChain = source.AddressChain
+		case source.Address != nil:
+			ca := source.Address.ChainAddress()
+			addrChain = &ca
+		}
 		es.Sources = append(es.Sources, blockindexer.EventStreamSource{
 			ABI:     source.ABI,
-			Address: source.Address,
+			Address: addrChain,
 		})
 	}
 
@@ -284,10 +296,18 @@ func (tm *txManager) mapBlockchainEventListener(es *blockindexer.EventStreamDefi
 		},
 	}
 	for _, source := range es.Sources {
-		el.Sources = append(el.Sources, pldapi.BlockchainEventListenerSource{
-			ABI:     source.ABI,
-			Address: source.Address,
-		})
+		// Blockchain event listeners are an EVM-only PTX concept today, so only populate the
+		// original EVM Address field here (not AddressChain) - preserves exact round-trip
+		// compatibility for existing API consumers that only ever set/expect Address.
+		bels := pldapi.BlockchainEventListenerSource{
+			ABI: source.ABI,
+		}
+		if source.Address != nil {
+			if ethAddr, err := source.Address.EthAddress(); err == nil {
+				bels.Address = ethAddr
+			}
+		}
+		el.Sources = append(el.Sources, bels)
 	}
 
 	return el

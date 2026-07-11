@@ -90,7 +90,12 @@ type domainManager struct {
 	sequencerManager components.SequencerManager
 	txManager        components.TXManager
 	transportMgr     components.TransportManager
+	// blockIndexer is the full EVM-shaped interface, still used directly for
+	// GetLatestConfirmedBlockMetadata (EVM-only; nil on a Stellar-configured node - domains remain
+	// EVM-only for now, see domain.checkSupportedChainKinds). eventStreamMgr is the narrow,
+	// chain-neutral subset used for event stream registration, which does work on Stellar.
 	blockIndexer     blockindexer.BlockIndexer
+	eventStreamMgr   blockindexer.EventStreamManager
 	keyManager       components.KeyManager
 	ethClientFactory ethclient.EthClientFactory
 	domainSigner     *domainSigner
@@ -126,6 +131,7 @@ func (dm *domainManager) PostInit(c components.AllComponents) error {
 	dm.persistence = c.Persistence()
 	dm.ethClientFactory = c.EthClientFactory()
 	dm.blockIndexer = c.BlockIndexer()
+	dm.eventStreamMgr = c.EventStreamManager()
 	dm.keyManager = c.KeyManager()
 	dm.transportMgr = c.TransportManager()
 	dm.publicTxManager = c.PublicTxManager()

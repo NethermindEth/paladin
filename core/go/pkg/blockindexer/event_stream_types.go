@@ -30,6 +30,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/query"
 )
 
 type EventStreamConfig struct {
@@ -82,9 +83,30 @@ func (ess EventSources) Hash(ctx context.Context) (*pldtypes.Bytes32, error) {
 	// string hashes so we can sort them in a deterministic order
 	sourceHashes := make([]string, len(ess))
 	for i, s := range ess {
-		hash, err := pldtypes.ABISolDefinitionHash(ctx, s.ABI, abi.Event /* only events matter */)
-		if err != nil {
-			return nil, err
+		// ABI-described sources (EVM) hash the ABI event definitions. Non-ABI sources (e.g.
+		// Stellar, described purely by Selectors) fold the selectors into the hash instead -
+		// otherwise two Selectors-only sources with different selectors would collide, as an
+		// empty ABI always hashes the same regardless of what Selectors contains.
+		var hash *pldtypes.Bytes32
+		var err error
+		if len(s.ABI) > 0 {
+			hash, err = pldtypes.ABISolDefinitionHash(ctx, s.ABI, abi.Event /* only events matter */)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			selHash := sha3.NewLegacyKeccak256()
+			selStrs := make([]string, len(s.Selectors))
+			for j, sel := range s.Selectors {
+				selStrs[j] = sel.String()
+			}
+			sort.Strings(selStrs)
+			for _, s := range selStrs {
+				selHash.Write([]byte(s))
+			}
+			var h32 pldtypes.Bytes32
+			_ = selHash.Sum(h32[0:0])
+			hash = &h32
 		}
 		// Need to factor the address into the hash
 		if s.Address != nil {
@@ -104,8 +126,11 @@ func (ess EventSources) Hash(ctx context.Context) (*pldtypes.Bytes32, error) {
 }
 
 type EventStreamSource struct {
-	ABI     abi.ABI              `json:"abi,omitempty"`
-	Address *pldtypes.EthAddress `json:"address,omitempty"` // optional
+	ABI     abi.ABI                `json:"abi,omitempty"`
+	Address *pldtypes.ChainAddress `json:"address,omitempty"` // optional
+	// Selectors is a non-ABI way to describe which events are wanted, for chains (Stellar) whose
+	// event streams are not ABI-typed. Ignored by the EVM engine, which matches purely on ABI.
+	Selectors []pldtypes.Bytes32 `json:"selectors,omitempty"`
 }
 
 type EventStreamCheckpoint struct {
@@ -121,6 +146,23 @@ type EventStreamSignature struct {
 type EventStreamStatus struct {
 	CheckpointBlock int64
 	Catchup         bool
+}
+
+// EventStreamManager is the narrow subset of BlockIndexer that domainmgr/registrymgr/txmgr
+// actually need to register and manage internal event streams. It is embedded into BlockIndexer
+// (so *blockIndexer continues to satisfy it structurally with zero behavior change for EVM), and
+// separately implemented by the Stellar ledger indexer - which has no analogue for the EVM-only
+// concerns (WS block listener, reorg/confirmation-depth handling, ABI-typed receipt queries) that
+// make up the rest of BlockIndexer. Callers that only need event-stream registration (rather than
+// the full EVM-shaped interface) should depend on this instead of BlockIndexer directly, so they
+// work unmodified against either chain.
+type EventStreamManager interface {
+	AddEventStream(ctx context.Context, dbTX persistence.DBTX, stream *InternalEventStream) (EventStream, error)
+	RemoveEventStream(ctx context.Context, id uuid.UUID) error
+	QueryEventStreamDefinitions(ctx context.Context, dbTX persistence.DBTX, esType pldtypes.Enum[EventStreamType], jq *query.QueryJSON) ([]*EventStreamDefinition, error)
+	StartEventStream(ctx context.Context, id uuid.UUID) error
+	StopEventStream(ctx context.Context, id uuid.UUID) error
+	GetEventStreamStatus(ctx context.Context, id uuid.UUID) (*EventStreamStatus, error)
 }
 
 // EventStream is the handle returned to components that register an internal event stream.

@@ -116,12 +116,14 @@ func (r *registry) configureEventStream(ctx context.Context, dbTX persistence.DB
 
 	for i, es := range r.config.EventSources {
 
-		var contractAddr *pldtypes.EthAddress
+		var contractAddrChain *pldtypes.ChainAddress
 		if es.ContractAddress != "" {
-			contractAddr, err = pldtypes.ParseEthAddress(es.ContractAddress)
+			contractAddr, err := pldtypes.ParseEthAddress(es.ContractAddress)
 			if err != nil {
 				return i18n.WrapError(ctx, err, msgs.MsgRegistryInvalidEventSource, i)
 			}
+			chainAddr := contractAddr.ChainAddress()
+			contractAddrChain = &chainAddr
 		}
 
 		var eventsABI abi.ABI
@@ -130,7 +132,7 @@ func (r *registry) configureEventStream(ctx context.Context, dbTX persistence.DB
 		}
 
 		stream.Sources = append(stream.Sources, blockindexer.EventStreamSource{
-			Address: contractAddr,
+			Address: contractAddrChain,
 			ABI:     eventsABI,
 		})
 	}
@@ -141,7 +143,7 @@ func (r *registry) configureEventStream(ctx context.Context, dbTX persistence.DB
 	}
 	stream.Name = fmt.Sprintf("registry_%s_%s", r.name, streamHash)
 
-	r.eventStream, err = r.rm.blockIndexer.AddEventStream(ctx, dbTX, &blockindexer.InternalEventStream{
+	r.eventStream, err = r.rm.eventStreamMgr.AddEventStream(ctx, dbTX, &blockindexer.InternalEventStream{
 		Definition:  stream,
 		HandlerDBTX: r.handleEventBatch,
 	})

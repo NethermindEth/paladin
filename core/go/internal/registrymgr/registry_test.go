@@ -572,7 +572,7 @@ func TestRegistryWithEventStreams(t *testing.T) {
 		mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.MatchedBy(func(ies *blockindexer.InternalEventStream) bool {
 			require.Len(t, ies.Definition.Sources, 1)
 			assert.JSONEq(t, pldtypes.JSONString(a).String(), pldtypes.JSONString(ies.Definition.Sources[0].ABI).String())
-			assert.Equal(t, addr, ies.Definition.Sources[0].Address)
+			assert.Equal(t, addr.ChainAddress(), *ies.Definition.Sources[0].Address)
 			return true
 		})).Return(mockES, nil)
 

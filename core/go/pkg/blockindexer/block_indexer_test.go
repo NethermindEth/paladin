@@ -196,6 +196,13 @@ func testBlockWithManyTXAndEvents(t *testing.T, txL int, eventL int, knownAddres
 	return block, receipts
 }
 
+// chainAddrPtr is a test convenience for building an EVM *pldtypes.ChainAddress from an
+// *pldtypes.EthAddress, since EventStreamSource.Address is chain-neutral.
+func chainAddrPtr(addr *pldtypes.EthAddress) *pldtypes.ChainAddress {
+	ca := addr.ChainAddress()
+	return &ca
+}
+
 func testBlockArray(t *testing.T, l int, knownAddress ...ethtypes.Address0xHex) ([]*BlockInfoJSONRPC, map[string][]*TXReceiptJSONRPC) {
 	return testBlockArrayWithTXType(t, l, "0x2", knownAddress...) // Valid EIP1559 TX type
 }

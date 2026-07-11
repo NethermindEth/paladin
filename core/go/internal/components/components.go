@@ -36,6 +36,15 @@ type PreInitComponents interface {
 	BaseLedger() baseledger.Client
 	Persistence() persistence.Persistence
 	BlockIndexer() blockindexer.BlockIndexer
+	// EventStreamManager is a chain-neutral accessor for event-stream registration: it returns
+	// cm.BlockIndexer() for an EVM-configured node, or the narrow Stellar event-stream engine
+	// (core/internal/ledgerindexer/stellar) for a Stellar-configured node - mirroring the EVM/
+	// Stellar duality LedgerIndexReady already implements for readiness. Unlike BlockIndexer(),
+	// this is never nil: callers (domainmgr/registrymgr/txmgr) that only need AddEventStream/
+	// RemoveEventStream/QueryEventStreamDefinitions/StartEventStream/StopEventStream/
+	// GetEventStreamStatus - not the full EVM-shaped BlockIndexer - should use this instead, so
+	// they work unmodified on either chain.
+	EventStreamManager() blockindexer.EventStreamManager
 	RPCServer() rpcserver.RPCServer
 	MetricsManager() metrics.Metrics
 	// LedgerIndexReady is a chain-neutral readiness gate: it errors until at least one

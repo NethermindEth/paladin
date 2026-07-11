@@ -191,7 +191,7 @@ func (bi *blockIndexer) upsertInternalEventStream(ctx context.Context, dbTX pers
 			); err != nil {
 				return nil, err
 			}
-			if !existing[0].Sources[i].Address.Equals(def.Sources[i].Address) {
+			if !chainAddressesEqual(existing[0].Sources[i].Address, def.Sources[i].Address) {
 				return nil, i18n.NewError(ctx, msgs.MsgBlockIndexerESSourceError)
 			}
 		}

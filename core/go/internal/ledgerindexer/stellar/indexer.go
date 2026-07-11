@@ -54,6 +54,11 @@ type Indexer struct {
 	preCommitHandlers []blockindexer.PreCommitHandler
 	done              chan struct{}
 	ready             atomic.Bool
+	// eventStreamEngine is optional (nil in package-level tests that don't need it): when set,
+	// writeLedger writes the stellar_event_payloads companion rows (event_payloads.go) in the same
+	// DB transaction as indexed_events, and taps the engine after a successful commit so any
+	// registered stream immediately re-checks for newly-ingested events (event_streams.go).
+	eventStreamEngine *EventStreamEngine
 }
 
 // NewIndexer builds a stopped Indexer. Call Start to begin polling and writing.
@@ -69,6 +74,12 @@ func NewIndexer(ctx context.Context, ingestor baseledger.Ingestor, p persistence
 		insertDBBatchSize: insertDBBatchSize,
 		done:              make(chan struct{}),
 	}
+}
+
+// SetEventStreamEngine wires the event-stream engine (componentmgr constructs both together in
+// initStellarLedgerIndexer). Must be called before Start.
+func (ix *Indexer) SetEventStreamEngine(e *EventStreamEngine) {
+	ix.eventStreamEngine = e
 }
 
 // Start begins polling for ledgers and writing them, invoking preCommitHandlers (the same
@@ -149,7 +160,8 @@ func (ix *Indexer) consume(ch <-chan *baseledger.LedgerUnit) {
 
 func (ix *Indexer) writeLedger(ctx context.Context, unit *baseledger.LedgerUnit) error {
 	block, notifyTxs, events := convertLedgerUnit(unit)
-	return ix.retry.Do(ctx, func(_ int) (retryable bool, err error) {
+	payloads := buildEventPayloads(block.Number, unit.Events)
+	err := ix.retry.Do(ctx, func(_ int) (retryable bool, err error) {
 		return true, ix.persistence.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 			for _, preCommitHandler := range ix.preCommitHandlers {
 				if err := preCommitHandler(ctx, dbTX, []*pldapi.IndexedBlock{block}, notifyTxs); err != nil {
@@ -173,9 +185,19 @@ func (ix *Indexer) writeLedger(ctx context.Context, unit *baseledger.LedgerUnit)
 					return err
 				}
 			}
+			if len(payloads) > 0 {
+				// Written in the same DB transaction as indexed_events above - see event_payloads.go.
+				if err := dbTX.DB().WithContext(ctx).Table(stellarEventPayloadsTable).CreateInBatches(payloads, ix.insertDBBatchSize).Error; err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 	})
+	if err == nil && ix.eventStreamEngine != nil {
+		ix.eventStreamEngine.notifyLedger()
+	}
+	return err
 }
 
 // convertLedgerUnit maps the chain-neutral LedgerUnit/IndexedChainTx/IndexedChainEvent shapes

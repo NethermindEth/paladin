@@ -81,6 +81,7 @@ func newTestTransactionManager(t *testing.T, realDB bool, init ...func(conf *pld
 	componentsmocks := mc.c
 	componentsmocks.On("TxManager").Return(txm).Maybe()
 	componentsmocks.On("BlockIndexer").Return(mc.blockIndexer).Maybe()
+	componentsmocks.On("EventStreamManager").Return(mc.blockIndexer).Maybe()
 	componentsmocks.On("DomainManager").Return(mc.domainManager).Maybe()
 	componentsmocks.On("KeyManager").Return(mc.keyManager).Maybe()
 	componentsmocks.On("PublicTxManager").Return(mc.publicTxMgr).Maybe()

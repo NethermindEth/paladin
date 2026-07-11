@@ -1,0 +1,67 @@
+nodeName: node1
+db:
+  type: sqlite
+  sqlite:
+    dsn: ":memory:"
+    autoMigrate: true
+    migrationsDir: "../../db/migrations/sqlite"
+    debugQueries: false
+grpc:
+  shutdownTimeout: 0s
+rpcServer:
+  http:
+    port: 0
+    shutdownTimeout: 0s
+  ws:
+    disabled: true
+    shutdownTimeout: 0s
+baseLedger:
+  type: stellar
+  stellar:
+    url: http://localhost:8000/soroban/rpc
+    # "Standalone Network ; February 2017" is the well-known passphrase for a stellar/quickstart
+    # `--local` network (testinfra/docker-compose-test.yml's stellar_quickstart service) - confirm
+    # against current Stellar Development Foundation docs if quickstart's local-network passphrase
+    # ever changes.
+    networkPassphrase: "Standalone Network ; February 2017"
+    ingestor:
+      pollInterval: "1s" # quickstart --local closes ledgers roughly every 1s
+      insertDBBatchSize: 100
+    channelAccounts:
+      poolSize: 8
+      funder: root
+      startingBalance: "5"
+wallets:
+  # "root" derives the raw secret seed of the standalone network's master/root account
+  # (seed = SHA-256(networkPassphrase) - see network.ID in github.com/stellar/go-stellar-sdk),
+  # which already holds the entire genesis supply on a freshly started quickstart network. There
+  # is no friendbot here (Horizon is never started - see the stellar_quickstart service comment),
+  # so this is how channel accounts get funded in this dev/test setup. keySelector is listed before
+  # wallet1's catch-all below because wallet selection is first-match-wins in config order.
+  - name: root
+    keySelector: "^root$"
+    signer:
+      keyDerivation:
+        type: "bip32"
+      keyStore:
+        type: "static"
+        static:
+          keys:
+            seed:
+              encoding: none
+              inline: baefd734b8d3e48472cff83912375fedbc7573701912fe308af730180f97d74a
+  - name: wallet1
+    keySelector: .*
+    signer:
+      keyDerivation:
+        type: "bip32"
+      keyStore:
+        type: "static"
+        static:
+          keys:
+            seed:
+              encoding: none
+              inline: cdd8dbc37a9fa235a3c56367bb029c27a1bdf49b8090070d1b22993f343e098d
+sequencerManager:
+  heartbeatInterval: "1s"
+  inactiveGracePeriod: 2

@@ -62,7 +62,7 @@ type txManager struct {
 	domainMgr           components.DomainManager
 	stateMgr            components.StateManager
 	identityResolver    components.IdentityResolver
-	blockIndexer        blockindexer.BlockIndexer
+	eventStreamMgr      blockindexer.EventStreamManager
 	rpcEventStreams     *rpcEventStreams
 	txCache             cache.Cache[uuid.UUID, *components.ResolvedTransaction]
 	abiCache            cache.Cache[pldtypes.Bytes32, *pldapi.StoredABI]
@@ -101,7 +101,7 @@ func (tm *txManager) PostInit(c components.AllComponents) error {
 	tm.domainMgr = c.DomainManager()
 	tm.stateMgr = c.StateManager()
 	tm.identityResolver = c.IdentityResolver()
-	tm.blockIndexer = c.BlockIndexer()
+	tm.eventStreamMgr = c.EventStreamManager()
 	tm.localNodeName = c.TransportManager().LocalNodeName()
 
 	err := tm.loadReceiptListeners()

@@ -784,9 +784,10 @@ func TestRPCBlockchainEventListenersCRUD(t *testing.T) {
 	name := "listener1"
 	testABI := abi.ABI{{Type: abi.Event, Name: "Event1"}}
 	address := pldtypes.RandAddress()
+	addressChain := address.ChainAddress()
 	eventStreamSources := blockindexer.EventSources{{
 		ABI:     testABI,
-		Address: address,
+		Address: &addressChain,
 	}}
 	es := &blockindexer.EventStreamDefinition{
 		ID:      id,
