@@ -1,12 +1,12 @@
-# Chapter 16 — Delivery Plan
+# Chapter 15 — Delivery Plan
 
-## 16.1 Team assumptions
+## 15.1 Team assumptions
 
 3–4 senior engineers: 2 Go (one with deep Paladin familiarity), 1–2 Rust/Soroban (at least one
 experienced Stellar engineer as anchor — see risk R14), part-time Solidity for interop
 contracts, QA/infra support. "em" = engineer-month.
 
-## 16.2 Milestones (port)
+## 15.2 Milestones (port)
 
 | # | Milestone | Contents | Effort | Demo | Exit criteria |
 |---|---|---|---|---|---|
@@ -21,20 +21,7 @@ contracts, QA/infra support. "em" = engineer-month.
 **Port total ≈ 25.5 em**, ~9–12 months wall-clock (M0 ∥ M1; M3 overlaps M2 tail; M6 off the MVP
 path).
 
-## 16.3 Interop phases (ch. 15, incremental)
-
-| Phase | Effort | Note |
-|---|---|---|
-| I-0 dual-ledger node | ~1.5 em | mostly wiring; interfaces already BLI-shaped |
-| I-1 notary settlement (`interopmgr`) | ~2.5 em | includes compensation tooling + runbook |
-| I-2 HTLC | ~2.5 em | + external security audit (budget separately) |
-| I-3 M-of-N settlement payloads | ~1.5 em | tracks upstream V1.0 endorsement work |
-
-**MVP definition** (aligned with the risk chapter's timeline sanity check): SNoto + dual-ledger
-node + notary DvP ≈ 9–10 months with 5–6 engineers if port and interop tracks run in parallel;
-port-only with 3–4 engineers lands in the same window without I-1/I-2.
-
-## 16.4 Testing strategy
+## 15.3 Testing strategy
 
 - **Unit:** soroban-sdk testutils for contracts; Go table tests + regenerated `mocks/` for BLI
   interfaces; shared cross-language typed-data/Poseidon vector files.
@@ -50,14 +37,14 @@ port-only with 3–4 engineers lands in the same window without I-1/I-2.
   `stellar-cli` in build images; reproducible-Wasm check (pinned rustc, locked build profile);
   CI leg against the *next* protocol's preview quickstart image (risk R11).
 
-## 16.5 Upstream engagement
+## 15.4 Upstream engagement
 
 The BLI RFC (M0) goes to Paladin maintainers with the M1/M2 refactor offered upstream: the
 abstraction benefits Paladin regardless of Stellar (future Fabric/Solana/Corda backends), and
 merged-upstream is the only durable defense against fork drift (risk R8/R9). Track upstream
 monthly; measure rebase pain as a metric.
 
-## 16.6 Decision log
+## 15.5 Decision log
 
 | # | Decision | Chosen | Rejected (why) |
 |---|---|---|---|
@@ -73,10 +60,9 @@ monthly; measure rebase pain as a metric.
 | 10 | Event history | continuous getLedgers ingestion + archive backfill, fail-loud | rely on getEvents retention (data loss); mandatory Galexie (too heavy for dev) |
 | 11 | Sente engine | embed soroban-env-host in a Rust gRPC plugin (cdylib; sidecar fallback) | JNI-wrap in Java (pointless); re-implement Wasm metering (madness) |
 | 12 | Zeto crypto | keep circom/Groth16/BN254/BabyJubJub/Poseidon; rewrite verifier only | new proof system (discards audited circuits; host fns exist) |
-| 13 | Interop first mode | notary-coordinated settlement | HTLC-first (griefing/free-option UX; notary adds zero trust in Noto deployments) |
-| 14 | Native-asset custody | pooled SAC contract balance held by the domain contract itself; shield/unshield verbs in SNoto/SZeto | separate gateway contract (extra trust boundary, split footprint); per-user wrapped balances (leaks holder set, defeats pooling privacy) |
-| 15 | Sente read/write-set discovery | embed `soroban-simulation` (recording-mode host) over a Paladin-state `SnapshotSource` (ch. 14 §14.3) | remote stellar-rpc simulateTransaction (public-ledger state only, no injection API, non-deterministic across endorsers, leaks private payloads); hand-rolled read/write tracking (Pente-style — redundant, recording mode already does it) |
+| 13 | Native-asset custody | pooled SAC contract balance held by the domain contract itself; shield/unshield verbs in SNoto/SZeto | separate gateway contract (extra trust boundary, split footprint); per-user wrapped balances (leaks holder set, defeats pooling privacy) |
+| 14 | Sente read/write-set discovery | embed `soroban-simulation` (recording-mode host) over a Paladin-state `SnapshotSource` (ch. 14 §14.3) | remote stellar-rpc simulateTransaction (public-ledger state only, no injection API, non-deterministic across endorsers, leaks private payloads); hand-rolled read/write tracking (Pente-style — redundant, recording mode already does it) |
 
 ---
 
-*Next: [Chapter 17 — Risk map](17-risk-map.md)*
+*Next: [Chapter 16 — Risk map](16-risk-map.md)*

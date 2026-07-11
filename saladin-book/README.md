@@ -21,8 +21,7 @@ settlement), and **Sente** (private Soroban execution, the analogue of Pente's p
 - **Part 1** describes Paladin as it exists in this repository today — in enough depth that you
   could reconstruct its design from scratch. Read it first even if you know Paladin: Part 2
   constantly refers back to the mechanisms defined here.
-- **Part 2** is the Saladin plan: what to abstract, what to build, what to rewrite, how the two
-  worlds interoperate, and what can go wrong.
+- **Part 2** is the Saladin plan: what to abstract, what to build, what to rewrite, and what can go wrong.
 
 ## Table of contents
 
@@ -49,10 +48,9 @@ settlement), and **Sente** (private Soroban execution, the analogue of Pente's p
 | 12 | [The Stellar backend](part-2-saladin/12-stellar-backend.md) | stellarclient, ledger indexer, transaction submitter, ed25519 signing, discovery |
 | 13 | [Soroban contracts](part-2-saladin/13-soroban-contracts.md) | SNoto, SZeto, SAtom, registry contracts; typed-data signing; storage & rent strategy; native assets via the SAC |
 | 14 | [Porting the domains](part-2-saladin/14-domain-ports.md) | Noto/Zeto Go-side changes; Sente — private Soroban — design and feasibility |
-| 15 | [Interoperability: Saladin ⇄ Paladin](part-2-saladin/15-interop-saladin-paladin.md) | Dual-ledger nodes, notary-coordinated settlement, HTLC swaps, light-client research |
-| 16 | [Delivery plan](part-2-saladin/16-delivery-plan.md) | Milestones, effort, testing strategy, CI, team shape, decision log |
-| 17 | [Risk map](part-2-saladin/17-risk-map.md) | 21 development risks with likelihood, impact, mitigation, early-warning indicators |
-| 18 | [Glossary](part-2-saladin/18-glossary.md) | Every term defined in one place (covers the whole book) |
+| 15 | [Delivery plan](part-2-saladin/15-delivery-plan.md) | Milestones, effort, testing strategy, CI, team shape, decision log |
+| 16 | [Risk map](part-2-saladin/16-risk-map.md) | 21 development risks with likelihood, impact, mitigation, early-warning indicators |
+| 17 | [Glossary](part-2-saladin/17-glossary.md) | Every term defined in one place (covers the whole book) |
 
 ## Conventions
 

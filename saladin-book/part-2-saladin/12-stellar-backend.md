@@ -6,32 +6,53 @@ submitter. Everything here lives in `core/go/pkg/stellarclient`,
 on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the deprecated
 `github.com/stellar/go` — already migrated, no further tracking needed).
 
-> **Implementation status.** A substantial Chapter 12 backend slice is now implemented on the
-> `saladin` branch. §12.1's `stellarclient` is in place as a thin constructor over the SDK's own
-> `*rpcclient.Client` with no Horizon dependency at all; `baseledger/stellar.Client` implements all
-> six `baseledger.Client` methods; the ed25519 signing extension
+> **Implementation status.** Chapter 12's backend is now largely complete on the `saladin` branch.
+> §12.1's `stellarclient` is in place as a thin constructor over the SDK's own `*rpcclient.Client`
+> with no Horizon dependency at all; `baseledger/stellar.Client` implements all six
+> `baseledger.Client` methods; the ed25519 signing extension
 > (`algorithms.EDDSA_ED25519`/`verifiers.STELLAR_ADDRESS`/`signpayloads.OPAQUE_TO_EDDSA`,
 > `toolkit/go/pkg/signer/signers/eddsa.go`) is wired with SLIP-10 HD derivation via the SDK's own
 > `tools/stellar-hd-wallet/crypto/derivation` and verified against the official test vectors.
-> §12.2's submitter is no longer just a basic skeleton: `core/go/internal/publictxmgr/
-> stellar_chain_submitter.go` now covers sequence assignment, channel-account pooling and bootstrap,
-> transaction build/sign/submit, restore-preamble handling, classic-op submission, and
+> §12.2's submitter covers sequence assignment, channel-account pooling and bootstrap, transaction
+> build/sign/submit, restore-preamble handling, classic-op submission, and
 > `xdr.TransactionResultCode`-based error classification. §12.3's narrow classic-operations codec
 > (`XDR_CLASSIC_OPS`) and trustline pre-flight helper (`CheckTrustline`) are also implemented.
-> §12.4's backend ingestion path exists too: `baseledger/stellar.Ingestor` polls `getLedgers`, and
+> §12.4's ingestion path is in place too: `baseledger/stellar.Ingestor` polls `getLedgers`, and
 > `core/go/internal/ledgerindexer/stellar` persists final ledgers into the same indexed tables used
 > by the EVM path. `componentmgr` now boots this Stellar-specific ledger indexer for
 > `baseLedger.type: stellar`, and `publictxmgr` switches submitter construction on
 > `ChainInfo().Kind`.
 >
+> Two gaps flagged in an earlier draft of this status box are now closed. First, the
+> **consumer-facing event-stream side of §12.4** — previously the Stellar ledger indexer was a
+> narrow write/orchestration path with no way for `domainmgr`/`registrymgr`/`txmgr` to register
+> event-stream subscriptions against it (they all resolved a `BlockIndexer` handle that was `nil`
+> on a Stellar node). A new narrow `blockindexer.EventStreamManager` interface — just the
+> registration/management methods those three managers actually call, not the full EVM-shaped
+> `BlockIndexer` — is now embedded into `BlockIndexer` and separately implemented by the Stellar
+> ledger indexer, reusing the same `event_streams`/`event_stream_checkpoints` tables and adding a
+> Stellar-only companion table to preserve event `Emitter`/`Topics`/`Data` (previously discarded
+> after computing just the selector) for live dispatch and catchup. Second, **§12.6's `ttlJanitor`**
+> is implemented — a background task that watches a configurable set of ledger entries and submits
+> batched `extend_ttl` operations when they fall below a threshold. §12.6's local-dev quickstart
+> is also done: a `stellar/quickstart` service now sits in `testinfra/docker-compose-test.yml`
+> beside Besu, with a 3-node Stellar config (`core/go/noderuntests/componenttest/config/
+> stellar.node{1,2,3}.config.yaml`) and a matching Gradle task, giving a docker-compose 3-node
+> network to demo against (no domain contracts run on it yet — see below).
+>
 > **Still remaining:** fee-bump transactions and the auth-entry-expiry re-endorsement path in
-> §12.2; the consumer-facing/query/event-stream side of §12.4 (the current Stellar ledger indexer
-> is a narrow write/orchestration path, not a full replacement for the EVM `BlockIndexer`
-> interface); retention-gap fail-loud behavior and real backfill handling; `SnapshotContractState`;
-> the `registries/stellar` plugin and the domain/registry event-stream integration in §12.5;
-> `ttlJanitor` and the operator/quickstart additions in §12.6; and all live-network / quickstart
-> acceptance work in §12.7. The current verification bar is unit tests and targeted package tests,
-> not end-to-end network exercises.
+> §12.2; retention-gap fail-loud behavior and real backfill handling; `SnapshotContractState`; the
+> operator CR additions in §12.6 (deliberately out of scope — the quickstart/3-node setup above is
+> docker-compose + config only, no Kubernetes operator involved); and all live-network acceptance
+> work in §12.7. The `registries/stellar` plugin (§12.5) has been decided against, not merely
+> deferred: the existing chain-agnostic `registries/static` plugin is sufficient for the
+> docker-compose demo and beyond, matching this chapter's own original stance that static suffices
+> through M5 — treat that plugin as intentionally out of scope rather than a remaining gap. Note
+> that the backend being ready is not the same as a demo: no SNoto/SZeto/Sente contract or domain
+> plugin exists yet (ch. 13/14), so the 3-node network above has nothing domain-specific to run
+> until that separate body of work lands. The verification bar for everything above is unit tests
+> and targeted package tests plus the docker-compose validation described in §12.6; true
+> live-network / end-to-end acceptance exercises (§12.7) have not been run.
 
 ## 12.1 `stellarclient`
 
@@ -163,6 +184,14 @@ operations).
   `Selector = SHA-256("saladin:" + contract_spec_name + ":" + topic0_symbol + ":v0")` so that
   event-stream matching remains a bytes32 SQL comparison, exactly like keccak topics today.
   `friendly_signature` renders as e.g. `snoto.transfer#v0`.
+- **Implemented:** the consumer-facing half of this — letting `domainmgr`/`registrymgr`/`txmgr`
+  actually register a subscription against Stellar-ingested events — via a new
+  `blockindexer.EventStreamManager` interface (the narrow subset of `BlockIndexer` those three
+  managers use) and a Stellar-side implementation reusing the existing chain-neutral
+  `event_streams` tables, plus a Stellar-only companion table preserving event
+  `Emitter`/`Topics`/`Data` for catchup. This is what makes it possible for a domain plugin to
+  learn about confirmed/spent state on Stellar at all; no domain plugin exercises it yet (ch.
+  13/14 are separate, unbuilt work).
 
 ## 12.5 Contract discovery and registries
 
@@ -170,22 +199,35 @@ operations).
   `register(tx_id, instance, config)` emits event topics `("reg", tx_id)` with
   `(instance, config)` data, which the domain manager's event stream consumes to learn new
   instances. Because Soroban contracts can deploy contracts, domain factories **deploy and
-  register in one atomic invocation** (an improvement over the EVM two-step).
-- **Registries:** the static registry plugin works on day one (chain-agnostic). A
-  `registries/stellar` plugin mirroring `registries/evm` — reading an on-chain identity-registry
-  contract (ch. 13) — is scheduled but low-priority; static registry suffices through M5.
+  register in one atomic invocation** (an improvement over the EVM two-step). Not built yet —
+  ch. 13/14 territory.
+- **Registries: decided — static only, no `registries/stellar` plugin.** The chain-agnostic
+  static registry plugin works on day one and is sufficient for the docker-compose demo (and
+  beyond); a `registries/stellar` plugin mirroring `registries/evm` — reading an on-chain
+  identity-registry contract (ch. 13) — was considered and explicitly decided against rather than
+  merely deferred. Static registry suffices through at least M5; revisit only if a concrete need
+  for on-chain identity discovery emerges.
 
 ## 12.6 Node operations additions
 
-- **`ttlJanitor`** background task: scans TTLs of domain-owned ledger entries
-  (`getLedgerEntries` → `liveUntilLedgerSeq`) and submits batch `extend_ttl` keepalives below
-  threshold (ch. 13 explains why archival is liveness-only, but the janitor keeps latency
-  flat).
-- **Operator (`operator/`):** add a `Stellar`-flavored node CR (or a generic
-  `baseLedger` section in the Paladin CR), a `stellar/quickstart` container for dev networks,
-  and Stellar equivalents of `SmartContractDeployment` (Wasm upload + instantiate).
-- Local dev: `stellar/quickstart` docker image (RPC + core, accelerated ledgers, no Horizon)
-  joins `testinfra/docker-compose-test.yml` beside Besu.
+- **Implemented: `ttlJanitor`** background task — watches a configurable set of ledger entries,
+  checks TTL (`getLedgerEntries` → `liveUntilLedgerSeq`), and submits batched `extend_ttl`
+  keepalives below a configured threshold (ch. 13 explains why archival is liveness-only, but the
+  janitor keeps latency flat). Since no domain contract exists yet, it currently has no
+  auto-discovered watch-list — a domain would register its own keys with it once one exists; the
+  watch/unwatch mechanism itself is generic and ready.
+- **Implemented: local dev quickstart.** A `stellar/quickstart` service (RPC + core, accelerated
+  ledgers, no Horizon) sits in `testinfra/docker-compose-test.yml` beside Besu, with a 3-node
+  Stellar config (`core/go/noderuntests/componenttest/config/stellar.node{1,2,3}.config.yaml`,
+  distinct signing identities per node, a shared funder wallet for channel-account bootstrap) and
+  a `componentTestStellarSQLite` Gradle task bringing the compose network and 3 nodes up together.
+  This gives a working docker-compose 3-node Stellar network to demo against — it has nothing
+  domain-specific deployed on it yet, since no SNoto/SZeto/Sente contract exists (ch. 13/14).
+- **Not built: operator (`operator/`) additions** — a `Stellar`-flavored node CR (or a generic
+  `baseLedger` section in the Paladin CR) and Stellar equivalents of `SmartContractDeployment`
+  (Wasm upload + instantiate). Deliberately out of scope for the docker-compose demo above, which
+  runs through plain compose + config YAML instead, mirroring how the existing EVM component tests
+  don't go through the operator either. Revisit only if a Kubernetes-hosted demo is needed.
 
 ## 12.7 Acceptance criteria
 

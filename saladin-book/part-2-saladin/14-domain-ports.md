@@ -167,4 +167,4 @@ logic to Soroban contracts — a porting guide belongs to Sente's documentation,
 
 ---
 
-*Next: [Chapter 15 — Interoperability: Saladin ⇄ Paladin](15-interop-saladin-paladin.md)*
+*Next: [Chapter 15 — Delivery Plan](15-delivery-plan.md)*

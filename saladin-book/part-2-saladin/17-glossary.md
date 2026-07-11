@@ -1,4 +1,4 @@
-# Chapter 18 — Glossary
+# Chapter 17 — Glossary
 
 Consolidated definitions for the whole book. Terms are also defined at first use in the text.
 

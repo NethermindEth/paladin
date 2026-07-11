@@ -1,10 +1,10 @@
-# Chapter 17 — Risk Map
+# Chapter 16 — Risk Map
 
 The development-risk register for the whole Part 2 program (port + interop). Scales: likelihood
 (L) and impact (I) each Low/Med/High. **EWI** = early-warning indicator. Ordered roughly by
 severity within each group.
 
-## 17.1 Correctness & protocol risks
+## 16.1 Correctness & protocol risks
 
 | # | Risk | L | I | Mitigation | EWI |
 |---|---|---|---|---|---|
@@ -16,7 +16,7 @@ severity within each group.
 | R6 | **Sequence-number head-of-line blocking.** One stuck tx blocks everything behind it on a source account; EVM nonce-gap logic doesn't map. | H | M | channel-account pool (ch. 12); fee-bump escalation; pool size monitored/configurable | `txBAD_SEQ` in load tests; latency correlating with queue depth |
 | R7 | **Auth-entry expiry mid-flight.** `signature_expiration_ledger` passes while a tx is queued → endorsement must be redone; no EVM analogue. | M | M | generous expiration budgets; submitter detects and bounces to sequencer re-endorsement (tested path); expirations sized vs worst-case fee-retry cycles | re-endorsement counter non-zero in steady state |
 
-## 17.2 Architecture & refactor risks
+## 16.2 Architecture & refactor risks
 
 | # | Risk | L | I | Mitigation | EWI |
 |---|---|---|---|---|---|
@@ -26,7 +26,7 @@ severity within each group.
 | R11 | **Stellar protocol upgrade cadence** (~2–3×/yr, validator-voted activation; fees/limits/host behavior can shift under a deployed system). | H | M | subscribe to CAP calendar; CI leg on next-protocol preview images; re-run R2 benchmarks each protocol bump; no reliance on undocumented limit headroom | CI-vs-preview failures; CAPs touching Soroban limits |
 | R12 | **Rust-plugin loader friction (Sente).** The loader's happy paths are Go .so + JVM JARs; a Rust cdylib is new territory. | H | M | decide the sidecar-process fallback upfront (the plugin contract is already gRPC); M0 spike; hello-world Rust domain before Sente proper | >2 weeks on loader plumbing without a passing hello-world |
 
-## 17.3 Security & environment risks
+## 16.3 Security & environment risks
 
 | # | Risk | L | I | Mitigation | EWI |
 |---|---|---|---|---|---|
@@ -58,4 +58,4 @@ vectors — both cheap, both go/no-go for the SZeto shape, both scheduled in M0.
 
 ---
 
-*Next: [Chapter 18 — Glossary](18-glossary.md)*
+*Next: [Chapter 17 — Glossary](17-glossary.md)*

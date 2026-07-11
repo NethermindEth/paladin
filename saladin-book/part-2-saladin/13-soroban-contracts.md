@@ -12,7 +12,6 @@ soroban/
 │  ├─ szeto/              # ZK token verifiers + nullifier sets
 │  ├─ satom/              # atomic multi-operation settlement
 │  ├─ identity-registry/  # on-chain registry (mirror of IdentityRegistry.sol)
-│  └─ htlc-delegate/      # cross-ledger swaps (ch. 15)
 └─ crates/
    └─ saladin-typed-data/ # SALADIN_TYPED_DATA_V0 (shared by contracts; mirrored in Go)
 ```
