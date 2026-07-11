@@ -360,6 +360,7 @@ var (
 	MsgPublicTxMgrRestoreNotSupported                  = pde("PD011953", "Restore-preamble submission is not applicable to this base ledger")
 	MsgPublicTxMgrRestoreTransactionFailed             = pde("PD011954", "Restore transaction %s failed")
 	MsgPublicTxMgrRestoreTransactionTimedOut           = pde("PD011955", "Timed out waiting for restore transaction %s to confirm")
+	MsgPublicTxMgrChannelAccountFunderNotConfigured    = pde("PD011956", "Channel account %s does not exist and no channel account funder is configured (baseLedger.stellar.channelAccounts.funder)")
 
 	// TransportManager module PD0120XX
 	MsgTransportInvalidMessage                 = pde("PD012000", "Invalid message")

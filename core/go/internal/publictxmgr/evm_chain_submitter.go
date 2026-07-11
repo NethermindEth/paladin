@@ -44,15 +44,15 @@ func newEVMChainSubmitter(ptm *pubTxManager) ChainSubmitter {
 	return &evmChainSubmitter{ptm: ptm}
 }
 
-func (s *evmChainSubmitter) AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error) {
+func (s *evmChainSubmitter) AssignOrderingKeys(ctx context.Context, from pldtypes.ChainAddress) ([]ChannelOrderingKey, error) {
 	info, err := s.ptm.baseLedger.GetAccountInfo(ctx, from)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if info.OrderingKey == nil {
-		return 0, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+		return nil, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
 	}
-	return info.OrderingKey.Uint64(), nil
+	return []ChannelOrderingKey{{OrderingKey: info.OrderingKey.Uint64()}}, nil
 }
 
 func (s *evmChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error) {

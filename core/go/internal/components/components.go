@@ -18,6 +18,7 @@ package components
 import (
 	"context"
 
+	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/internal/metrics"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
@@ -44,6 +45,10 @@ type PreInitComponents interface {
 	// need a readiness signal (not the full EVM interface) should use this instead of calling
 	// BlockIndexer() directly.
 	LedgerIndexReady(ctx context.Context) error
+	// StellarChannelAccountsConfig returns the channel-account pool config (chapter 12 §12.2) - nil
+	// for an EVM-configured node. publictxmgr's stellarChainSubmitter uses this to size and fund
+	// each signing identity's channel-account pool.
+	StellarChannelAccountsConfig() *pldconf.ChannelAccountsConfig
 }
 
 // Managers are initialized after base components with access to them, and provide

@@ -23,9 +23,11 @@ import (
 
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
+	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 
+	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
@@ -140,7 +142,18 @@ type orchestrator struct {
 	lastQueueUpdate time.Time
 
 	lastNonceAlloc time.Time
-	nextNonce      *uint64
+	// nextNonce is a legacy DB-recovered hint (see initNextNonceFromDB) - authoritative only for
+	// slot 0 of channelOrderingKeys/nextNonces below, guarding against reusing a nonce this node
+	// already assigned but whose effect the base ledger doesn't yet reflect. A deliberate,
+	// documented simplification for channel-account pooling (chapter 12 §12.2): with N>1 channel
+	// accounts, only the "primary" pool member (slot 0) benefits from this extra protection;
+	// robustness for the remaining slots relies on ActionOnStale's rebuild-on-txBadSeq handling.
+	nextNonce *uint64
+	// channelOrderingKeys/nextNonces are indexed together: channelOrderingKeys[i].ChannelAccount is
+	// the account nextNonces[i] is the next ordering key (nonce/sequence number) for. EVM always
+	// has exactly one slot (ChannelAccount nil); Stellar has one per channel-account pool member.
+	channelOrderingKeys []ChannelOrderingKey
+	nextNonces          []uint64
 
 	// updates
 	updates   []*transactionUpdate
@@ -283,6 +296,14 @@ func (oc *orchestrator) initNextNonceFromDB(ctx context.Context) error {
 	return nil
 }
 
+// allocateNonces assigns each not-yet-allocated transaction an ordering key (nonce/sequence
+// number) and, for Stellar, a channel account (chapter 12 §12.2). EVM always has exactly one
+// "slot" (the signing address itself; ChannelAccount nil) so every transaction gets consecutive
+// nonces exactly as before channel-account pooling existed. Stellar has one slot per
+// channel-account pool member: each transaction is assigned to slot (PublicTxnID % slots) -
+// deterministic and sticky (recomputing it always lands on the same slot for a given transaction,
+// so a rebuild never needs to re-derive it), and spreads concurrent transactions across the pool
+// for parallelism instead of serializing them all through one sequence number.
 func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn) error {
 
 	// Some of the the transactions might have nonces already
@@ -297,45 +318,62 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 		return nil
 	}
 
-	// We need to ensure we have the next nonce to allocate
-	if oc.nextNonce == nil || time.Since(oc.lastNonceAlloc) > oc.nonceCacheTimeout {
-		log.L(ctx).Debugf("no cached nonce, or nonce expired for %s (cached=%v)", oc.signingAddress, oc.lastNonceAlloc)
-		mempoolNonce, err := oc.chainSubmitter.AssignOrderingKey(ctx, oc.signingAddress.ChainAddress())
+	// We need to ensure we have the next ordering key(s) to allocate
+	if oc.channelOrderingKeys == nil || time.Since(oc.lastNonceAlloc) > oc.nonceCacheTimeout {
+		log.L(ctx).Debugf("no cached ordering keys, or expired for %s (cached=%v)", oc.signingAddress, oc.lastNonceAlloc)
+		keys, err := oc.chainSubmitter.AssignOrderingKeys(ctx, oc.signingAddress.ChainAddress())
 		if err != nil {
 			return err
 		}
-		// See if we have nonces in our DB that are ahead of the mempool.
-		if oc.nextNonce != nil && *oc.nextNonce >= mempoolNonce {
-			log.L(ctx).Infof("Next nonce for %s is %d (at or ahead of mempool %d)", oc.signingAddress, *oc.nextNonce, mempoolNonce)
-		} else {
-			// Otherwise take the node's answer
-			oc.nextNonce = confutil.P(mempoolNonce)
-			log.L(ctx).Infof("Next nonce for %s set to %d (from base ledger account info)", oc.signingAddress, *oc.nextNonce)
+		if len(keys) == 0 {
+			return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
 		}
+		nextNonces := make([]uint64, len(keys))
+		for i, k := range keys {
+			nextNonces[i] = k.OrderingKey
+		}
+		// See if we have a nonce in our DB that's ahead of the mempool for slot 0 (see nextNonce's
+		// doc comment on the field for why this protection is slot-0-only).
+		if oc.nextNonce != nil && *oc.nextNonce >= nextNonces[0] {
+			log.L(ctx).Infof("Next nonce for %s slot 0 is %d (at or ahead of mempool %d)", oc.signingAddress, *oc.nextNonce, nextNonces[0])
+			nextNonces[0] = *oc.nextNonce
+		} else {
+			log.L(ctx).Infof("Next nonce for %s slot 0 set to %d (from base ledger account info)", oc.signingAddress, nextNonces[0])
+		}
+		oc.channelOrderingKeys = keys
+		oc.nextNonces = nextNonces
 	}
 
-	// Set up the list of nonces we'll allocated, but until it's in the DB we do NOT update the oc.nextNonce beyond the first in the list
-	newNextNonce := *oc.nextNonce
+	// Set up the list of nonces we'll allocate, but until it's in the DB we do NOT update
+	// oc.nextNonces beyond the first in each slot's list
+	slots := len(oc.channelOrderingKeys)
 	newNonces := make([]uint64, len(toAlloc))
-	for i := range newNonces {
-		newNonces[i] = newNextNonce
-		newNextNonce++
+	newChannelAccounts := make([]*pldtypes.ChainAddress, len(toAlloc))
+	nextNonces := append([]uint64(nil), oc.nextNonces...)
+	for i, tx := range toAlloc {
+		slot := int(tx.PublicTxnID % uint64(slots)) //nolint:gosec // slots is always small and positive
+		newNonces[i] = nextNonces[slot]
+		nextNonces[slot]++
+		newChannelAccounts[i] = oc.channelOrderingKeys[slot].ChannelAccount
 	}
 
 	// Run the DB TXN using a VALUES temp table to update multiple rows in a single operation
 	err := oc.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
-		sqlQuery := `WITH nonce_updates ("pub_txn_id", "nonce") AS ( VALUES `
-		values := make([]any, 0, len(toAlloc)*2)
+		sqlQuery := `WITH nonce_updates ("pub_txn_id", "nonce", "channel_account") AS ( VALUES `
+		values := make([]any, 0, len(toAlloc)*3)
 		for i, tx := range toAlloc {
 			if i > 0 {
 				sqlQuery += `, `
 			}
-			sqlQuery += `( CAST (? AS BIGINT), CAST (? AS BIGINT) ) `
-			values = append(values, tx.PublicTxnID)
-			values = append(values, newNonces[i])
-			log.L(ctx).Debugf("assigning %s:%d (pubTxnId=%d)", oc.signingAddress, newNonces[i], tx.PublicTxnID)
+			sqlQuery += `( CAST (? AS BIGINT), CAST (? AS BIGINT), CAST (? AS TEXT) ) `
+			var channelAccountStr *string
+			if newChannelAccounts[i] != nil {
+				channelAccountStr = confutil.P(newChannelAccounts[i].String())
+			}
+			values = append(values, tx.PublicTxnID, newNonces[i], channelAccountStr)
+			log.L(ctx).Debugf("assigning %s:%d (pubTxnId=%d, channelAccount=%v)", oc.signingAddress, newNonces[i], tx.PublicTxnID, newChannelAccounts[i])
 		}
-		sqlQuery += ` ) UPDATE "public_txns" SET "nonce" = nu."nonce" FROM ( SELECT "pub_txn_id", "nonce" FROM nonce_updates ) AS nu ` +
+		sqlQuery += ` ) UPDATE "public_txns" SET "nonce" = nu."nonce", "channel_account" = nu."channel_account" FROM ( SELECT "pub_txn_id", "nonce", "channel_account" FROM nonce_updates ) AS nu ` +
 			`WHERE "public_txns"."pub_txn_id" = nu."pub_txn_id";`
 		return dbTX.DB().WithContext(ctx).Exec(sqlQuery, values...).Error
 	})
@@ -343,13 +381,15 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 		return err
 	}
 
-	// Update the txns themselves, and our nextNonce
+	// Update the txns themselves, and our cached next nonces
 	for i, tx := range toAlloc {
 		nonce := newNonces[i]
 		tx.Nonce = &nonce
+		tx.ChannelAccount = newChannelAccounts[i]
 	}
+	oc.nextNonces = nextNonces
+	oc.nextNonce = &nextNonces[0]
 	oc.lastNonceAlloc = time.Now()
-	oc.nextNonce = &newNextNonce
 
 	return nil
 }

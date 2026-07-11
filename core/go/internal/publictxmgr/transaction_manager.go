@@ -198,7 +198,7 @@ func (ptm *pubTxManager) Start() error {
 		case baseledger.ChainKindEVM:
 			ptm.chainSubmitter = newEVMChainSubmitter(ptm)
 		case baseledger.ChainKindStellar:
-			ptm.chainSubmitter = newStellarChainSubmitter(ptm)
+			ptm.chainSubmitter = newStellarChainSubmitter(ptm, ptm.allComponents.StellarChannelAccountsConfig())
 		default:
 			return i18n.NewError(ctx, msgs.MsgComponentBaseLedgerUnsupported, ptm.baseLedger.ChainInfo().Kind)
 		}

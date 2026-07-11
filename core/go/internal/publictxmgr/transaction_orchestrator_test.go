@@ -278,6 +278,62 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "db transaction error")
 }
 
+// fakeMultiChannelSubmitter is a hand-rolled ChainSubmitter used only by
+// TestAllocateNoncesChannelAccountRoundRobin - it's the chain-neutral allocateNonces logic being
+// tested (round-robin distribution across channel-account slots, chapter 12 §12.2), not any real
+// chain submitter's build/sign/submit behavior.
+type fakeMultiChannelSubmitter struct {
+	ChainSubmitter
+	keys []ChannelOrderingKey
+}
+
+func (f *fakeMultiChannelSubmitter) AssignOrderingKeys(ctx context.Context, from pldtypes.ChainAddress) ([]ChannelOrderingKey, error) {
+	return f.keys, nil
+}
+
+func TestAllocateNoncesChannelAccountRoundRobin(t *testing.T) {
+	ctx, o, m, done := newTestOrchestrator(t)
+	defer done()
+
+	channel0 := pldtypes.MustParseChainAddress("0x1111111111111111111111111111111111111111")
+	channel1 := pldtypes.MustParseChainAddress("0x2222222222222222222222222222222222222222")
+	o.chainSubmitter = &fakeMultiChannelSubmitter{keys: []ChannelOrderingKey{
+		{OrderingKey: 100, ChannelAccount: channel0},
+		{OrderingKey: 200, ChannelAccount: channel1},
+	}}
+
+	// PublicTxnID 10 % 2 == 0 (channel0, nonce 100), PublicTxnID 11 % 2 == 1 (channel1, nonce 200)
+	txn0 := &DBPublicTxn{PublicTxnID: 10, From: o.signingAddress.ChainAddress()}
+	txn1 := &DBPublicTxn{PublicTxnID: 11, From: o.signingAddress.ChainAddress()}
+
+	m.db.ExpectBegin()
+	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 2))
+	m.db.ExpectCommit()
+
+	err := o.allocateNonces(ctx, []*DBPublicTxn{txn0, txn1})
+	require.NoError(t, err)
+
+	require.NotNil(t, txn0.Nonce)
+	require.NotNil(t, txn1.Nonce)
+	assert.Equal(t, uint64(100), *txn0.Nonce)
+	assert.Equal(t, uint64(200), *txn1.Nonce)
+	require.NotNil(t, txn0.ChannelAccount)
+	require.NotNil(t, txn1.ChannelAccount)
+	assert.Equal(t, *channel0, *txn0.ChannelAccount)
+	assert.Equal(t, *channel1, *txn1.ChannelAccount)
+
+	// a third transaction landing on the same slot as txn0 should get the next sequence for that slot
+	txn2 := &DBPublicTxn{PublicTxnID: 12, From: o.signingAddress.ChainAddress()}
+	m.db.ExpectBegin()
+	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 1))
+	m.db.ExpectCommit()
+	err = o.allocateNonces(ctx, []*DBPublicTxn{txn2})
+	require.NoError(t, err)
+	require.NotNil(t, txn2.Nonce)
+	assert.Equal(t, uint64(101), *txn2.Nonce)
+	assert.Equal(t, *channel0, *txn2.ChannelAccount)
+}
+
 func TestPollAndProcessHandleTransactionCollectedAndNonceAssignedErrors(t *testing.T) {
 	ctx, o, m, done := newTestOrchestrator(t, func(mocks *mocksAndTestControl, conf *pldconf.PublicTxManagerConfig) {
 		conf.Orchestrator.MaxInFlight = confutil.P(5)

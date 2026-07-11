@@ -164,6 +164,7 @@
 | Key | Description | Type | Default |
 |-----|-------------|------|---------|
 | auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerstellarauth) | - |
+| channelAccounts | Configuration for the per-signing-identity channel-account pool | [`ChannelAccountsConfig`](#baseledgerstellarchannelaccounts) | - |
 | connectionTimeout | Connection timeout | `string` | - |
 | httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
 | ingestor | Configuration for the Stellar ledger ingestor | [`StellarIngestorConfig`](#baseledgerstellaringestor) | - |
@@ -179,6 +180,14 @@
 |-----|-------------|------|---------|
 | password | Basic auth password | `string` | - |
 | username | Basic auth username | `string` | - |
+
+## baseLedger.stellar.channelAccounts
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| funder | Identifier of the local signing key used to fund newly created channel accounts - required before any channel account can be created | `string` | - |
+| poolSize | Number of derived channel accounts to maintain per signing identity | `int` | - |
+| startingBalance | Initial XLM balance given to a newly created channel account | `string` | - |
 
 ## baseLedger.stellar.ingestor
 

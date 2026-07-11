@@ -23,11 +23,14 @@ import (
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
+	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
@@ -37,37 +40,165 @@ import (
 )
 
 // stellarChainSubmitter is the Stellar/Soroban implementation of ChainSubmitter (chapter 12
-// foundational slice, §12.1/§12.2, plus §12.3's classic operations and §12.2's restore-preamble
-// stage). Like evmChainSubmitter, it wraps the owning pubTxManager to reuse its already-constructed
-// baseLedger client and key manager.
+// foundational slice, §12.1/§12.2 including channel-account pooling, plus §12.3's classic
+// operations and §12.2's restore-preamble stage). Like evmChainSubmitter, it wraps the owning
+// pubTxManager to reuse its already-constructed baseLedger client and key manager.
 //
 // Deliberately out of scope for this slice (see chapter 12's "Implementation status" callout):
-// channel-account pooling (one signing identity = one source account today - see PrepareRestore's
-// doc comment on the nonce-bump implication) and fee-bump transactions.
+// fee-bump transactions.
 type stellarChainSubmitter struct {
-	ptm *pubTxManager
+	ptm             *pubTxManager
+	channelAccounts *pldconf.ChannelAccountsConfig
+	// fundingConfirmationRetry bounds how long ensureChannelAccountFunded polls for a channel
+	// account's CreateAccountOp to confirm - a one-time cost per channel account's lifetime, so
+	// this isn't exposed as its own config knob (unlike restoreConfirmationRetry, which is on the
+	// orchestrator's hot resubmit path).
+	fundingConfirmationRetry *retry.Retry
 }
 
-func newStellarChainSubmitter(ptm *pubTxManager) ChainSubmitter {
-	return &stellarChainSubmitter{ptm: ptm}
+func newStellarChainSubmitter(ptm *pubTxManager, channelAccounts *pldconf.ChannelAccountsConfig) ChainSubmitter {
+	if channelAccounts == nil {
+		channelAccounts = &pldconf.ChannelAccountsConfig{}
+	}
+	return &stellarChainSubmitter{
+		ptm:             ptm,
+		channelAccounts: channelAccounts,
+		fundingConfirmationRetry: retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+			RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("2s"), MaxDelay: confutil.P("5s"), Factor: confutil.P(1.0)},
+			MaxAttempts: confutil.P(30),
+		}),
+	}
 }
 
-func (s *stellarChainSubmitter) AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error) {
-	info, err := s.ptm.baseLedger.GetAccountInfo(ctx, from)
+// AssignOrderingKeys resolves (deriving new keys if not already known), and if necessary bootstraps
+// on-chain (creating and funding via CreateAccountOp from the configured funder identity), from's
+// channel-account pool (chapter 12 §12.2) - one derived sub-key per pool member
+// (m/…/<identifier>/channel/<i>), returning each member's current sequence number. The caller
+// (allocateNonces) is responsible for distributing individual transactions across the returned
+// slots; this always resolves and returns the full pool, not a single assignment.
+func (s *stellarChainSubmitter) AssignOrderingKeys(ctx context.Context, from pldtypes.ChainAddress) ([]ChannelOrderingKey, error) {
+	poolSize := confutil.IntMin(s.channelAccounts.PoolSize, 1, *pldconf.StellarClientDefaults.ChannelAccounts.PoolSize)
+
+	identity, err := s.ptm.keymgr.ReverseKeyLookup(ctx, s.ptm.p.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, from.String())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	if info.OrderingKey == nil {
-		return 0, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+	identifiers := make([]string, poolSize)
+	for i := range identifiers {
+		identifiers[i] = fmt.Sprintf("%s.channel.%d", identity.Identifier, i)
 	}
-	return info.OrderingKey.Uint64(), nil
+	channelKeys, err := s.ptm.keymgr.ResolveBatchNewDatabaseTX(ctx, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, identifiers)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]ChannelOrderingKey, len(channelKeys))
+	for i, ck := range channelKeys {
+		channelAccount, err := pldtypes.ParseChainAddress(ck.Verifier.Verifier)
+		if err != nil {
+			return nil, fmt.Errorf("invalid channel account address %q: %w", ck.Verifier.Verifier, err)
+		}
+		if err := s.ensureChannelAccountFunded(ctx, *channelAccount); err != nil {
+			return nil, err
+		}
+		info, err := s.ptm.baseLedger.GetAccountInfo(ctx, *channelAccount)
+		if err != nil {
+			return nil, err
+		}
+		if info.OrderingKey == nil {
+			return nil, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+		}
+		keys[i] = ChannelOrderingKey{OrderingKey: info.OrderingKey.Uint64(), ChannelAccount: channelAccount}
+	}
+	return keys, nil
+}
+
+// ensureChannelAccountFunded is a no-op if channelAccount already exists on chain. Otherwise it
+// submits (and waits for confirmation of) a CreateAccountOp funded from the configured funder
+// identity - an explicit operational decision (chapter 12 §12.2): there is no automatic/faucet
+// funding, so a missing funder configuration is a hard failure here, not a silent skip.
+//
+// Any GetAccountInfo error (not just a distinguishable "not found") is treated as "assume missing,
+// attempt to create" - stellar-rpc has no typed not-found error surfaced through baseledger.Client
+// today, and a genuine transient RPC error simply makes the subsequent CreateAccountOp submission
+// fail too, which bubbles up and is retried on the orchestrator's next poll tick like any other
+// AssignOrderingKeys failure.
+func (s *stellarChainSubmitter) ensureChannelAccountFunded(ctx context.Context, channelAccount pldtypes.ChainAddress) error {
+	if _, err := s.ptm.baseLedger.GetAccountInfo(ctx, channelAccount); err == nil {
+		return nil
+	}
+	funderIdentifier := confutil.StringNotEmpty(s.channelAccounts.Funder, "")
+	if funderIdentifier == "" {
+		return i18n.NewError(ctx, msgs.MsgPublicTxMgrChannelAccountFunderNotConfigured, channelAccount)
+	}
+	funder, err := s.ptm.keymgr.ResolveKeyNewDatabaseTX(ctx, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	if err != nil {
+		return fmt.Errorf("failed to resolve channel account funder %q: %w", funderIdentifier, err)
+	}
+	funderAddr, err := pldtypes.ParseChainAddress(funder.Verifier.Verifier)
+	if err != nil {
+		return fmt.Errorf("invalid channel account funder address %q: %w", funder.Verifier.Verifier, err)
+	}
+
+	startingBalance := confutil.StringNotEmpty(s.channelAccounts.StartingBalance, *pldconf.StellarClientDefaults.ChannelAccounts.StartingBalance)
+	funderInfo, err := s.ptm.baseLedger.GetAccountInfo(ctx, *funderAddr)
+	if err != nil {
+		return fmt.Errorf("failed to look up channel account funder %s: %w", funderAddr, err)
+	}
+	if funderInfo.OrderingKey == nil {
+		return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+	}
+	funderAccount := txnbuild.NewSimpleAccount(funderAddr.String(), int64(funderInfo.OrderingKey.Uint64())-1) //nolint:gosec // sequence numbers are always positive
+	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &funderAccount,
+		IncrementSequenceNum: true,
+		Operations: []txnbuild.Operation{&txnbuild.CreateAccount{
+			SourceAccount: funderAddr.String(),
+			Destination:   channelAccount.String(),
+			Amount:        startingBalance,
+		}},
+		BaseFee:       txnbuild.MinBaseFee,
+		Preconditions: txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
+	})
+	if err != nil {
+		return err
+	}
+	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, *funderAddr, tx)
+	if err != nil {
+		return err
+	}
+	result, err := s.Submit(ctx, &PreparedSubmission{RawTransaction: rawTransaction, TransactionHash: &txHash})
+	if err != nil {
+		return fmt.Errorf("failed to submit channel account funding transaction for %s: %w", channelAccount, err)
+	}
+	if result.TxHash == nil {
+		return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+	}
+	return s.fundingConfirmationRetry.Do(ctx, func(attempt int) (bool, error) {
+		txResult, err := s.ptm.baseLedger.GetTransactionResult(ctx, *result.TxHash)
+		if err != nil {
+			return true, err
+		}
+		if !txResult.Success {
+			return false, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreTransactionFailed, *result.TxHash)
+		}
+		return false, nil
+	})
 }
 
 // buildStellarTx builds the unsigned transaction envelope for ptx. ptx.Nonce is used directly as
 // the transaction's sequence number (the same "assigned nonce is the value to use, not a value to
 // increment from" convention buildEthTX follows) by seeding SimpleAccount one below it and letting
 // IncrementSequenceNum do the +1 arithmetic, rather than hand-computing it here and in
-// AssignOrderingKey.
+// AssignOrderingKeys.
+//
+// The transaction's envelope (sequence number, inclusion fee, signature) is sourced from
+// ptx.ChannelAccount when set (chapter 12 §12.2's channel-account pooling), NOT ptx.From - the
+// business identity the InvokeHostFunction operation still names as its own SourceAccount, since
+// that's what a contract's require_auth checks against. This is exactly the "third-party
+// pre-signed auth entries" split chapter 12 §12.1 already established (transaction source ≠
+// invocation authorizer) - channel-account pooling just makes it the default for every invocation,
+// not only ones with a genuine third-party authorizer.
 //
 // Two payload kinds are supported (chapter 12 §12.3): a single Soroban InvokeHostFunction
 // (pldapi.PublicTxPayloadKindXDRInvokeContractArgs, the default when ptx.PayloadKind is unset -
@@ -75,11 +206,18 @@ func (s *stellarChainSubmitter) AssignOrderingKey(ctx context.Context, from pldt
 // array of classic operations (pldapi.PublicTxPayloadKindXDRClassicOps), decoded via
 // baseledgerstellar.DecodeClassicOperations - the same codec baseledger/stellar.Client.
 // buildTransaction uses, exported specifically so this isn't a second, independent implementation.
+// Classic operations carry their own explicit SourceAccount (see classic_ops.go's
+// BuildChangeTrustPayload/BuildSetTrustLineFlagsPayload doc comments), so diverging the envelope's
+// source from ptx.From doesn't affect which account a ChangeTrust/SetTrustLineFlags acts on.
 func buildStellarTx(ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*txnbuild.Transaction, error) {
 	if ptx.Nonce == nil {
 		return nil, fmt.Errorf("a sequence number (nonce) is required to build a stellar transaction")
 	}
 	fromAddr := ptx.From.String()
+	envelopeSourceAddr := fromAddr
+	if ptx.ChannelAccount != nil {
+		envelopeSourceAddr = ptx.ChannelAccount.String()
+	}
 	payloadKind := ptx.PayloadKind.V()
 	if payloadKind == "" {
 		payloadKind = pldapi.PublicTxPayloadKindXDRInvokeContractArgs
@@ -126,7 +264,7 @@ func buildStellarTx(ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstim
 		return nil, fmt.Errorf("unsupported stellar payload kind %q", payloadKind)
 	}
 
-	account := txnbuild.NewSimpleAccount(fromAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
+	account := txnbuild.NewSimpleAccount(envelopeSourceAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
 	return txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        &account,
 		IncrementSequenceNum: true,
@@ -134,6 +272,15 @@ func buildStellarTx(ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstim
 		BaseFee:              txnbuild.MinBaseFee,
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
 	})
+}
+
+// envelopeSigningAddress returns the account whose key must sign ptx's transaction envelope -
+// ptx.ChannelAccount when set (chapter 12 §12.2), else ptx.From.
+func envelopeSigningAddress(ptx *DBPublicTxn) pldtypes.ChainAddress {
+	if ptx.ChannelAccount != nil {
+		return *ptx.ChannelAccount
+	}
+	return ptx.From
 }
 
 // signAndSerializeStellarTx signs tx via the KeyManager (never locally - keypair.ParseAddress only
@@ -209,7 +356,7 @@ func (s *stellarChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPu
 	if err != nil {
 		return nil, err
 	}
-	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, ptx.From, tx)
+	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, envelopeSigningAddress(ptx), tx)
 	if err != nil {
 		return nil, err
 	}
@@ -239,13 +386,16 @@ func (s *stellarChainSubmitter) PrepareRestore(ctx context.Context, ptx *DBPubli
 		return nil, fmt.Errorf("invalid restore preamble transaction data: %w", err)
 	}
 
-	fromAddr := ptx.From.String()
-	account := txnbuild.NewSimpleAccount(fromAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
+	// RestoreFootprintOp has no auth semantics tied to a specific business identity - unlike
+	// buildStellarTx's InvokeHostFunction handling, both the envelope and the operation itself are
+	// sourced from the channel account (chapter 12 §12.2) when one is assigned.
+	envelopeAddr := envelopeSigningAddress(ptx).String()
+	account := txnbuild.NewSimpleAccount(envelopeAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
 	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        &account,
 		IncrementSequenceNum: true,
 		Operations: []txnbuild.Operation{&txnbuild.RestoreFootprint{
-			SourceAccount: fromAddr,
+			SourceAccount: envelopeAddr,
 			Ext:           xdr.TransactionExt{V: 1, SorobanData: &sorobanData},
 		}},
 		BaseFee:       txnbuild.MinBaseFee,
@@ -254,7 +404,7 @@ func (s *stellarChainSubmitter) PrepareRestore(ctx context.Context, ptx *DBPubli
 	if err != nil {
 		return nil, err
 	}
-	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, ptx.From, tx)
+	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, envelopeSigningAddress(ptx), tx)
 	if err != nil {
 		return nil, err
 	}

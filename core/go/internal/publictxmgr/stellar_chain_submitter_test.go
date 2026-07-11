@@ -50,7 +50,7 @@ func newTestStellarSubmitter(t *testing.T) (context.Context, *stellarChainSubmit
 		mocks.disableManagerStart = true
 	})
 	ptm.baseLedger = &mockStellarBaseLedger{}
-	ptm.chainSubmitter = newStellarChainSubmitter(ptm)
+	ptm.chainSubmitter = newStellarChainSubmitter(ptm, &pldconf.ChannelAccountsConfig{})
 	return ctx, ptm.chainSubmitter.(*stellarChainSubmitter), m, done
 }
 
@@ -90,19 +90,128 @@ func (m *mockStellarBaseLedger) GetTransactionResult(ctx context.Context, id bas
 	return nil, fmt.Errorf("unused")
 }
 
-func TestStellarAssignOrderingKey(t *testing.T) {
-	ctx, submitter, _, done := newTestStellarSubmitter(t)
+func TestStellarAssignOrderingKeys(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
 	defer done()
-	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(2)}
+
 	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	identity := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	channel0 := keypair.MustRandom().Address()
+	channel1 := keypair.MustRandom().Address()
+	channelKeys := []*pldapi.KeyMappingAndVerifier{
+		{KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0"}}, Verifier: &pldapi.KeyVerifier{Verifier: channel0}},
+		{KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.1"}}, Verifier: &pldapi.KeyVerifier{Verifier: channel1}},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(identity, nil).Once()
+	mockKeyManager.On("ResolveBatchNewDatabaseTX", mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, []string{"stellar.key.channel.0", "stellar.key.channel.1"}).Return(channelKeys, nil).Once()
+
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
 	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
-		require.Equal(t, addr, got)
 		nonce := pldtypes.HexUint64(42)
 		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
 	}
-	nonce, err := submitter.AssignOrderingKey(ctx, addr)
+
+	keys, err := submitter.AssignOrderingKeys(ctx, addr)
 	require.NoError(t, err)
-	assert.Equal(t, uint64(42), nonce)
+	require.Len(t, keys, 2)
+	require.NotNil(t, keys[0].ChannelAccount)
+	require.NotNil(t, keys[1].ChannelAccount)
+	assert.Equal(t, channel0, keys[0].ChannelAccount.String())
+	assert.Equal(t, channel1, keys[1].ChannelAccount.String())
+	assert.Equal(t, uint64(42), keys[0].OrderingKey)
+	assert.Equal(t, uint64(42), keys[1].OrderingKey)
+}
+
+func TestStellarAssignOrderingKeysBootstrapsMissingAccount(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	funderIdentifier := "stellar.funder"
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1), Funder: &funderIdentifier}
+
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	identity := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	channelAddr := keypair.MustRandom().Address()
+	channelKeys := []*pldapi.KeyMappingAndVerifier{
+		{KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0"}}, Verifier: &pldapi.KeyVerifier{Verifier: channelAddr}},
+	}
+	funderAddr := keypair.MustRandom().Address()
+	funderKey := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: funderIdentifier, KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: funderAddr},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(identity, nil).Once()
+	mockKeyManager.On("ResolveBatchNewDatabaseTX", mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, []string{"stellar.key.channel.0"}).Return(channelKeys, nil).Once()
+	mockKeyManager.On("ResolveKeyNewDatabaseTX", mock.Anything, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS).Return(funderKey, nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, funderAddr).Return(funderKey, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, funderKey, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	getAccountInfoCalls := 0
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		if got.String() == channelAddr {
+			getAccountInfoCalls++
+			if getAccountInfoCalls == 1 {
+				return nil, fmt.Errorf("account not found")
+			}
+			nonce := pldtypes.HexUint64(42)
+			return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+		}
+		// the funder
+		nonce := pldtypes.HexUint64(7)
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+	submittedHash := pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		return submittedHash, nil
+	}
+	ledger.getTransactionResult = func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+		return &baseledger.TxResult{ID: id, Success: true}, nil
+	}
+
+	keys, err := submitter.AssignOrderingKeys(ctx, addr)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Equal(t, channelAddr, keys[0].ChannelAccount.String())
+	assert.Equal(t, uint64(42), keys[0].OrderingKey)
+}
+
+func TestStellarAssignOrderingKeysNoFunderConfigured(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1)}
+
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	identity := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	channelAddr := keypair.MustRandom().Address()
+	channelKeys := []*pldapi.KeyMappingAndVerifier{
+		{KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0"}}, Verifier: &pldapi.KeyVerifier{Verifier: channelAddr}},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(identity, nil).Once()
+	mockKeyManager.On("ResolveBatchNewDatabaseTX", mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, []string{"stellar.key.channel.0"}).Return(channelKeys, nil).Once()
+
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		return nil, fmt.Errorf("account not found")
+	}
+
+	_, err := submitter.AssignOrderingKeys(ctx, addr)
+	require.ErrorContains(t, err, "channel account funder")
 }
 
 func TestStellarPrepareSubmission(t *testing.T) {
@@ -136,6 +245,59 @@ func TestStellarPrepareSubmission(t *testing.T) {
 	signatures := envelope.Signatures()
 	require.Len(t, signatures, 1)
 	assert.Equal(t, xdr.SignatureHint(fromAddr.Hint()), signatures[0].Hint)
+}
+
+func TestStellarPrepareSubmissionWithChannelAccount(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.estimateResources = func(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+		return &baseledger.ResourceEstimate{Soroban: &baseledger.SorobanResources{}}, nil
+	}
+	businessIdentity := *pldtypes.MustParseChainAddress(testStellarAccount)
+	channelAddr := keypair.MustRandom().Address()
+	channelAccount := *pldtypes.MustParseChainAddress(channelAddr)
+	ptx := &DBPublicTxn{
+		PublicTxnID: 1, From: businessIdentity, ChannelAccount: &channelAccount,
+		Nonce: confutil.P(uint64(7)), Data: validStellarInvokeContractPayload(t),
+	}
+	channelKeyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0", KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: channelAddr},
+	}
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	// Signing must resolve the CHANNEL ACCOUNT's key, not the business identity's - the channel
+	// account is the transaction's envelope source (sequence + fee payer), while the business
+	// identity remains only the InvokeHostFunction operation's own source (for require_auth).
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, channelAddr).Return(channelKeyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, channelKeyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	prepared, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.NotEmpty(t, prepared.RawTransaction)
+
+	var envelope xdr.TransactionEnvelope
+	require.NoError(t, envelope.UnmarshalBinary(prepared.RawTransaction))
+	// the envelope's own source account is the channel account...
+	envelopeSourceAddr, err := xdr.AddressToMuxedAccount(channelAddr)
+	require.NoError(t, err)
+	assert.Equal(t, envelopeSourceAddr, envelope.SourceAccount())
+	// ...but the InvokeHostFunction operation still names the business identity as its source
+	ops := envelope.Operations()
+	require.Len(t, ops, 1)
+	_, ok := ops[0].Body.GetInvokeHostFunctionOp()
+	require.True(t, ok)
+	require.NotNil(t, ops[0].SourceAccount)
+	businessSourceAddr, err := xdr.AddressToMuxedAccount(testStellarAccount)
+	require.NoError(t, err)
+	assert.Equal(t, businessSourceAddr, *ops[0].SourceAccount)
+	// and the signature hint matches the channel account's key, not the business identity's
+	channelKeypair, err := keypair.ParseAddress(channelAddr)
+	require.NoError(t, err)
+	signatures := envelope.Signatures()
+	require.Len(t, signatures, 1)
+	assert.Equal(t, xdr.SignatureHint(channelKeypair.Hint()), signatures[0].Hint)
 }
 
 func TestStellarPrepareSubmissionInvalidPayload(t *testing.T) {
@@ -220,7 +382,7 @@ func TestStellarPrepareSubmissionClassicOpsSkipsSimulation(t *testing.T) {
 	// The mock's estimateResources is left unset (returns "unused" if called) - proving classic
 	// ops never reach EstimateResources, matching chapter 12 §12.3 (classic ops have no footprint).
 	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
-	payload, err := baseledgerstellar.BuildChangeTrustPayload(txnbuildAsset(t), "1000")
+	payload, err := baseledgerstellar.BuildChangeTrustPayload(testStellarAccount, txnbuildAsset(t), "1000")
 	require.NoError(t, err)
 	ptx := &DBPublicTxn{
 		PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: payload,
@@ -278,6 +440,43 @@ func TestStellarPrepareRestore(t *testing.T) {
 	require.Len(t, ops, 1)
 	_, ok := ops[0].Body.GetRestoreFootprintOp()
 	assert.True(t, ok)
+}
+
+func TestStellarPrepareRestoreWithChannelAccount(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	businessIdentity := *pldtypes.MustParseChainAddress(testStellarAccount)
+	channelAddr := keypair.MustRandom().Address()
+	channelAccount := *pldtypes.MustParseChainAddress(channelAddr)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: businessIdentity, ChannelAccount: &channelAccount, Nonce: confutil.P(uint64(7))}
+
+	var sorobanData xdr.SorobanTransactionData
+	sorobanDataXDR, err := sorobanData.MarshalBinary()
+	require.NoError(t, err)
+	soroban := &baseledger.SorobanResources{RestorePreambleTransactionDataXDR: sorobanDataXDR}
+
+	channelKeyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0", KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: channelAddr},
+	}
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, channelAddr).Return(channelKeyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, channelKeyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	prepared, err := submitter.PrepareRestore(ctx, ptx, soroban)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	var envelope xdr.TransactionEnvelope
+	require.NoError(t, envelope.UnmarshalBinary(prepared.RawTransaction))
+	envelopeSourceAddr, err := xdr.AddressToMuxedAccount(channelAddr)
+	require.NoError(t, err)
+	assert.Equal(t, envelopeSourceAddr, envelope.SourceAccount())
+	channelKeypair, err := keypair.ParseAddress(channelAddr)
+	require.NoError(t, err)
+	signatures := envelope.Signatures()
+	require.Len(t, signatures, 1)
+	assert.Equal(t, xdr.SignatureHint(channelKeypair.Hint()), signatures[0].Hint)
 }
 
 func TestStellarPrepareRestoreRequiresNonce(t *testing.T) {

@@ -27,12 +27,30 @@ const (
 
 // StellarClientConfig embeds HTTPClientConfig for the stellar-rpc endpoint (its URL field is the
 // RPC URL) - giving TLS/auth/retry/timeouts the same conventions as EthClientConfig, rather than
-// a bare URL string. Channel-account pooling and fee-inclusion percentile are deliberately not
-// included here - they belong to a later milestone (chapter 12 §12.2).
+// a bare URL string. Fee-inclusion percentile is deliberately not included here - it belongs to a
+// later milestone (chapter 12 §12.2).
 type StellarClientConfig struct {
 	HTTPClientConfig  `json:",inline"`
-	NetworkPassphrase string               `json:"networkPassphrase"`
+	NetworkPassphrase string                `json:"networkPassphrase"`
 	Ingestor          StellarIngestorConfig `json:"ingestor"`
+	ChannelAccounts   ChannelAccountsConfig `json:"channelAccounts"`
+}
+
+// ChannelAccountsConfig configures the per-signing-identity channel-account pool (chapter 12
+// §12.2): each identity's public transactions are sourced from one of PoolSize derived channel
+// accounts (m/…/<identity>/channel/<i>) rather than the identity's own account directly, restoring
+// EVM-like submission parallelism and doubling as an anonymous-submission mechanism (the on-chain
+// transaction source never reveals the business identity). Funder is the identifier of a local
+// signing key used to fund (via CreateAccountOp) any pool member that doesn't yet exist on chain -
+// an explicit operational decision (there is no automatic/faucet funding), so this must be
+// configured before any Stellar public transaction can be submitted.
+type ChannelAccountsConfig struct {
+	PoolSize *int    `json:"poolSize"`
+	Funder   *string `json:"funder"`
+	// StartingBalance is the initial XLM balance (a decimal string, e.g. "5" - the same format as
+	// txnbuild.CreateAccount.Amount) given to a newly created channel account - must cover the base
+	// reserve plus a safety margin for transaction fees before the pool's first real submission.
+	StartingBalance *string `json:"startingBalance"`
 }
 
 // StellarIngestorConfig configures the ledger ingestor (chapter 12 §12.4) - a getLedgers poller,
@@ -61,6 +79,13 @@ var StellarClientDefaults = StellarClientConfig{
 	Ingestor: StellarIngestorConfig{
 		PollInterval:      confutil.P("2s"),
 		InsertDBBatchSize: confutil.P(100),
+	},
+	ChannelAccounts: ChannelAccountsConfig{
+		PoolSize:        confutil.P(8),
+		StartingBalance: confutil.P("5"),
+		// Funder has no default: an unset funder is a hard failure the first time a channel
+		// account needs to be created (see stellarChainSubmitter.AssignOrderingKeys) - there is no
+		// safe default identity to fund new accounts from.
 	},
 }
 

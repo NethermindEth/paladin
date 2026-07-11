@@ -879,9 +879,15 @@ var (
 	// HTTPClientConfig, described separately below)
 	StellarClientConfigNetworkPassphrase = pdm("StellarClientConfig.networkPassphrase", "Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network)")
 	StellarClientConfigIngestor          = pdm("StellarClientConfig.ingestor", "Configuration for the Stellar ledger ingestor")
+	StellarClientConfigChannelAccounts   = pdm("StellarClientConfig.channelAccounts", "Configuration for the per-signing-identity channel-account pool")
 
 	// StellarIngestorConfig field descriptions
 	StellarIngestorConfigPollInterval      = pdm("StellarIngestorConfig.pollInterval", "Interval between getLedgers polls (stellar-rpc has no push/subscription mode)")
 	StellarIngestorConfigInsertDBBatchSize = pdm("StellarIngestorConfig.insertDBBatchSize", "Maximum number of indexed rows to insert in a single DB batch")
 	StellarIngestorConfigRetry             = pdm("StellarIngestorConfig.retry", "Retry configuration for ledger-write DB transactions")
+
+	// ChannelAccountsConfig field descriptions
+	ChannelAccountsConfigPoolSize        = pdm("ChannelAccountsConfig.poolSize", "Number of derived channel accounts to maintain per signing identity")
+	ChannelAccountsConfigFunder          = pdm("ChannelAccountsConfig.funder", "Identifier of the local signing key used to fund newly created channel accounts - required before any channel account can be created")
+	ChannelAccountsConfigStartingBalance = pdm("ChannelAccountsConfig.startingBalance", "Initial XLM balance given to a newly created channel account")
 )

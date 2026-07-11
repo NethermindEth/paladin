@@ -97,9 +97,10 @@ func TestEncodeClassicOperationsRejectsEmpty(t *testing.T) {
 
 func TestBuildChangeTrustPayload(t *testing.T) {
 	issuer := keypair.MustRandom().Address()
+	holder := keypair.MustRandom().Address()
 	asset := txnbuild.CreditAsset{Code: "REG", Issuer: issuer}
 
-	payload, err := BuildChangeTrustPayload(asset, "500")
+	payload, err := BuildChangeTrustPayload(holder, asset, "500")
 	require.NoError(t, err)
 
 	decoded, err := DecodeClassicOperations(payload)
@@ -107,6 +108,7 @@ func TestBuildChangeTrustPayload(t *testing.T) {
 	require.Len(t, decoded, 1)
 	changeTrust, ok := decoded[0].(*txnbuild.ChangeTrust)
 	require.True(t, ok)
+	assert.Equal(t, holder, changeTrust.SourceAccount)
 	assert.Equal(t, "REG", changeTrust.Line.GetCode())
 	assert.Equal(t, "500.0000000", changeTrust.Limit)
 }
@@ -116,7 +118,7 @@ func TestBuildSetTrustLineFlagsPayload(t *testing.T) {
 	trustor := keypair.MustRandom().Address()
 	asset := txnbuild.CreditAsset{Code: "REG", Issuer: issuer}
 
-	payload, err := BuildSetTrustLineFlagsPayload(trustor, asset, []txnbuild.TrustLineFlag{txnbuild.TrustLineAuthorized}, nil)
+	payload, err := BuildSetTrustLineFlagsPayload(issuer, trustor, asset, []txnbuild.TrustLineFlag{txnbuild.TrustLineAuthorized}, nil)
 	require.NoError(t, err)
 
 	decoded, err := DecodeClassicOperations(payload)

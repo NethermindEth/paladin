@@ -59,12 +59,26 @@ const (
 	StaleActionSubmitRestoreThen StaleAction = "submitRestoreThen"
 )
 
+// ChannelOrderingKey is one parallel submission track's current ordering key (nonce/sequence
+// number). EVM always has exactly one track per signing address (ChannelAccount nil - the address
+// sources its own transactions directly). Stellar has one per channel-account pool member (chapter
+// 12 §12.2): ChannelAccount is the pool member's address, distinct from the business identity the
+// transaction's operations act on behalf of.
+type ChannelOrderingKey struct {
+	OrderingKey    uint64
+	ChannelAccount *pldtypes.ChainAddress
+}
+
 // ChainSubmitter is the chain-specific seam inside the public transaction manager: nonce/sequence
 // assignment, gas pricing and signing (build + sign into a submittable payload), submission and
 // response classification, and staleness/resubmit policy. The orchestrator and in-flight stage
 // controller own the chain-neutral 80%: polling, balance checks, persistence, retries, and metrics.
 type ChainSubmitter interface {
-	AssignOrderingKey(ctx context.Context, from pldtypes.ChainAddress) (uint64, error)
+	// AssignOrderingKeys returns one ChannelOrderingKey per parallel submission track available
+	// for from - always a single-element slice for EVM. For Stellar, bootstraps (derives, and
+	// funds via CreateAccountOp if missing on chain) the identity's channel-account pool and
+	// returns one entry per pool member (chapter 12 §12.2).
+	AssignOrderingKeys(ctx context.Context, from pldtypes.ChainAddress) ([]ChannelOrderingKey, error)
 	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error)
 	Submit(ctx context.Context, ps *PreparedSubmission) (*SubmitResult, error)
 	ActionOnStale(ctx context.Context, ptx *DBPublicTxn) (StaleAction, error)

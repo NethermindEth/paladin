@@ -97,26 +97,30 @@ func EncodeClassicOperations(ops []txnbuild.Operation) ([]byte, error) {
 
 // BuildChangeTrustPayload builds an XDR_CLASSIC_OPS payload for a single ChangeTrust operation -
 // e.g. a local identity establishing a trustline to a regulated asset before an unshield to a
-// fresh account (chapter 12 §12.3). A trustline can only be created by its own holder, so the
-// resulting UnsignedChainTx.From must be that holder's own address. limit="" uses
+// fresh account (chapter 12 §12.3). A trustline can only be created by its own holder, so
+// holderAccount must be that holder's own address - set explicitly as the operation's own source
+// (chapter 12 §12.2's channel-account pooling means the enclosing transaction's source account is
+// no longer necessarily the same as the identity the operation acts on behalf of). limit="" uses
 // txnbuild.MaxTrustlineLimit (no cap).
-func BuildChangeTrustPayload(asset txnbuild.Asset, limit string) ([]byte, error) {
+func BuildChangeTrustPayload(holderAccount string, asset txnbuild.Asset, limit string) ([]byte, error) {
 	changeTrustAsset, err := asset.ToChangeTrustAsset()
 	if err != nil {
 		return nil, fmt.Errorf("invalid asset: %w", err)
 	}
-	return EncodeClassicOperations([]txnbuild.Operation{&txnbuild.ChangeTrust{Line: changeTrustAsset, Limit: limit}})
+	return EncodeClassicOperations([]txnbuild.Operation{&txnbuild.ChangeTrust{SourceAccount: holderAccount, Line: changeTrustAsset, Limit: limit}})
 }
 
 // BuildSetTrustLineFlagsPayload builds an XDR_CLASSIC_OPS payload for an issuer to
 // approve/freeze/clawback-enable a holder's trustline (chapter 12 §12.3) - trustor is the G...
-// account whose trustline is being modified; the resulting UnsignedChainTx.From must be the
-// asset's issuer account.
-func BuildSetTrustLineFlagsPayload(trustor string, asset txnbuild.Asset, setFlags, clearFlags []txnbuild.TrustLineFlag) ([]byte, error) {
+// account whose trustline is being modified; issuerAccount must be the asset's issuer account, set
+// explicitly as the operation's own source (see BuildChangeTrustPayload's doc comment on why this
+// can no longer be left implicit once channel-account pooling is in use).
+func BuildSetTrustLineFlagsPayload(issuerAccount, trustor string, asset txnbuild.Asset, setFlags, clearFlags []txnbuild.TrustLineFlag) ([]byte, error) {
 	return EncodeClassicOperations([]txnbuild.Operation{&txnbuild.SetTrustLineFlags{
-		Trustor:    trustor,
-		Asset:      asset,
-		SetFlags:   setFlags,
-		ClearFlags: clearFlags,
+		SourceAccount: issuerAccount,
+		Trustor:       trustor,
+		Asset:         asset,
+		SetFlags:      setFlags,
+		ClearFlags:    clearFlags,
 	}})
 }

@@ -44,9 +44,15 @@ type DBPublicTxn struct {
 	// fresh simulation reports a needed ledger entry is archived, and cleared once the restore
 	// transaction (RestoreTxHash) confirms. Observability only - see stellar_chain_submitter.go's
 	// PrepareSubmission doc comment for why control flow never re-derives from this persisted value.
-	RequiresRestore bool                   `gorm:"column:requires_restore"`
-	Completed       *DBPublicTxnCompletion `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
-	Submissions     []*DBPubTxnSubmission  `gorm:"foreignKey:pub_txn_id"`
+	RequiresRestore bool `gorm:"column:requires_restore"`
+	// ChannelAccount is Stellar only (chapter 12 §12.2): the pool member this transaction is
+	// sourced from (sequence number + inclusion fee), assigned once at nonce-allocation time and
+	// sticky thereafter - see stellarChainSubmitter.AssignOrderingKeys and buildStellarTx's doc
+	// comment on why this diverges from From (the business identity the operation acts on behalf
+	// of, still used for auth/require_auth purposes).
+	ChannelAccount *pldtypes.ChainAddress `gorm:"column:channel_account"`
+	Completed      *DBPublicTxnCompletion `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
+	Submissions    []*DBPubTxnSubmission  `gorm:"foreignKey:pub_txn_id"`
 	// Binding is only on queries by transaction (GORM doesn't seem to allow us to define a separate struct for this) and
 	// to pass Paladin TX info to the sequencer
 	Binding *DBPublicTxnBinding `gorm:"foreignKey:pub_txn_id;references:pub_txn_id;"`

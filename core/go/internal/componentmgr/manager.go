@@ -434,9 +434,9 @@ func (cm *componentManager) stopEthClient() {
 }
 
 // newBaseLedgerClient dispatches construction of the base ledger client on the configured chain
-// kind. Full node boot remains blocked for type: stellar in Init() until the ledger-indexer work
-// from later Chapter 12 slices lands, but the Stellar base-ledger client itself is real and
-// testable now, so this switch is the single construction point for both supported branches.
+// kind. For Stellar, the corresponding ledger-indexing path is constructed separately in
+// initStellarLedgerIndexer(); this switch remains the single construction point for the
+// chain-neutral baseledger.Client itself.
 func (cm *componentManager) newBaseLedgerClient() (baseledger.Client, error) {
 	switch cm.conf.BaseLedger.ResolvedType() {
 	case pldconf.BaseLedgerTypeEVM:
@@ -722,6 +722,13 @@ func (cm *componentManager) Persistence() persistence.Persistence {
 
 func (cm *componentManager) BaseLedger() baseledger.Client {
 	return cm.baseLedger
+}
+
+func (cm *componentManager) StellarChannelAccountsConfig() *pldconf.ChannelAccountsConfig {
+	if cm.conf.BaseLedger.Stellar == nil {
+		return nil
+	}
+	return &cm.conf.BaseLedger.Stellar.ChannelAccounts
 }
 
 func (cm *componentManager) StateManager() components.StateManager {
