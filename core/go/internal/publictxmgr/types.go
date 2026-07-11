@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -56,6 +57,13 @@ type BaseTXUpdateNewValues struct {
 	LastSubmit      *pldtypes.Timestamp
 	ErrorMessage    *string
 	NewSubmission   *DBPubTxnSubmission
+	// RequiresRestore/RestoreTxHash/Nonce are Stellar-only (chapter 12 §12.2's restore-preamble
+	// stage - see stellar_chain_submitter.go's PrepareRestore). Nonce lets the restore stage bump
+	// the persisted sequence number by one after a restore transaction confirms, since it consumes
+	// the sequence slot originally reserved for the real transaction.
+	RequiresRestore *bool
+	RestoreTxHash   *pldtypes.Bytes32
+	Nonce           *uint64
 }
 
 type BaseTXUpdateResetValues struct {
@@ -108,6 +116,8 @@ const (
 	BaseTxActionSubmitTransaction BaseTxAction = "SubmitTransaction"
 	// BaseTxActionConfirmTransaction indicates that the transaction has been confirmed
 	BaseTxActionConfirmTransaction BaseTxAction = "Confirm"
+	// BaseTxActionRestore indicates a restore-preamble transaction has been built/submitted (Stellar only)
+	BaseTxActionRestore BaseTxAction = "Restore"
 )
 
 type BalanceManager interface {
@@ -207,6 +217,12 @@ const (
 	//   completion criteria
 	//      evaluated into other state
 	InFlightTxStageQueued InFlightTxStage = "queued"
+
+	// Stellar only (chapter 12 §12.2) - entered directly from the signing stage when a fresh
+	// simulation reports a needed ledger entry is archived (PrepareSubmission's RequiresRestore).
+	// Builds, signs, submits, and waits for confirmation of a standalone RestoreFootprintOp
+	// transaction, then returns to the signing stage to retry the real transaction.
+	InFlightTxStageRestoring InFlightTxStage = "restore"
 )
 
 var AllInFlightStages = []string{
@@ -215,6 +231,7 @@ var AllInFlightStages = []string{
 	string(InFlightTxStageSubmitting),
 	string(InFlightTxStageComplete),
 	string(InFlightTxStageQueued),
+	string(InFlightTxStageRestoring),
 }
 
 type SubmissionOutcome string
@@ -253,6 +270,10 @@ type InMemoryTxStateReadOnly interface {
 	GetSignerNonce() string
 	GetGasLimit() uint64
 	IsReadyToExit() bool
+	// GetRequiresRestore reports whether the last signing attempt determined a restore-preamble
+	// transaction is needed (Stellar only, chapter 12 §12.2) - observability only, not consulted
+	// by the stage-routing decision itself (see processSigningStageOutput).
+	GetRequiresRestore() bool
 }
 
 type InMemoryTxStateManager interface {
@@ -277,6 +298,8 @@ type StageOutput struct {
 	GasPriceOutput *GasPriceOutput
 
 	ConfirmationOutput *ConfirmationOutputs
+
+	RestoreOutput *RestoreOutputs
 }
 
 type SubmitOutputs struct {
@@ -289,7 +312,20 @@ type SubmitOutputs struct {
 type SignOutputs struct {
 	SignedMessage []byte
 	TxHash        *pldtypes.Bytes32
-	Err           error
+	// RequiresRestore/RestoreSoroban (Stellar only - chapter 12 §12.2) signal that PrepareSubmission
+	// determined a restore is needed instead of returning a signed message: SignedMessage/TxHash are
+	// unset in this case, and processSigningStageOutput routes to InFlightTxStageRestoring instead
+	// of InFlightTxStageSubmitting.
+	RequiresRestore bool
+	RestoreSoroban  *baseledger.SorobanResources
+	Err             error
+}
+
+// RestoreOutputs is the result of building, signing, submitting, and waiting for confirmation of a
+// standalone restore-preamble transaction (chapter 12 §12.2, Stellar only).
+type RestoreOutputs struct {
+	TxHash *pldtypes.Bytes32
+	Err    error
 }
 
 type GasPriceOutput struct {
@@ -311,6 +347,9 @@ type InFlightStageActionTriggers interface {
 	TriggerSignTx(ctx context.Context) error
 	TriggerSubmitTx(ctx context.Context, signedMessage []byte, calculatedTxHash *pldtypes.Bytes32, contractAddress string) error
 	TriggerStatusUpdate(ctx context.Context) error
+	// TriggerRestoreTx is Stellar-only (chapter 12 §12.2): soroban carries the restore-preamble
+	// simulation data (footprint + fee) captured by the signing stage's PrepareSubmission call.
+	TriggerRestoreTx(ctx context.Context, soroban *baseledger.SorobanResources) error
 }
 
 // RunningStageContext is the context for an individual run of the transaction process
@@ -348,6 +387,13 @@ func (ctx *RunningStageContext) SetNewPersistenceUpdateOutput() {
 
 type StatusUpdater interface {
 	UpdateSubStatus(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON, actionOccurred *pldtypes.Timestamp) error
+	// UpdateRestoreState durably persists the restore-preamble stage's outcome (chapter 12 §12.2,
+	// Stellar only) directly against the public_txns row - a synchronous, low-frequency write, not
+	// routed through the batched submissionWriter used for the (high-frequency) submissions log.
+	// The nonce bump is the only field here that's load-bearing for correctness on restart (see
+	// stellar_chain_submitter.go's PrepareRestore doc comment); requiresRestore/restoreTxHash are
+	// observability.
+	UpdateRestoreState(ctx context.Context, pubTxnID uint64, requiresRestore *bool, restoreTxHash *pldtypes.Bytes32, nonce *uint64) error
 }
 
 type RunningStageContextPersistenceOutput struct {
@@ -376,6 +422,10 @@ type OrchestratorContext struct {
 type TransientPreviousStageOutputs struct {
 	SignedMessage   []byte // NB: if the value is nil when triggering submitTx , node signer will be used to sign the transaction instead, don't use this to judge whether a transaction can be submitted or not.
 	TransactionHash *pldtypes.Bytes32
+	// RestoreSoroban is Stellar-only (chapter 12 §12.2): carried from the signing stage into the
+	// restore-preamble stage so TriggerRestoreTx can build the restore transaction without
+	// re-simulating.
+	RestoreSoroban *baseledger.SorobanResources
 }
 
 type InFlightTransactionStateManager interface {
@@ -416,8 +466,9 @@ type InFlightTransactionStateGeneration interface {
 	ProcessStageOutputs(ctx context.Context, processFunction func(stageOutputs []*StageOutput) (unprocessedStageOutputs []*StageOutput))
 	AddPersistenceOutput(ctx context.Context, stage InFlightTxStage, persistenceTime time.Time, err error)
 	AddSubmitOutput(ctx context.Context, txHash *pldtypes.Bytes32, submissionTime *pldtypes.Timestamp, submissionOutcome SubmissionOutcome, errorReason ethclient.ErrorReason, err error)
-	AddSignOutput(ctx context.Context, signedMessage []byte, txHash *pldtypes.Bytes32, err error)
+	AddSignOutput(ctx context.Context, signedMessage []byte, txHash *pldtypes.Bytes32, requiresRestore bool, restoreSoroban *baseledger.SorobanResources, err error)
 	AddGasPriceOutput(ctx context.Context, gasPriceObject *pldapi.PublicTxGasPricing, err error)
+	AddRestoreOutput(ctx context.Context, txHash *pldtypes.Bytes32, err error)
 	AddPanicOutput(ctx context.Context, stage InFlightTxStage)
 
 	PersistTxState(ctx context.Context) (stage InFlightTxStage, persistenceTime time.Time, err error)

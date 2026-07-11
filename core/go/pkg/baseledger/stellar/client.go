@@ -191,6 +191,16 @@ func (c *Client) EstimateResources(ctx context.Context, tx *baseledger.UnsignedC
 		ResourceFee:     uint64(resp.MinResourceFee), //nolint:gosec // fees are always positive
 		RequiresRestore: resp.RestorePreamble != nil,
 	}
+	if resp.RestorePreamble != nil {
+		if resp.RestorePreamble.TransactionDataXDR != "" {
+			data, err := base64.StdEncoding.DecodeString(resp.RestorePreamble.TransactionDataXDR)
+			if err != nil {
+				return nil, fmt.Errorf("invalid restorePreamble transactionData: %w", err)
+			}
+			soroban.RestorePreambleTransactionDataXDR = data
+		}
+		soroban.RestorePreambleMinResourceFee = uint64(resp.RestorePreamble.MinResourceFee) //nolint:gosec // fees are always positive
+	}
 	if resp.TransactionDataXDR != "" {
 		data, err := base64.StdEncoding.DecodeString(resp.TransactionDataXDR)
 		if err != nil {

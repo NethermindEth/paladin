@@ -357,6 +357,9 @@ var (
 	MsgPublicTxMgrFeeHistoryCallFailed                 = pde("PD011950", "Failed to fetch fee history: %+v")
 	MsgPublicTxMgrInvalidCacheRefreshTime              = pde("PD011951", "Invalid cache refresh time: %s")
 	MsgPublicTxMgrGasOracleInvalidMethod               = pde("PD011952", "Invalid HTTP method for gas oracle API: %s")
+	MsgPublicTxMgrRestoreNotSupported                  = pde("PD011953", "Restore-preamble submission is not applicable to this base ledger")
+	MsgPublicTxMgrRestoreTransactionFailed             = pde("PD011954", "Restore transaction %s failed")
+	MsgPublicTxMgrRestoreTransactionTimedOut           = pde("PD011955", "Timed out waiting for restore transaction %s to confirm")
 
 	// TransportManager module PD0120XX
 	MsgTransportInvalidMessage                 = pde("PD012000", "Invalid message")

@@ -280,6 +280,8 @@ func (it *inFlightTransactionStageController) processCurrentGenerationStageOutpu
 								err = it.processSubmittingStageOutput(ctx, currentGeneration, rsc, stageOutput)
 							case InFlightTxStageStatusUpdate:
 								err = it.processStatusUpdateStageOutput(ctx, currentGeneration, rsc, stageOutput)
+							case InFlightTxStageRestoring:
+								err = it.processRestoreStageOutput(ctx, currentGeneration, rsc, stageOutput)
 							}
 						}
 					} else {
@@ -357,13 +359,21 @@ func (it *inFlightTransactionStageController) processSigningStageOutput(ctx cont
 			rsc.StageErrored = true
 		}
 		if rsIn.PersistenceOutput.PersistenceError == nil && !rsc.StageErrored {
-			// we've persisted successfully, move to the next stage inline as signed message is not persisted
-			log.L(ctx).Debugf("Signed message is not nil: %t", rsc.StageOutput.SignOutput.SignedMessage != nil)
-			generation.SetTransientPreviousStageOutputs(&TransientPreviousStageOutputs{
-				SignedMessage:   rsc.StageOutput.SignOutput.SignedMessage,
-				TransactionHash: rsc.StageOutput.SignOutput.TxHash,
-			})
-			it.TriggerNewStageRun(ctx, InFlightTxStageSubmitting, BaseTxSubStatusReceived)
+			if rsc.StageOutput.SignOutput.RequiresRestore {
+				log.L(ctx).Infof("Transaction with ID %s requires a restore-preamble transaction before it can be signed and submitted", rsc.InMemoryTx.GetSignerNonce())
+				generation.SetTransientPreviousStageOutputs(&TransientPreviousStageOutputs{
+					RestoreSoroban: rsc.StageOutput.SignOutput.RestoreSoroban,
+				})
+				it.TriggerNewStageRun(ctx, InFlightTxStageRestoring, BaseTxSubStatusReceived)
+			} else {
+				// we've persisted successfully, move to the next stage inline as signed message is not persisted
+				log.L(ctx).Debugf("Signed message is not nil: %t", rsc.StageOutput.SignOutput.SignedMessage != nil)
+				generation.SetTransientPreviousStageOutputs(&TransientPreviousStageOutputs{
+					SignedMessage:   rsc.StageOutput.SignOutput.SignedMessage,
+					TransactionHash: rsc.StageOutput.SignOutput.TxHash,
+				})
+				it.TriggerNewStageRun(ctx, InFlightTxStageSubmitting, BaseTxSubStatusReceived)
+			}
 		}
 		return
 	}
@@ -383,6 +393,10 @@ func (it *inFlightTransactionStageController) processSigningStageOutput(ctx cont
 		// persist the error
 		log.L(ctx).Errorf("Transaction signing failed for transaction with ID: %s, due to error: %+v", rsc.InMemoryTx.GetSignerNonce(), rsIn.SignOutput.Err)
 		rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionSign, nil, pldtypes.RawJSON(`{"error":"`+rsIn.SignOutput.Err.Error()+`"}`))
+	} else if rsIn.SignOutput.RequiresRestore {
+		log.L(ctx).Debugf("Transaction with ID %s requires a restore-preamble transaction", rsc.InMemoryTx.GetSignerNonce())
+		rsc.StageOutputsToBePersisted.TxUpdates = &BaseTXUpdates{NewValues: BaseTXUpdateNewValues{RequiresRestore: confutil.P(true)}}
+		rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionSign, pldtypes.RawJSON(`{"requiresRestore":true}`), nil)
 	} else {
 		log.L(ctx).Tracef("SignOutput %+v", rsIn.SignOutput)
 		// signed data received
@@ -529,6 +543,53 @@ func (it *inFlightTransactionStageController) processStatusUpdateStageOutput(ctx
 	return
 }
 
+// processRestoreStageOutput handles the restore-preamble stage's outcome (chapter 12 §12.2,
+// Stellar only). On success it bumps the persisted nonce by one (the restore transaction consumed
+// the sequence slot reserved for the real transaction - see PrepareRestore's doc comment) and
+// clears RequiresRestore; the next startNewStage loop naturally re-enters the signing stage since
+// GetTransactionHash() is still nil, and PrepareSubmission's fresh simulation will no longer report
+// RequiresRestore now that the entry has been restored. On failure, the generic stage-retry timeout
+// (see processCurrentGenerationStageOutputs) clears the running stage context and the same
+// re-entry-via-signing path re-detects and retries the restore.
+func (it *inFlightTransactionStageController) processRestoreStageOutput(ctx context.Context, generation InFlightTransactionStateGeneration, rsc *RunningStageContext, stageOutput *StageOutput) (err error) {
+	if stageOutput.PersistenceOutput != nil {
+		if rsc.StageOutput.RestoreOutput.Err != nil {
+			rsc.StageErrored = true
+		}
+		if stageOutput.PersistenceOutput.PersistenceError == nil && !rsc.StageErrored {
+			generation.ClearRunningStageContext(ctx)
+		}
+		return
+	}
+
+	if stageOutput.RestoreOutput == nil {
+		log.L(ctx).Errorf("restoreOutput should not be nil for transaction with ID: %s, in the stage output object: %+v.", rsc.InMemoryTx.GetSignerNonce(), stageOutput)
+		err = i18n.NewError(ctx, msgs.MsgInvalidStageOutput, "restoreOutput", stageOutput)
+		generation.ClearRunningStageContext(ctx)
+		return
+	}
+
+	rsc.StageOutput.RestoreOutput = stageOutput.RestoreOutput
+	rsc.SetNewPersistenceUpdateOutput()
+	if stageOutput.RestoreOutput.Err != nil {
+		log.L(ctx).Errorf("Restore transaction failed for transaction with ID: %s, due to error: %+v", rsc.InMemoryTx.GetSignerNonce(), stageOutput.RestoreOutput.Err)
+		rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionRestore, nil, pldtypes.RawJSON(`{"error":"`+stageOutput.RestoreOutput.Err.Error()+`"}`))
+	} else {
+		nextNonce := rsc.InMemoryTx.GetNonce() + 1
+		rsc.StageOutputsToBePersisted.TxUpdates = &BaseTXUpdates{
+			NewValues: BaseTXUpdateNewValues{
+				RequiresRestore: confutil.P(false),
+				RestoreTxHash:   stageOutput.RestoreOutput.TxHash,
+				Nonce:           &nextNonce,
+			},
+		}
+		rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionRestore, pldtypes.RawJSON(fmt.Sprintf(`{"restoreTxHash":"%s"}`, stageOutput.RestoreOutput.TxHash)), nil)
+	}
+
+	_ = it.TriggerPersistTxState(ctx)
+	return
+}
+
 func (it *inFlightTransactionStageController) startNewStage(ctx context.Context, cost *big.Int) {
 	if it.newStatus != nil && !it.stateManager.IsReadyToExit() && *it.newStatus != it.stateManager.GetInFlightStatus() { // first apply any status update that's required
 		log.L(ctx).Debugf("Transaction with ID %s entering status update, current status: %s, target status: %s", it.stateManager.GetSignerNonce(), it.stateManager.GetInFlightStatus(), *it.newStatus)
@@ -590,8 +651,10 @@ func (it *inFlightTransactionStageController) startNewStage(ctx context.Context,
 			log.L(ctx).Debugf("Transaction with ID %s entering retrieve gas price as exceeded resubmit interval of %s.", it.stateManager.GetSignerNonce(), it.resubmitInterval.String())
 			it.TriggerNewStageRun(ctx, InFlightTxStageRetrieveGasPrice, BaseTxSubStatusStale)
 		case StaleActionSubmitRestoreThen:
-			// Not yet applicable to EVM; reserved for future chain submitters (e.g. a Stellar
-			// submitter's restore-preamble flow, chapter 12).
+			// Reserved but never returned today: the restore-preamble stage (chapter 12 §12.2,
+			// implemented in stellar_chain_submitter.go) is entered directly from the signing
+			// stage's PrepareSubmission call, not from here - see stellarChainSubmitter.ActionOnStale's
+			// doc comment for why a rebuild is sufficient to reach the same outcome via that path.
 			log.L(ctx).Warnf("Transaction with ID %s: unsupported stale action %s for this chain submitter", it.stateManager.GetSignerNonce(), staleAction)
 		case StaleActionNone:
 			// no action required
@@ -680,13 +743,20 @@ func (it *inFlightTransactionStageController) TriggerSignTx(ctx context.Context)
 	it.executeAsync(func() {
 		var signedMessage []byte
 		var txHash *pldtypes.Bytes32
+		var requiresRestore bool
+		var restoreSoroban *baseledger.SorobanResources
 		prepared, err := it.chainSubmitter.PrepareSubmission(ctx, ptx, resourceEstimate)
 		if err == nil {
-			signedMessage = prepared.RawTransaction
-			txHash = prepared.TransactionHash
+			if prepared.RequiresRestore {
+				requiresRestore = true
+				restoreSoroban = prepared.RestoreSoroban
+			} else {
+				signedMessage = prepared.RawTransaction
+				txHash = prepared.TransactionHash
+			}
 		}
-		log.L(ctx).Debugf("Adding signed message to output, hash %s, signedMessage not nil %t, err %+v", txHash, signedMessage != nil, err)
-		generation.AddSignOutput(ctx, signedMessage, txHash, err)
+		log.L(ctx).Debugf("Adding signed message to output, hash %s, signedMessage not nil %t, requiresRestore %t, err %+v", txHash, signedMessage != nil, requiresRestore, err)
+		generation.AddSignOutput(ctx, signedMessage, txHash, requiresRestore, restoreSoroban, err)
 	}, ctx, generation, false)
 	return nil
 }
@@ -702,6 +772,24 @@ func (it *inFlightTransactionStageController) TriggerSubmitTx(ctx context.Contex
 		txHash, submissionTime, errReason, submissionOutcome, err := it.submitTX(ctx, ps, signerNonce, lastSubmitTime, generation.IsCancelled)
 
 		generation.AddSubmitOutput(ctx, txHash, submissionTime, submissionOutcome, errReason, err)
+	}, ctx, generation, false)
+	return nil
+}
+
+// TriggerRestoreTx is Stellar-only (chapter 12 §12.2): builds, signs, submits, and waits for
+// confirmation of a standalone restore-preamble transaction, delegating build/sign to
+// ChainSubmitter.PrepareRestore and submit/confirm to the chain-neutral restoreTX helper (the same
+// "chain-neutral wrapper, chain-specific classify" split submitTX already uses).
+func (it *inFlightTransactionStageController) TriggerRestoreTx(ctx context.Context, soroban *baseledger.SorobanResources) error {
+	generation := it.stateManager.GetCurrentGeneration(ctx)
+	ptx := &DBPublicTxn{
+		PublicTxnID: it.stateManager.GetPubTxnID(),
+		From:        it.stateManager.GetFrom(),
+		Nonce:       confutil.P(it.stateManager.GetNonce()),
+	}
+	it.executeAsync(func() {
+		txHash, err := it.restoreTX(ctx, ptx, soroban, generation.IsCancelled)
+		generation.AddRestoreOutput(ctx, txHash, err)
 	}, ctx, generation, false)
 	return nil
 }

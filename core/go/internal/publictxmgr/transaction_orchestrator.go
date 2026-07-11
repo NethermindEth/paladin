@@ -106,6 +106,9 @@ type orchestrator struct {
 	bIndexer                blockindexer.BlockIndexer
 
 	transactionSubmissionRetry *retry.Retry
+	// restoreConfirmationRetry is Stellar-only (chapter 12 §12.2) - bounds how long the
+	// restore-preamble stage polls GetTransactionResult for a restore transaction to confirm.
+	restoreConfirmationRetry *retry.Retry
 
 	// each transaction orchestrator has its own go routine
 	orchestratorBirthTime       time.Time           // when transaction orchestrator is created
@@ -173,6 +176,7 @@ func NewOrchestrator(
 
 		// submission retry
 		transactionSubmissionRetry: retry.NewRetryLimited(&conf.Orchestrator.SubmissionRetry, &pldconf.PublicTxManagerDefaults.Orchestrator.SubmissionRetry),
+		restoreConfirmationRetry:   retry.NewRetryLimited(&conf.Orchestrator.RestoreConfirmationRetry, &pldconf.PublicTxManagerDefaults.Orchestrator.RestoreConfirmationRetry),
 		staleTimeout:               confutil.DurationMin(conf.Orchestrator.StaleTimeout, 0, *pldconf.PublicTxManagerDefaults.Orchestrator.StaleTimeout),
 		hasZeroGasPrice:            ptm.gasPriceClient.HasZeroGasPrice(ctx),
 		InFlightTxsStale:           make(chan bool, 1),

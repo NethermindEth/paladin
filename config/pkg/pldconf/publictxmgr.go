@@ -69,6 +69,14 @@ var PublicTxManagerDefaults = PublicTxManagerConfig{
 			},
 			MaxAttempts: confutil.P(3),
 		},
+		RestoreConfirmationRetry: RetryConfigWithMax{
+			RetryConfig: RetryConfig{
+				InitialDelay: confutil.P("2s"),
+				MaxDelay:     confutil.P("5s"),
+				Factor:       confutil.P(1.0),
+			},
+			MaxAttempts: confutil.P(30),
+		},
 	},
 	// Gas price defaults are optimised for getting transactions onto chain as easily as possible
 	// When spending real gas, a user might want to be more conservative with setting caps or not allowing the fixed price to be increased
@@ -181,6 +189,10 @@ type PublicTxManagerOrchestratorConfig struct {
 	PersistenceRetryTime      *string            `json:"persistenceRetryTime"`
 	UnavailableBalanceHandler *string            `json:"unavailableBalanceHandler"`
 	SubmissionRetry           RetryConfigWithMax `json:"submissionRetry"`
+	// RestoreConfirmationRetry bounds how long the restore-preamble stage (chapter 12 §12.2, Stellar
+	// only - unused by EVM) polls GetTransactionResult for the standalone RestoreFootprintOp
+	// transaction to confirm before giving up and retrying the whole restore attempt.
+	RestoreConfirmationRetry  RetryConfigWithMax `json:"restoreConfirmationRetry"`
 	TimeLineLoggingMaxEntries int                `json:"timelineMaxEntries"`
 }
 

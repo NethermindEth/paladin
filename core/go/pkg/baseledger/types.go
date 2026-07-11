@@ -133,6 +133,12 @@ type SorobanResources struct {
 	ResourceFee        uint64   `json:"resourceFee,omitempty"`
 	AuthEntriesXDR     [][]byte `json:"authEntriesXDR,omitempty"`
 	RequiresRestore    bool     `json:"requiresRestore,omitempty"`
+	// RestorePreambleTransactionDataXDR/RestorePreambleMinResourceFee are populated only when
+	// RequiresRestore is true: the xdr.SorobanTransactionData (the footprint of evicted entries)
+	// and resource fee simulateTransaction reports are needed - unchanged - to build the
+	// standalone RestoreFootprintOp transaction (chapter 12 §12.2's restore-preamble stage).
+	RestorePreambleTransactionDataXDR []byte `json:"restorePreambleTransactionDataXDR,omitempty"`
+	RestorePreambleMinResourceFee     uint64 `json:"restorePreambleMinResourceFee,omitempty"`
 }
 
 type SignablePayload struct {

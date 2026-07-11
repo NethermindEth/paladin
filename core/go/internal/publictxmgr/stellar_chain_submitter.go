@@ -37,13 +37,13 @@ import (
 )
 
 // stellarChainSubmitter is the Stellar/Soroban implementation of ChainSubmitter (chapter 12
-// foundational slice, §12.1/§12.2, plus §12.3's classic operations). Like evmChainSubmitter, it
-// wraps the owning pubTxManager to reuse its already-constructed baseLedger client and key
-// manager.
+// foundational slice, §12.1/§12.2, plus §12.3's classic operations and §12.2's restore-preamble
+// stage). Like evmChainSubmitter, it wraps the owning pubTxManager to reuse its already-constructed
+// baseLedger client and key manager.
 //
 // Deliberately out of scope for this slice (see chapter 12's "Implementation status" callout):
-// channel-account pooling (one signing identity = one source account today), fee-bump
-// transactions, and the restore-preamble submission stage (see ActionOnStale below).
+// channel-account pooling (one signing identity = one source account today - see PrepareRestore's
+// doc comment on the nonce-bump implication) and fee-bump transactions.
 type stellarChainSubmitter struct {
 	ptm *pubTxManager
 }
@@ -136,42 +136,128 @@ func buildStellarTx(ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstim
 	})
 }
 
-func (s *stellarChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error) {
-	tx, err := buildStellarTx(ptx, resourceEstimate)
-	if err != nil {
-		return nil, err
-	}
+// signAndSerializeStellarTx signs tx via the KeyManager (never locally - keypair.ParseAddress only
+// needs the public StrKey to compute the signature hint) and returns the wire-ready raw bytes and
+// the network-ID-qualified signature hash. Shared by PrepareSubmission and PrepareRestore - both
+// build a txnbuild.Transaction sourced from the same account and need identical signing.
+func (s *stellarChainSubmitter) signAndSerializeStellarTx(ctx context.Context, from pldtypes.ChainAddress, tx *txnbuild.Transaction) ([]byte, pldtypes.Bytes32, error) {
 	networkPassphrase := s.ptm.baseLedger.ChainInfo().NetworkID
 	hash, err := tx.Hash(networkPassphrase)
 	if err != nil {
-		return nil, err
+		return nil, pldtypes.Bytes32{}, err
 	}
 
-	// Signing goes through the KeyManager - never locally. keypair.ParseAddress only needs the
-	// public StrKey to compute the signature hint; the private key never enters this process.
-	resolvedKey, err := s.ptm.keymgr.ReverseKeyLookup(ctx, s.ptm.p.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, ptx.From.String())
+	resolvedKey, err := s.ptm.keymgr.ReverseKeyLookup(ctx, s.ptm.p.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, from.String())
 	if err != nil {
-		log.L(ctx).Errorf("signing failed to resolve key %s for signing: %s", ptx.From, err)
-		return nil, err
+		log.L(ctx).Errorf("signing failed to resolve key %s for signing: %s", from, err)
+		return nil, pldtypes.Bytes32{}, err
 	}
 	signature, err := s.ptm.keymgr.Sign(ctx, resolvedKey, signpayloads.OPAQUE_TO_EDDSA, pldtypes.HexBytes(hash[:]))
 	if err != nil {
 		log.L(ctx).Errorf("signing failed with keyHandle %s (addr=%s): %s", resolvedKey.KeyHandle, resolvedKey.Verifier.Verifier, err)
-		return nil, err
+		return nil, pldtypes.Bytes32{}, err
 	}
-	fromAddr, err := keypair.ParseAddress(ptx.From.String())
+	fromAddr, err := keypair.ParseAddress(from.String())
 	if err != nil {
-		return nil, err
+		return nil, pldtypes.Bytes32{}, err
 	}
 	tx, err = tx.AddSignatureDecorated(xdr.NewDecoratedSignature(signature, fromAddr.Hint()))
 	if err != nil {
-		return nil, err
+		return nil, pldtypes.Bytes32{}, err
 	}
 	rawTransaction, err := tx.MarshalBinary()
 	if err != nil {
+		return nil, pldtypes.Bytes32{}, err
+	}
+	return rawTransaction, pldtypes.Bytes32(hash), nil
+}
+
+// PrepareSubmission re-simulates Soroban invocations fresh on every call (not just once at
+// transaction creation): the footprint, resource fee, and auth-entry data simulateTransaction
+// returns are only valid against current ledger state, so reusing a stale simulation across
+// retries would either fail on submission or silently omit an entry that's since been evicted
+// (chapter 12 §12.2's canonical invocation pipeline). If the fresh simulation reports a needed
+// entry is archived, this returns RequiresRestore=true instead of building the real transaction -
+// the caller (the orchestrator's signing stage) is expected to route to the restore-preamble stage
+// and call PrepareRestore instead. Classic operations (no simulation - see classic_ops.go) skip
+// this entirely and use the caller-supplied resourceEstimate as before.
+func (s *stellarChainSubmitter) PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error) {
+	payloadKind := ptx.PayloadKind.V()
+	if payloadKind == "" {
+		payloadKind = pldapi.PublicTxPayloadKindXDRInvokeContractArgs
+	}
+	if payloadKind != pldapi.PublicTxPayloadKindXDRClassicOps {
+		var err error
+		resourceEstimate, err = s.ptm.baseLedger.EstimateResources(ctx, &baseledger.UnsignedChainTx{
+			From:        ptx.From,
+			PayloadKind: baseledger.PayloadEncoding(payloadKind),
+			Payload:     ptx.Data,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resourceEstimate.Soroban != nil && resourceEstimate.Soroban.RequiresRestore {
+			return &PreparedSubmission{
+				PublicTxnID:     ptx.PublicTxnID,
+				RequiresRestore: true,
+				RestoreSoroban:  resourceEstimate.Soroban,
+			}, nil
+		}
+	}
+
+	tx, err := buildStellarTx(ptx, resourceEstimate)
+	if err != nil {
 		return nil, err
 	}
-	txHash := pldtypes.Bytes32(hash)
+	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, ptx.From, tx)
+	if err != nil {
+		return nil, err
+	}
+	return &PreparedSubmission{
+		PublicTxnID:     ptx.PublicTxnID,
+		RawTransaction:  rawTransaction,
+		TransactionHash: &txHash,
+	}, nil
+}
+
+// PrepareRestore builds and signs a standalone RestoreFootprintOp transaction from the footprint
+// simulateTransaction reported as archived (soroban.RestorePreambleTransactionDataXDR), sourced
+// from the same account and consuming the sequence number ptx.Nonce reserved for the real
+// transaction (chapter 12 §12.2's restore-preamble stage). The caller is responsible for bumping
+// the real transaction's persisted nonce by one once this restore transaction confirms - safe
+// under today's one-in-flight-transaction-per-account model (channel-account pooling, which
+// restores true per-account parallelism, is chapter 12 §12.2's separate, not-yet-built phase).
+func (s *stellarChainSubmitter) PrepareRestore(ctx context.Context, ptx *DBPublicTxn, soroban *baseledger.SorobanResources) (*PreparedSubmission, error) {
+	if ptx.Nonce == nil {
+		return nil, fmt.Errorf("a sequence number (nonce) is required to build a restore transaction")
+	}
+	if soroban == nil || len(soroban.RestorePreambleTransactionDataXDR) == 0 {
+		return nil, fmt.Errorf("no restore preamble available to build a restore transaction")
+	}
+	var sorobanData xdr.SorobanTransactionData
+	if err := sorobanData.UnmarshalBinary(soroban.RestorePreambleTransactionDataXDR); err != nil {
+		return nil, fmt.Errorf("invalid restore preamble transaction data: %w", err)
+	}
+
+	fromAddr := ptx.From.String()
+	account := txnbuild.NewSimpleAccount(fromAddr, int64(*ptx.Nonce)-1) //nolint:gosec // sequence numbers are always positive
+	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &account,
+		IncrementSequenceNum: true,
+		Operations: []txnbuild.Operation{&txnbuild.RestoreFootprint{
+			SourceAccount: fromAddr,
+			Ext:           xdr.TransactionExt{V: 1, SorobanData: &sorobanData},
+		}},
+		BaseFee:       txnbuild.MinBaseFee,
+		Preconditions: txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, ptx.From, tx)
+	if err != nil {
+		return nil, err
+	}
 	return &PreparedSubmission{
 		PublicTxnID:     ptx.PublicTxnID,
 		RawTransaction:  rawTransaction,
@@ -230,12 +316,11 @@ func (s *stellarChainSubmitter) Submit(ctx context.Context, ps *PreparedSubmissi
 }
 
 // ActionOnStale always rebuilds (re-simulate + re-sign + re-submit with a fresh sequence number),
-// mirroring evmChainSubmitter's own unconditional rebuild behavior. StaleActionSubmitRestoreThen
-// is not reachable yet: knowing a restore is required needs the ResourceEstimate.Soroban.
-// RequiresRestore flag from the *last* EstimateResources call, and that flag isn't persisted
-// anywhere on DBPublicTxn today - only the chain-neutral ChainSubmitter interface and
-// PrepareSubmission see it transiently. Persisting it (and implementing the restore-preamble
-// submission stage itself) is follow-up work alongside channel-account pooling and fee-bump.
+// mirroring evmChainSubmitter's own unconditional rebuild behavior. StaleActionSubmitRestoreThen is
+// deliberately not returned here: a rebuild routes back through PrepareSubmission, which always
+// re-simulates fresh and will itself detect and react to RequiresRestore (see PrepareSubmission's
+// doc comment) - there's no need for ActionOnStale to pre-empt that with a stale simulation of its
+// own.
 func (s *stellarChainSubmitter) ActionOnStale(_ context.Context, _ *DBPublicTxn) (StaleAction, error) {
 	return StaleActionRebuild, nil
 }

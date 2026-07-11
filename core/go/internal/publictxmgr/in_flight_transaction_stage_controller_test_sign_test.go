@@ -78,7 +78,7 @@ func TestProduceLatestInFlightStageContextSigning(t *testing.T) {
 	currentGeneration.bufferedStageOutputs = make([]*StageOutput, 0)
 	// test panic error that doesn't belong to the current stage gets ignored
 	it.stateManager.GetCurrentGeneration(ctx).AddPanicOutput(ctx, InFlightTxStageRetrieveGasPrice)
-	it.stateManager.GetCurrentGeneration(ctx).AddSignOutput(ctx, signedMsg, &txHash, nil)
+	it.stateManager.GetCurrentGeneration(ctx).AddSignOutput(ctx, signedMsg, &txHash, false, nil, nil)
 	tOut = it.ProduceLatestInFlightStageContext(ctx, &OrchestratorContext{
 		AvailableToSpend:         nil,
 		PreviousNonceCostUnknown: false,
@@ -92,7 +92,7 @@ func TestProduceLatestInFlightStageContextSigning(t *testing.T) {
 	_ = rsc.StageOutputsToBePersisted.StatusUpdates[0](mTS.statusUpdater)
 	// failed signing
 	currentGeneration.bufferedStageOutputs = make([]*StageOutput, 0)
-	it.stateManager.GetCurrentGeneration(ctx).AddSignOutput(ctx, nil, nil, fmt.Errorf("sign error"))
+	it.stateManager.GetCurrentGeneration(ctx).AddSignOutput(ctx, nil, nil, false, nil, fmt.Errorf("sign error"))
 	rsc = it.stateManager.GetCurrentGeneration(ctx).GetRunningStageContext(ctx)
 	assert.Equal(t, InFlightTxStageSigning, rsc.Stage)
 	rsc.StageOutputsToBePersisted = nil

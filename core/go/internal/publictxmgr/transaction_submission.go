@@ -24,6 +24,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"golang.org/x/crypto/sha3"
@@ -86,4 +87,50 @@ func (it *inFlightTransactionStageController) submitTX(ctx context.Context, ps *
 	}
 
 	return txHash, submissionTime, submissionErrorReason, submissionOutcome, submissionError
+}
+
+// restoreTX is the chain-neutral restore-preamble wrapper (chapter 12 §12.2, Stellar only): it owns
+// submission and confirmation-polling orchestration, delegating build/sign to
+// ChainSubmitter.PrepareRestore and submit/classify to the already-implemented ChainSubmitter.Submit
+// (the same split submitTX uses for the real transaction). Confirmation is polled directly via
+// baseledger.Client.GetTransactionResult rather than through the block-indexer confirmation-matching
+// path, since GetTransactionResult is already a direct hash lookup for Stellar with no indexer
+// dependency (see baseledger/stellar.Client's doc comment).
+func (it *inFlightTransactionStageController) restoreTX(ctx context.Context, ptx *DBPublicTxn, soroban *baseledger.SorobanResources, cancelled func(context.Context) bool) (*pldtypes.Bytes32, error) {
+	prepared, err := it.chainSubmitter.PrepareRestore(ctx, ptx, soroban)
+	if err != nil {
+		return nil, err
+	}
+	result, err := it.chainSubmitter.Submit(ctx, prepared)
+	if err != nil {
+		return nil, err
+	}
+	if result.TxHash == nil {
+		return nil, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+	}
+	txHash := *result.TxHash
+
+	var confirmed bool
+	retryErr := it.restoreConfirmationRetry.Do(ctx, func(attempt int) ( /*retry*/ bool, error) {
+		if cancelled(ctx) {
+			return false, nil
+		}
+		txResult, resErr := it.baseLedger.GetTransactionResult(ctx, txHash)
+		if resErr != nil {
+			// not found yet (or a transient RPC error) - keep polling until the retry budget is spent
+			return true, resErr
+		}
+		if !txResult.Success {
+			return false, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreTransactionFailed, txHash)
+		}
+		confirmed = true
+		return false, nil
+	})
+	if retryErr != nil {
+		return &txHash, retryErr
+	}
+	if !confirmed {
+		return &txHash, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreTransactionTimedOut, txHash)
+	}
+	return &txHash, nil
 }

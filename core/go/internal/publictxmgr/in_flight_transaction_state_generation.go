@@ -24,6 +24,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/internal/publictxmgr/metrics"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/ethclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -176,6 +177,13 @@ func (v *inFlightTransactionStateGeneration) StartNewStageContext(ctx context.Co
 	case InFlightTxStageStatusUpdate:
 		log.L(ctx).Tracef("Transaction with ID %s, triggering status update", rsc.InMemoryTx.GetSignerNonce())
 		v.stageTriggerError = v.TriggerStatusUpdate(ctx)
+	case InFlightTxStageRestoring:
+		log.L(ctx).Tracef("Transaction with ID %s, triggering restore-preamble submission", rsc.InMemoryTx.GetSignerNonce())
+		var soroban *baseledger.SorobanResources
+		if v.TransientPreviousStageOutputs != nil {
+			soroban = v.RestoreSoroban
+		}
+		v.stageTriggerError = v.TriggerRestoreTx(ctx, soroban)
 	default:
 		log.L(ctx).Tracef("Transaction with ID %s, didn't trigger any action for new stage: %s", rsc.InMemoryTx.GetSignerNonce(), stage)
 	}
@@ -220,6 +228,19 @@ func (v *inFlightTransactionStateGeneration) AddSubmitOutput(ctx context.Context
 	log.L(ctx).Debugf("%s AddSubmitOutput took %s to write the result", v.GetSignerNonce(), time.Since(start))
 }
 
+func (v *inFlightTransactionStateGeneration) AddRestoreOutput(ctx context.Context, txHash *pldtypes.Bytes32, err error) {
+	start := time.Now()
+	log.L(ctx).Debugf("%s Setting restore output, txHash %s, err %+v", v.GetSignerNonce(), txHash, err)
+	v.AddStageOutputs(ctx, &StageOutput{
+		Stage: InFlightTxStageRestoring,
+		RestoreOutput: &RestoreOutputs{
+			TxHash: txHash,
+			Err:    err,
+		},
+	})
+	log.L(ctx).Debugf("%s AddRestoreOutput took %s to write the result", v.GetSignerNonce(), time.Since(start))
+}
+
 func (v *inFlightTransactionStateGeneration) ProcessStageOutputs(ctx context.Context, processFunction func(stageOutputs []*StageOutput) (unprocessedStageOutputs []*StageOutput)) {
 	v.bufferedStageOutputsMux.Lock()
 	defer v.bufferedStageOutputsMux.Unlock()
@@ -235,15 +256,17 @@ func (v *inFlightTransactionStateGeneration) AddStageOutputs(ctx context.Context
 	v.bufferedStageOutputs = append(v.bufferedStageOutputs, stageOutput)
 }
 
-func (v *inFlightTransactionStateGeneration) AddSignOutput(ctx context.Context, signedMessage []byte, txHash *pldtypes.Bytes32, err error) {
+func (v *inFlightTransactionStateGeneration) AddSignOutput(ctx context.Context, signedMessage []byte, txHash *pldtypes.Bytes32, requiresRestore bool, restoreSoroban *baseledger.SorobanResources, err error) {
 	start := time.Now()
-	log.L(ctx).Debugf("%s Setting signed message, hash %s, signed message not nil %t, err %+v", v.GetSignerNonce(), txHash, signedMessage != nil, err)
+	log.L(ctx).Debugf("%s Setting signed message, hash %s, signed message not nil %t, requiresRestore %t, err %+v", v.GetSignerNonce(), txHash, signedMessage != nil, requiresRestore, err)
 	v.AddStageOutputs(ctx, &StageOutput{
 		Stage: InFlightTxStageSigning,
 		SignOutput: &SignOutputs{
-			SignedMessage: signedMessage,
-			TxHash:        txHash,
-			Err:           err,
+			SignedMessage:   signedMessage,
+			TxHash:          txHash,
+			RequiresRestore: requiresRestore,
+			RestoreSoroban:  restoreSoroban,
+			Err:             err,
 		},
 	})
 	log.L(ctx).Debugf("%s AddSignOutput took %s to write the result", v.GetSignerNonce(), time.Since(start))
@@ -357,6 +380,13 @@ func (v *inFlightTransactionStateGeneration) PersistTxState(ctx context.Context)
 		if rsc.StageOutputsToBePersisted.TxUpdates.NewValues.InFlightStatus != nil &&
 			*rsc.StageOutputsToBePersisted.TxUpdates.NewValues.InFlightStatus == InFlightStatusConfirmReceived {
 			v.RecordCompletedTransactionCountMetrics(ctx, string(GenericStatusSuccess))
+		}
+
+		newValues := rsc.StageOutputsToBePersisted.TxUpdates.NewValues
+		if newValues.RequiresRestore != nil || newValues.RestoreTxHash != nil || newValues.Nonce != nil {
+			if err := v.statusUpdater.UpdateRestoreState(ctx, rsc.InMemoryTx.GetPubTxnID(), newValues.RequiresRestore, newValues.RestoreTxHash, newValues.Nonce); err != nil {
+				return rsc.Stage, time.Now(), err
+			}
 		}
 
 		// update the in memory state

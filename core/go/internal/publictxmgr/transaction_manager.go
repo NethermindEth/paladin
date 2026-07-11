@@ -543,6 +543,32 @@ func (ptm *pubTxManager) writeUpdatedTransaction(ctx context.Context, dbTX persi
 	return err
 }
 
+// UpdateRestoreState persists the restore-preamble stage's outcome (chapter 12 §12.2, Stellar
+// only) directly against the public_txns row. See StatusUpdater.UpdateRestoreState's doc comment
+// for why this is a synchronous write rather than routed through the batched submissionWriter.
+func (ptm *pubTxManager) UpdateRestoreState(ctx context.Context, pubTxnID uint64, requiresRestore *bool, restoreTxHash *pldtypes.Bytes32, nonce *uint64) error {
+	ctx = log.WithComponent(ctx, "publictxnmanager")
+	updates := map[string]interface{}{}
+	if requiresRestore != nil {
+		updates["requires_restore"] = *requiresRestore
+	}
+	if restoreTxHash != nil {
+		updates["restore_tx_hash"] = restoreTxHash
+	}
+	if nonce != nil {
+		updates["nonce"] = *nonce
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return ptm.p.NOTX().DB().
+		WithContext(ctx).
+		Table("public_txns").
+		Where("pub_txn_id = ?", pubTxnID).
+		Updates(updates).
+		Error
+}
+
 func (ptm *pubTxManager) postCommitNewTransactions(toNotify map[pldtypes.EthAddress]bool) func(ctx context.Context) {
 	return func(ctx context.Context) {
 		// Mark any active orchestrators stale

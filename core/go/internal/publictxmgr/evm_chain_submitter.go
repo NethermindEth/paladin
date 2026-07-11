@@ -176,3 +176,9 @@ func (s *evmChainSubmitter) Submit(ctx context.Context, ps *PreparedSubmission) 
 func (s *evmChainSubmitter) ActionOnStale(_ context.Context, _ *DBPublicTxn) (StaleAction, error) {
 	return StaleActionRebuild, nil
 }
+
+// PrepareRestore is not applicable to EVM: EVM's PrepareSubmission never reports RequiresRestore,
+// so the orchestrator never enters the restore-preamble stage for an EVM transaction.
+func (s *evmChainSubmitter) PrepareRestore(ctx context.Context, _ *DBPublicTxn, _ *baseledger.SorobanResources) (*PreparedSubmission, error) {
+	return nil, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreNotSupported)
+}

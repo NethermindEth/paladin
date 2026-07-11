@@ -751,12 +751,22 @@
 | interval | Orchestrator interval | `string` | `"5s"` |
 | maxInFlight | Maximum inflight transactions | `int` | `500` |
 | persistenceRetryTime | Persistence retry time | `string` | `"5s"` |
+| restoreConfirmationRetry | Restore-preamble confirmation poll retry configuration (Stellar only) | [`RetryConfigWithMax`](#publictxmanagerorchestratorrestoreconfirmationretry) | - |
 | resubmitInterval | Resubmit interval | `string` | `"5m"` |
 | stageRetryTime | Stage retry time | `string` | `"10s"` |
 | staleTimeout | Stale timeout | `string` | `"5m"` |
 | submissionRetry | Submission retry configuration | [`RetryConfigWithMax`](#publictxmanagerorchestratorsubmissionretry) | - |
 | timelineMaxEntries | Timeline logging maximum entries | `int` | `0` |
 | unavailableBalanceHandler | Unavailable balance handler | `string` | - |
+
+## publicTxManager.orchestrator.restoreConfirmationRetry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| factor | Exponential backoff factor | `float64` | `1.00` |
+| initialDelay | Initial delay before retry | `string` | `"2s"` |
+| maxAttempts | Maximum number of retry attempts | `int` | `30` |
+| maxDelay | Maximum delay between retries | `string` | `"5s"` |
 
 ## publicTxManager.orchestrator.submissionRetry
 

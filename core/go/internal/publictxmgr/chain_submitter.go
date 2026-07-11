@@ -29,6 +29,13 @@ type PreparedSubmission struct {
 	RawTransaction  pldtypes.HexBytes
 	TransactionHash *pldtypes.Bytes32
 	GasPricing      *pldapi.PublicTxGasPricing
+	// RequiresRestore, when true, means PrepareSubmission determined (via a fresh simulation) that
+	// a needed ledger entry is archived and must be restored before the real transaction can be
+	// built - RawTransaction/TransactionHash are unset in this case. RestoreSoroban carries the
+	// simulation data (footprint + fee) needed to build that restore transaction via
+	// ChainSubmitter.PrepareRestore (chapter 12 §12.2's restore-preamble stage, Stellar only).
+	RequiresRestore bool
+	RestoreSoroban  *baseledger.SorobanResources
 }
 
 // SubmitResult is the outcome of a ChainSubmitter.Submit call: the (possibly unchanged) transaction
@@ -61,4 +68,7 @@ type ChainSubmitter interface {
 	PrepareSubmission(ctx context.Context, ptx *DBPublicTxn, resourceEstimate *baseledger.ResourceEstimate) (*PreparedSubmission, error)
 	Submit(ctx context.Context, ps *PreparedSubmission) (*SubmitResult, error)
 	ActionOnStale(ctx context.Context, ptx *DBPublicTxn) (StaleAction, error)
+	// PrepareRestore builds and signs a standalone restore transaction for the archived entries
+	// described by soroban (chapter 12 §12.2's restore-preamble stage). Not applicable to EVM.
+	PrepareRestore(ctx context.Context, ptx *DBPublicTxn, soroban *baseledger.SorobanResources) (*PreparedSubmission, error)
 }

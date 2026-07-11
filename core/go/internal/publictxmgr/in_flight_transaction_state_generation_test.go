@@ -174,7 +174,7 @@ func TestStateManagerStageOutputManagement(t *testing.T) {
 	go func() {
 		for i := 0; i < expectedNumberOfSignSuccessOutput; i++ {
 			go func() {
-				version.AddSignOutput(ctx, []byte("data"), confutil.P(pldtypes.RandBytes32()), nil)
+				version.AddSignOutput(ctx, []byte("data"), confutil.P(pldtypes.RandBytes32()), false, nil, nil)
 				countChanel <- true
 			}()
 		}
@@ -182,7 +182,7 @@ func TestStateManagerStageOutputManagement(t *testing.T) {
 	go func() {
 		for i := 0; i < expectedNumberOfSignErrorOutput; i++ {
 			go func() {
-				version.AddSignOutput(ctx, nil, nil, fmt.Errorf("error"))
+				version.AddSignOutput(ctx, nil, nil, false, nil, fmt.Errorf("error"))
 				countChanel <- true
 			}()
 		}

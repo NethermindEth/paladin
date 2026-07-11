@@ -40,8 +40,13 @@ type DBPublicTxn struct {
 	Suspended     bool                                      `gorm:"column:suspended"` // excluded from processing because it's suspended by user
 	Dispatcher    string                                    `gorm:"column:dispatcher"`
 	RestoreTxHash *pldtypes.Bytes32                         `gorm:"column:restore_tx_hash"`
-	Completed     *DBPublicTxnCompletion                    `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
-	Submissions   []*DBPubTxnSubmission                     `gorm:"foreignKey:pub_txn_id"`
+	// RequiresRestore is Stellar only (chapter 12 §12.2): set by the restore-preamble stage when a
+	// fresh simulation reports a needed ledger entry is archived, and cleared once the restore
+	// transaction (RestoreTxHash) confirms. Observability only - see stellar_chain_submitter.go's
+	// PrepareSubmission doc comment for why control flow never re-derives from this persisted value.
+	RequiresRestore bool                   `gorm:"column:requires_restore"`
+	Completed       *DBPublicTxnCompletion `gorm:"foreignKey:pub_txn_id;references:pub_txn_id"` // excluded from processing because it's done
+	Submissions     []*DBPubTxnSubmission  `gorm:"foreignKey:pub_txn_id"`
 	// Binding is only on queries by transaction (GORM doesn't seem to allow us to define a separate struct for this) and
 	// to pass Paladin TX info to the sequencer
 	Binding *DBPublicTxnBinding `gorm:"foreignKey:pub_txn_id;references:pub_txn_id;"`

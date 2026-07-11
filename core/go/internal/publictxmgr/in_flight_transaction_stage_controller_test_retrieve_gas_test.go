@@ -30,11 +30,19 @@ import (
 )
 
 type mockStatusUpdater struct {
-	updateSubStatus func(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON, actionOccurred *pldtypes.Timestamp) error
+	updateSubStatus    func(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON, actionOccurred *pldtypes.Timestamp) error
+	updateRestoreState func(ctx context.Context, pubTxnID uint64, requiresRestore *bool, restoreTxHash *pldtypes.Bytes32, nonce *uint64) error
 }
 
 func (msu *mockStatusUpdater) UpdateSubStatus(ctx context.Context, imtx InMemoryTxStateReadOnly, subStatus BaseTxSubStatus, action BaseTxAction, info pldtypes.RawJSON, err pldtypes.RawJSON, actionOccurred *pldtypes.Timestamp) error {
 	return msu.updateSubStatus(ctx, imtx, subStatus, action, info, err, actionOccurred)
+}
+
+func (msu *mockStatusUpdater) UpdateRestoreState(ctx context.Context, pubTxnID uint64, requiresRestore *bool, restoreTxHash *pldtypes.Bytes32, nonce *uint64) error {
+	if msu.updateRestoreState == nil {
+		return nil
+	}
+	return msu.updateRestoreState(ctx, pubTxnID, requiresRestore, restoreTxHash, nonce)
 }
 
 func TestProduceLatestInFlightStageContextRetrieveGas(t *testing.T) {

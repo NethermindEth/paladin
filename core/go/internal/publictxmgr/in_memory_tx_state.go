@@ -39,6 +39,7 @@ type managedTx struct {
 	TransactionHash       *pldtypes.Bytes32         // the most recently submitted transaction hash (not guaranteed to be the one mined)
 	FirstSubmit           *pldtypes.Timestamp       // the time this runtime instance first did a submit JSON/RPC call (for success or failure)
 	LastSubmit            *pldtypes.Timestamp       // the last time runtime instance first did a submit JSON/RPC call (for success or failure)
+	RequiresRestore       bool                      // Stellar only (chapter 12 §12.2) - observability, see GetRequiresRestore
 }
 
 type inMemoryTxState struct {
@@ -124,6 +125,18 @@ func (imtxs *inMemoryTxState) ApplyInMemoryUpdates(ctx context.Context, txUpdate
 
 	if newValues.TransactionHash != nil {
 		mtx.TransactionHash = newValues.TransactionHash
+	}
+
+	if newValues.RequiresRestore != nil {
+		mtx.RequiresRestore = *newValues.RequiresRestore
+	}
+
+	if newValues.RestoreTxHash != nil {
+		mtx.ptx.RestoreTxHash = newValues.RestoreTxHash
+	}
+
+	if newValues.Nonce != nil {
+		mtx.ptx.Nonce = newValues.Nonce
 	}
 
 	if resetValues.GasPricing {
@@ -272,6 +285,10 @@ func (imtxs *inMemoryTxState) GetInFlightStatus() InFlightStatus {
 
 func (imtxs *inMemoryTxState) IsReadyToExit() bool {
 	return imtxs.mtx.InFlightStatus != InFlightStatusPending
+}
+
+func (imtxs *inMemoryTxState) GetRequiresRestore() bool {
+	return imtxs.mtx.RequiresRestore
 }
 
 func NewRunningStageContext(ctx context.Context, stage InFlightTxStage, substatus BaseTxSubStatus, imtxs InMemoryTxStateManager) *RunningStageContext {

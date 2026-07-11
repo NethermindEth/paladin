@@ -20,6 +20,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -54,8 +55,10 @@ func newTestStellarSubmitter(t *testing.T) (context.Context, *stellarChainSubmit
 }
 
 type mockStellarBaseLedger struct {
-	getAccountInfo func(ctx context.Context, addr pldtypes.ChainAddress) (*baseledger.AccountInfo, error)
-	submit         func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error)
+	getAccountInfo       func(ctx context.Context, addr pldtypes.ChainAddress) (*baseledger.AccountInfo, error)
+	submit               func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error)
+	estimateResources    func(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error)
+	getTransactionResult func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error)
 }
 
 func (m *mockStellarBaseLedger) Close() {}
@@ -69,6 +72,9 @@ func (m *mockStellarBaseLedger) GetAccountInfo(ctx context.Context, addr pldtype
 	return m.getAccountInfo(ctx, addr)
 }
 func (m *mockStellarBaseLedger) EstimateResources(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+	if m.estimateResources != nil {
+		return m.estimateResources(ctx, tx)
+	}
 	return nil, fmt.Errorf("unused")
 }
 func (m *mockStellarBaseLedger) BuildTransaction(ctx context.Context, tx *baseledger.UnsignedChainTx, est *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {
@@ -78,6 +84,9 @@ func (m *mockStellarBaseLedger) Submit(ctx context.Context, raw baseledger.Signe
 	return m.submit(ctx, raw)
 }
 func (m *mockStellarBaseLedger) GetTransactionResult(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+	if m.getTransactionResult != nil {
+		return m.getTransactionResult(ctx, id)
+	}
 	return nil, fmt.Errorf("unused")
 }
 
@@ -99,6 +108,10 @@ func TestStellarAssignOrderingKey(t *testing.T) {
 func TestStellarPrepareSubmission(t *testing.T) {
 	ctx, submitter, m, done := newTestStellarSubmitter(t)
 	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.estimateResources = func(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+		return &baseledger.ResourceEstimate{Soroban: &baseledger.SorobanResources{}}, nil
+	}
 	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
 	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: validStellarInvokeContractPayload(t)}
 	keyMapping := &pldapi.KeyMappingAndVerifier{
@@ -128,6 +141,12 @@ func TestStellarPrepareSubmission(t *testing.T) {
 func TestStellarPrepareSubmissionInvalidPayload(t *testing.T) {
 	ctx, submitter, _, done := newTestStellarSubmitter(t)
 	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	// The real baseledger/stellar.Client.EstimateResources builds (and so validates) the
+	// transaction before simulating - the mock reproduces that same failure mode here.
+	ledger.estimateResources = func(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+		return nil, fmt.Errorf("invalid host function payload: bad xdr")
+	}
 	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
 	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: []byte("nope")}
 	_, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
@@ -170,4 +189,111 @@ func TestStellarSubmitInsufficientFeeRequiresRetry(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, SubmissionOutcomeFailedRequiresRetry, result.Outcome)
 	assert.Equal(t, xdr.TransactionResultCodeTxInsufficientFee.String(), result.ErrorReason)
+}
+
+func TestStellarPrepareSubmissionRequiresRestore(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.estimateResources = func(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+		return &baseledger.ResourceEstimate{Soroban: &baseledger.SorobanResources{
+			RequiresRestore:                   true,
+			RestorePreambleTransactionDataXDR: []byte{0x01, 0x02},
+		}}, nil
+	}
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: validStellarInvokeContractPayload(t)}
+
+	prepared, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.True(t, prepared.RequiresRestore)
+	require.NotNil(t, prepared.RestoreSoroban)
+	assert.Equal(t, []byte{0x01, 0x02}, prepared.RestoreSoroban.RestorePreambleTransactionDataXDR)
+	assert.Empty(t, prepared.RawTransaction)
+	assert.Nil(t, prepared.TransactionHash)
+}
+
+func TestStellarPrepareSubmissionClassicOpsSkipsSimulation(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	// The mock's estimateResources is left unset (returns "unused" if called) - proving classic
+	// ops never reach EstimateResources, matching chapter 12 §12.3 (classic ops have no footprint).
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	payload, err := baseledgerstellar.BuildChangeTrustPayload(txnbuildAsset(t), "1000")
+	require.NoError(t, err)
+	ptx := &DBPublicTxn{
+		PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7)), Data: payload,
+		PayloadKind: pldapi.PublicTxPayloadKindXDRClassicOps.Enum(),
+	}
+	keyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key", KeyHandle: "m/44'/148'/0'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(keyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, keyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	prepared, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.False(t, prepared.RequiresRestore)
+	assert.NotEmpty(t, prepared.RawTransaction)
+}
+
+func txnbuildAsset(t *testing.T) txnbuild.Asset {
+	issuer := keypair.MustRandom().Address()
+	return txnbuild.CreditAsset{Code: "USDX", Issuer: issuer}
+}
+
+func TestStellarPrepareRestore(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7))}
+
+	var sorobanData xdr.SorobanTransactionData
+	sorobanDataXDR, err := sorobanData.MarshalBinary()
+	require.NoError(t, err)
+	soroban := &baseledger.SorobanResources{RestorePreambleTransactionDataXDR: sorobanDataXDR}
+
+	keyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key", KeyHandle: "m/44'/148'/0'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(keyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, keyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	prepared, err := submitter.PrepareRestore(ctx, ptx, soroban)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.Equal(t, uint64(1), prepared.PublicTxnID)
+	require.NotNil(t, prepared.TransactionHash)
+	assert.NotEmpty(t, prepared.RawTransaction)
+
+	var envelope xdr.TransactionEnvelope
+	require.NoError(t, envelope.UnmarshalBinary(prepared.RawTransaction))
+	ops := envelope.Operations()
+	require.Len(t, ops, 1)
+	_, ok := ops[0].Body.GetRestoreFootprintOp()
+	assert.True(t, ok)
+}
+
+func TestStellarPrepareRestoreRequiresNonce(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr}
+	_, err := submitter.PrepareRestore(ctx, ptx, &baseledger.SorobanResources{RestorePreambleTransactionDataXDR: []byte{0x01}})
+	require.ErrorContains(t, err, "sequence number")
+}
+
+func TestStellarPrepareRestoreRequiresPreamble(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	addr := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ptx := &DBPublicTxn{PublicTxnID: 1, From: addr, Nonce: confutil.P(uint64(7))}
+	_, err := submitter.PrepareRestore(ctx, ptx, &baseledger.SorobanResources{})
+	require.ErrorContains(t, err, "no restore preamble available")
 }

@@ -251,6 +251,32 @@ func TestEstimateResourcesRequiresRestore(t *testing.T) {
 	require.True(t, res.Soroban.RequiresRestore)
 }
 
+func TestEstimateResourcesRequiresRestoreCarriesPreambleData(t *testing.T) {
+	ctx := context.Background()
+	from := *pldtypes.MustParseChainAddress(testAccount)
+	preambleData := base64.StdEncoding.EncodeToString([]byte{0x0a, 0x0b, 0x0c})
+
+	rpc := &fakeRPC{
+		loadAccount: fakeAccountLoader(41),
+		simulateTransaction: func(ctx context.Context, req protocol.SimulateTransactionRequest) (protocol.SimulateTransactionResponse, error) {
+			return protocol.SimulateTransactionResponse{
+				RestorePreamble: &protocol.RestorePreamble{MinResourceFee: 999, TransactionDataXDR: preambleData},
+			}, nil
+		},
+	}
+	c := WrapClient(rpc, "", nil)
+
+	res, err := c.EstimateResources(ctx, &baseledger.UnsignedChainTx{
+		From:        from,
+		PayloadKind: baseledger.PayloadEncodingXDRInvokeContractArgs,
+		Payload:     validInvokeContractPayload(t),
+	})
+	require.NoError(t, err)
+	require.True(t, res.Soroban.RequiresRestore)
+	require.Equal(t, []byte{0x0a, 0x0b, 0x0c}, res.Soroban.RestorePreambleTransactionDataXDR)
+	require.EqualValues(t, 999, res.Soroban.RestorePreambleMinResourceFee)
+}
+
 func TestEstimateResourcesClassicOpsSkipsSimulation(t *testing.T) {
 	ctx := context.Background()
 	from := *pldtypes.MustParseChainAddress(testAccount)
