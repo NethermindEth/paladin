@@ -175,6 +175,7 @@ type LedgerUnit struct {
 type IndexedChainTx struct {
 	TxID       TxID                  `json:"txId"`
 	From       pldtypes.ChainAddress `json:"from"`
+	Nonce      uint64                `json:"nonce"` // sequence number for Stellar; nonce for EVM
 	Result     string                `json:"result,omitempty"`
 	RevertData []byte                `json:"revertData,omitempty"`
 	TxIndex    int64                 `json:"txIndex"`

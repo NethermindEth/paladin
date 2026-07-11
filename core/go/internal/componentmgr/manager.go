@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"runtime"
+	"time"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
@@ -29,6 +30,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/groupmgr"
 	"github.com/LFDT-Paladin/paladin/core/internal/identityresolver"
 	"github.com/LFDT-Paladin/paladin/core/internal/keymanager"
+	ledgerindexerstellar "github.com/LFDT-Paladin/paladin/core/internal/ledgerindexer/stellar"
 	"github.com/LFDT-Paladin/paladin/core/internal/metrics"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/internal/plugins"
@@ -76,9 +78,14 @@ type componentManager struct {
 	baseLedger       baseledger.Client
 	persistence      persistence.Persistence
 	blockIndexer     blockindexer.BlockIndexer
-	rpcServer        rpcserver.RPCServer
-	metricsServer    metricsserver.MetricsServer
-	metricsManager   metrics.Metrics
+	// stellarLedgerIndexer is the type: stellar equivalent of blockIndexer (chapter 12 §12.4) - a
+	// narrow ledger poller/writer, not the full EVM-shaped BlockIndexer interface. Exactly one of
+	// blockIndexer/stellarLedgerIndexer is non-nil, chosen by cm.conf.BaseLedger.ResolvedType().
+	stellarLedgerIndexer   *ledgerindexerstellar.Indexer
+	stellarIngestorRPClose func()
+	rpcServer              rpcserver.RPCServer
+	metricsServer          metricsserver.MetricsServer
+	metricsManager         metrics.Metrics
 
 	// managers
 	stateManager             components.StateManager
@@ -169,7 +176,9 @@ func (cm *componentManager) Init() (err error) {
 				cm.conf.Blockchain = *cm.conf.BaseLedger.EVM
 			}
 		case pldconf.BaseLedgerTypeStellar:
-			err = i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerUnsupported, cm.conf.BaseLedger.ResolvedType())
+			if cm.conf.BaseLedger.Stellar == nil {
+				err = i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerStellarConfigMissing)
+			}
 		default:
 			err = i18n.NewError(cm.bgCtx, msgs.MsgComponentBaseLedgerInvalidType, cm.conf.BaseLedger.ResolvedType())
 		}
@@ -187,6 +196,9 @@ func (cm *componentManager) Init() (err error) {
 	if err == nil && cm.conf.BaseLedger.ResolvedType() == pldconf.BaseLedgerTypeEVM {
 		cm.blockIndexer, err = blockindexer.NewBlockIndexer(cm.bgCtx, &cm.conf.BlockIndexer, &cm.conf.Blockchain.WS, cm.persistence)
 		err = cm.wrapIfErr(err, msgs.MsgComponentBlockIndexerInitError)
+	}
+	if err == nil && cm.conf.BaseLedger.ResolvedType() == pldconf.BaseLedgerTypeStellar {
+		err = cm.initStellarLedgerIndexer()
 	}
 	if err == nil {
 		cm.rpcServer, err = rpcserver.NewRPCServer(cm.bgCtx, &cm.conf.RPCServer)
@@ -372,6 +384,45 @@ func (cm *componentManager) startBlockIndexer() (err error) {
 	return err
 }
 
+// initStellarLedgerIndexer constructs (but does not start) the Stellar ledger indexer - the
+// type: stellar counterpart to blockIndexer's construction in Init(). It gets its own stellar-rpc
+// connection (via stellarclient.NewClient), separate from the one newBaseLedgerClient constructs
+// during StartManagers() for baseLedger.Client itself - mirroring how blockIndexer's WS connection
+// is independent of ethClientFactory's.
+func (cm *componentManager) initStellarLedgerIndexer() error {
+	rpc, closeFn, err := stellarclient.NewClient(cm.bgCtx, cm.conf.BaseLedger.Stellar)
+	if err != nil {
+		return cm.wrapIfErr(err, msgs.MsgComponentBlockIndexerInitError)
+	}
+	cm.stellarIngestorRPClose = closeFn
+	ingestorConf := cm.conf.BaseLedger.Stellar.Ingestor
+	pollInterval := confutil.DurationMin(ingestorConf.PollInterval, 100*time.Millisecond, *pldconf.StellarClientDefaults.Ingestor.PollInterval)
+	insertDBBatchSize := confutil.IntMin(ingestorConf.InsertDBBatchSize, 1, *pldconf.StellarClientDefaults.Ingestor.InsertDBBatchSize)
+	ingestor := baseledgerstellar.NewIngestor(rpc, cm.conf.BaseLedger.Stellar.NetworkPassphrase, pollInterval)
+	ingestRetry := retry.NewRetryIndefinite(&ingestorConf.Retry)
+	cm.stellarLedgerIndexer = ledgerindexerstellar.NewIndexer(cm.bgCtx, ingestor, cm.persistence, ingestRetry, insertDBBatchSize)
+	return nil
+}
+
+// startStellarLedgerIndexer is the type: stellar counterpart to startBlockIndexer - it feeds the
+// same PreCommitHandlers (collected the same way buildInternalEventStreams collects them for
+// blockIndexer.Start) so publictxmgr's confirmation-matching needs zero Stellar-specific changes.
+func (cm *componentManager) startStellarLedgerIndexer() error {
+	preCommitHandlers := cm.collectPreCommitHandlers()
+	err := cm.stellarLedgerIndexer.Start(preCommitHandlers...)
+	return cm.addIfStarted("stellar_ledger_indexer", cm.stellarLedgerIndexer, err, msgs.MsgComponentBlockIndexerStartError)
+}
+
+func (cm *componentManager) collectPreCommitHandlers() []blockindexer.PreCommitHandler {
+	var handlers []blockindexer.PreCommitHandler
+	for _, initResult := range cm.initResults {
+		if initResult.PreCommitHandler != nil {
+			handlers = append(handlers, initResult.PreCommitHandler)
+		}
+	}
+	return handlers
+}
+
 func (cm *componentManager) startEthClient() error {
 	return cm.ethClientStartupRetry.Do(cm.bgCtx, func(attempt int) (retryable bool, err error) {
 		return true, cm.ethClientFactory.Start()
@@ -497,9 +548,14 @@ func (cm *componentManager) CompleteStart() error {
 		err = cm.wrapIfErr(err, msgs.MsgComponentWaitPluginStartError)
 	}
 
-	// then start the block indexer
+	// then start the block indexer / stellar ledger indexer
 	if err == nil {
-		err = cm.startBlockIndexer()
+		switch cm.conf.BaseLedger.ResolvedType() {
+		case pldconf.BaseLedgerTypeEVM:
+			err = cm.startBlockIndexer()
+		case pldconf.BaseLedgerTypeStellar:
+			err = cm.startStellarLedgerIndexer()
+		}
 	}
 
 	// We need the domains to have initialised before we can use them in the sequencer
@@ -643,6 +699,12 @@ func (cm *componentManager) Stop() {
 		log.L(cm.bgCtx).Debugf("Stopped eth client")
 	}
 
+	if cm.stellarIngestorRPClose != nil {
+		log.L(cm.bgCtx).Infof("Closing stellar ledger indexer RPC client")
+		cm.stellarIngestorRPClose()
+		log.L(cm.bgCtx).Debugf("Closed stellar ledger indexer RPC client")
+	}
+
 	log.L(cm.bgCtx).Debug("Stopped")
 }
 
@@ -672,6 +734,18 @@ func (cm *componentManager) RPCServer() rpcserver.RPCServer {
 
 func (cm *componentManager) BlockIndexer() blockindexer.BlockIndexer {
 	return cm.blockIndexer
+}
+
+func (cm *componentManager) LedgerIndexReady(ctx context.Context) error {
+	switch cm.conf.BaseLedger.ResolvedType() {
+	case pldconf.BaseLedgerTypeEVM:
+		_, err := cm.blockIndexer.GetConfirmedBlockHeight(ctx)
+		return err
+	case pldconf.BaseLedgerTypeStellar:
+		return cm.stellarLedgerIndexer.Ready(ctx)
+	default:
+		return i18n.NewError(ctx, msgs.MsgComponentBaseLedgerInvalidType, cm.conf.BaseLedger.ResolvedType())
+	}
 }
 
 func (cm *componentManager) DomainManager() components.DomainManager {

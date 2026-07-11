@@ -87,6 +87,7 @@ var (
 	MsgComponentDistributedSequencerStartError       = pde("PD010044", "Error starting distributed sequencer manager")
 	MsgComponentBaseLedgerUnsupported                = pde("PD010045", "Base ledger type '%s' is parsed but not implemented yet")
 	MsgComponentBaseLedgerInvalidType                = pde("PD010046", "Invalid base ledger type '%s'")
+	MsgComponentBaseLedgerStellarConfigMissing       = pde("PD010047", "baseLedger.stellar configuration is required when baseLedger.type is 'stellar'")
 
 	// States PD0101XX
 	MsgStateInvalidLength             = pde("PD010101", "Invalid hash len expected=%d actual=%d")

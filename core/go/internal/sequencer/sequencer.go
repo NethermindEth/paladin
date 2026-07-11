@@ -116,7 +116,7 @@ func (sMgr *sequencerManager) pollForIncompleteTransactions(ctx context.Context,
 		for {
 			// On startup we can't assemble any transactions without having a confirmed block height so
 			// wait until the indexer is ready
-			_, err := sMgr.components.BlockIndexer().GetConfirmedBlockHeight(ctx)
+			err := sMgr.components.LedgerIndexReady(ctx)
 			if err == nil {
 				break
 			}

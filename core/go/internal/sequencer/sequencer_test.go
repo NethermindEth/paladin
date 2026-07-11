@@ -26,7 +26,6 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	coordinatorTx "github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator/transaction"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/syncpoints"
-	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/persistencemocks"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
@@ -1232,13 +1231,11 @@ func TestSequencerManager_pollForIncompleteTransactions_ContextCancelDuringRetry
 	defer cancel()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	blockIndexer := blockindexermocks.NewBlockIndexer(t)
 
 	called := make(chan struct{})
-	mocks.components.EXPECT().BlockIndexer().Return(blockIndexer).Once()
-	blockIndexer.EXPECT().GetConfirmedBlockHeight(mock.Anything).RunAndReturn(func(context.Context) (pldtypes.HexUint64, error) {
+	mocks.components.EXPECT().LedgerIndexReady(mock.Anything).RunAndReturn(func(context.Context) error {
 		close(called)
-		return 0, errors.New("not ready")
+		return errors.New("not ready")
 	}).Once()
 
 	sm.pollForIncompleteTransactions(ctx, time.Second)
@@ -1250,10 +1247,8 @@ func TestSequencerManager_pollForIncompleteTransactions_ContextCancelDuringTicke
 	defer cancel()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	blockIndexer := blockindexermocks.NewBlockIndexer(t)
 
-	mocks.components.EXPECT().BlockIndexer().Return(blockIndexer).Once()
-	blockIndexer.EXPECT().GetConfirmedBlockHeight(mock.Anything).Return(pldtypes.HexUint64(100), nil).Once()
+	mocks.components.EXPECT().LedgerIndexReady(mock.Anything).Return(nil).Once()
 
 	// Each resumeIncompleteTransactions call invokes QueryTransactionsResolved once.
 	// Reading the channel twice confirms both the initial resume call and at least one tick.
@@ -1364,13 +1359,11 @@ func TestSequencerManager_pollForIncompleteTransactions_BlockIndexerRetryTimer(t
 	defer cancel()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	blockIndexer := blockindexermocks.NewBlockIndexer(t)
 
-	mocks.components.EXPECT().BlockIndexer().Return(blockIndexer).Twice()
-	// First call: block indexer not yet ready
-	blockIndexer.EXPECT().GetConfirmedBlockHeight(mock.Anything).Return(pldtypes.HexUint64(0), errors.New("not ready")).Once()
+	// First call: ledger indexer not yet ready
+	mocks.components.EXPECT().LedgerIndexReady(mock.Anything).Return(errors.New("not ready")).Once()
 	// Second call: ready — retry timer fired
-	blockIndexer.EXPECT().GetConfirmedBlockHeight(mock.Anything).Return(pldtypes.HexUint64(100), nil).Once()
+	mocks.components.EXPECT().LedgerIndexReady(mock.Anything).Return(nil).Once()
 
 	resumed := make(chan struct{})
 	mocks.txManager.EXPECT().QueryTransactionsResolved(mock.Anything, mock.Anything, mock.Anything, mock.Anything).

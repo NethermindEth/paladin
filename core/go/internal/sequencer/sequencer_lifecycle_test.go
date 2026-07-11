@@ -30,7 +30,6 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator"
 	coordinatorTx "github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator/transaction"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/originator"
-	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/coordinatormocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/metricsmocks"
@@ -958,7 +957,6 @@ func TestSequencerManager_Start_Success(t *testing.T) {
 	persistence := persistencemocks.NewPersistence(t)
 	txManager := componentsmocks.NewTXManager(t)
 	publicTxManager := componentsmocks.NewPublicTxManager(t)
-	blockIndexer := blockindexermocks.NewBlockIndexer(t)
 
 	// Setup PostInit first
 	allComponents.EXPECT().TransportManager().Return(transportManager).Twice() // Called once for nodeName, once for NewSyncPoints
@@ -971,8 +969,7 @@ func TestSequencerManager_Start_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Setup expectations for pollForIncompleteTransactions
-	allComponents.EXPECT().BlockIndexer().Return(blockIndexer).Maybe()
-	blockIndexer.EXPECT().GetConfirmedBlockHeight(mock.Anything).Return(pldtypes.HexUint64(100), nil).Maybe()
+	allComponents.EXPECT().LedgerIndexReady(mock.Anything).Return(nil).Maybe()
 	allComponents.EXPECT().TxManager().Return(txManager).Maybe()
 	allComponents.EXPECT().Persistence().Return(persistence).Maybe()
 	persistence.EXPECT().NOTX().Return(nil).Maybe()

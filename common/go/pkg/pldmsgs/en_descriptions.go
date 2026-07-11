@@ -875,4 +875,10 @@ var (
 	// StellarClientConfig field descriptions (url/tls/auth/retry/timeouts come from the inlined
 	// HTTPClientConfig, described separately below)
 	StellarClientConfigNetworkPassphrase = pdm("StellarClientConfig.networkPassphrase", "Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network)")
+	StellarClientConfigIngestor          = pdm("StellarClientConfig.ingestor", "Configuration for the Stellar ledger ingestor")
+
+	// StellarIngestorConfig field descriptions
+	StellarIngestorConfigPollInterval      = pdm("StellarIngestorConfig.pollInterval", "Interval between getLedgers polls (stellar-rpc has no push/subscription mode)")
+	StellarIngestorConfigInsertDBBatchSize = pdm("StellarIngestorConfig.insertDBBatchSize", "Maximum number of indexed rows to insert in a single DB batch")
+	StellarIngestorConfigRetry             = pdm("StellarIngestorConfig.retry", "Retry configuration for ledger-write DB transactions")
 )

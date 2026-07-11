@@ -16,6 +16,8 @@
 package components
 
 import (
+	"context"
+
 	"github.com/LFDT-Paladin/paladin/core/internal/metrics"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
@@ -35,6 +37,13 @@ type PreInitComponents interface {
 	BlockIndexer() blockindexer.BlockIndexer
 	RPCServer() rpcserver.RPCServer
 	MetricsManager() metrics.Metrics
+	// LedgerIndexReady is a chain-neutral readiness gate: it errors until at least one
+	// block/ledger has been indexed. For EVM this wraps BlockIndexer().GetConfirmedBlockHeight;
+	// BlockIndexer() itself is nil for a Stellar-configured node (chapter 12 §12.4 - a Stellar
+	// node uses its own narrow ingestor, not the EVM-shaped BlockIndexer), so callers that only
+	// need a readiness signal (not the full EVM interface) should use this instead of calling
+	// BlockIndexer() directly.
+	LedgerIndexReady(ctx context.Context) error
 }
 
 // Managers are initialized after base components with access to them, and provide

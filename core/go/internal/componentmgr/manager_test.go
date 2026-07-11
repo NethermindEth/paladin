@@ -149,6 +149,88 @@ func TestInitOK(t *testing.T) {
 
 }
 
+func TestInitOKStellar(t *testing.T) {
+
+	l, err := net.Listen("tcp4", ":0")
+	require.NoError(t, err)
+	debugPort := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+
+	// A type: stellar node skips ethClientFactory/blockIndexer entirely and constructs the
+	// stellarLedgerIndexer instead (chapter 12 §12.4) - neither connects anywhere during Init(),
+	// same as the EVM equivalent above.
+	testConfig := &pldconf.PaladinConfig{
+		TransportManagerInlineConfig: pldconf.TransportManagerInlineConfig{
+			NodeName: "node1",
+		},
+		DB: pldconf.DBConfig{
+			Type: "sqlite",
+			SQLite: pldconf.SQLiteConfig{
+				SQLDBConfig: pldconf.SQLDBConfig{
+					DSN:           ":memory:",
+					AutoMigrate:   confutil.P(true),
+					MigrationsDir: "../../db/migrations/sqlite",
+				},
+			},
+		},
+		BaseLedger: pldconf.BaseLedgerConfig{
+			Type: pldconf.BaseLedgerTypeStellar,
+			Stellar: &pldconf.StellarClientConfig{
+				HTTPClientConfig: pldconf.HTTPClientConfig{
+					URL: "http://localhost:8000/soroban/rpc", // we won't actually connect this test, just check the config
+				},
+				NetworkPassphrase: "Test SDF Network ; September 2015",
+			},
+		},
+		KeyManagerInlineConfig: pldconf.KeyManagerInlineConfig{
+			Wallets: []*pldconf.WalletConfig{
+				{
+					Name: "wallet1",
+					Signer: &pldconf.SignerConfig{
+						KeyDerivation: pldconf.KeyDerivationConfig{
+							Type: pldconf.KeyDerivationTypeBIP32,
+						},
+						KeyStore: pldconf.KeyStoreConfig{
+							Type: "static",
+							Static: pldconf.StaticKeyStoreConfig{
+								Keys: map[string]pldconf.StaticKeyEntryConfig{
+									"seed": {
+										Encoding: "hex",
+										Inline:   pldtypes.RandHex(32),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		RPCServer: pldconf.RPCServerConfig{
+			HTTP: pldconf.RPCServerConfigHTTP{Disabled: true},
+			WS:   pldconf.RPCServerConfigWS{Disabled: true},
+		},
+		DebugServer: pldconf.DebugServerConfig{
+			Enabled: confutil.P(true),
+			HTTPServerConfig: pldconf.HTTPServerConfig{
+				Port: confutil.P(debugPort),
+			},
+		},
+	}
+
+	cm := NewComponentManager(context.Background(), tempSocketFile(t), uuid.New(), testConfig).(*componentManager)
+	err = cm.Init()
+	require.NoError(t, err)
+
+	assert.Nil(t, cm.EthClientFactory())
+	assert.Nil(t, cm.BlockIndexer())
+	require.NotNil(t, cm.stellarLedgerIndexer)
+
+	// Not ready until at least one ledger has been indexed
+	require.Error(t, cm.LedgerIndexReady(context.Background()))
+
+	cm.Stop()
+}
+
 func tempSocketFile(t *testing.T) (fileName string) {
 	f, err := os.CreateTemp("", "p.*.sock")
 	if err == nil {
@@ -1294,7 +1376,7 @@ func TestLoopbackTransportManager(t *testing.T) {
 	assert.Equal(t, mockLoopbackTransportManager, result, "LoopbackTransportManager() should return the set loopbackTransportManager")
 }
 
-func TestInitRejectsUnsupportedBaseLedgerType(t *testing.T) {
+func TestInitRejectsStellarWithoutClientConfig(t *testing.T) {
 	cm := NewComponentManager(context.Background(), tempSocketFile(t), uuid.New(), &pldconf.PaladinConfig{
 		BaseLedger: pldconf.BaseLedgerConfig{
 			Type: pldconf.BaseLedgerTypeStellar,
@@ -1302,7 +1384,7 @@ func TestInitRejectsUnsupportedBaseLedgerType(t *testing.T) {
 	}, nil).(*componentManager)
 
 	err := cm.Init()
-	require.Regexp(t, "PD010045.*stellar", err)
+	require.Regexp(t, "PD010047", err)
 }
 
 func TestInitRejectsInvalidBaseLedgerType(t *testing.T) {

@@ -166,6 +166,7 @@
 | auth | HTTP authentication configuration | [`HTTPBasicAuthConfig`](#baseledgerstellarauth) | - |
 | connectionTimeout | Connection timeout | `string` | - |
 | httpHeaders | HTTP headers to include in requests | `map[string][any]` | - |
+| ingestor | Configuration for the Stellar ledger ingestor | [`StellarIngestorConfig`](#baseledgerstellaringestor) | - |
 | networkPassphrase | Stellar network passphrase identifying the network (e.g. public mainnet, a testnet, or a private network) | `string` | - |
 | requestTimeout | Request timeout | `string` | - |
 | retry | HTTP retry configuration | [`HTTPRetryConfig`](#baseledgerstellarretry) | - |
@@ -178,6 +179,22 @@
 |-----|-------------|------|---------|
 | password | Basic auth password | `string` | - |
 | username | Basic auth username | `string` | - |
+
+## baseLedger.stellar.ingestor
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| insertDBBatchSize | Maximum number of indexed rows to insert in a single DB batch | `int` | - |
+| pollInterval | Interval between getLedgers polls (stellar-rpc has no push/subscription mode) | `string` | - |
+| retry | Retry configuration for ledger-write DB transactions | [`RetryConfig`](#baseledgerstellaringestorretry) | - |
+
+## baseLedger.stellar.ingestor.retry
+
+| Key | Description | Type | Default |
+|-----|-------------|------|---------|
+| factor | Exponential backoff factor | `float64` | - |
+| initialDelay | Initial delay before retry | `string` | - |
+| maxDelay | Maximum delay between retries | `string` | - |
 
 ## baseLedger.stellar.retry
 
