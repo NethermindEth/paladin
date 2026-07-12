@@ -44,15 +44,16 @@ on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the depr
 > §12.2; retention-gap fail-loud behavior and real backfill handling; `SnapshotContractState`; the
 > operator CR additions in §12.6 (deliberately out of scope — the quickstart/3-node setup above is
 > docker-compose + config only, no Kubernetes operator involved); and all live-network acceptance
-> work in §12.7. The `registries/stellar` plugin (§12.5) has been decided against, not merely
-> deferred: the existing chain-agnostic `registries/static` plugin is sufficient for the
-> docker-compose demo and beyond, matching this chapter's own original stance that static suffices
-> through M5 — treat that plugin as intentionally out of scope rather than a remaining gap. Note
-> that the backend being ready is not the same as a demo: no SNoto/SZeto/Sente contract or domain
-> plugin exists yet (ch. 13/14), so the 3-node network above has nothing domain-specific to run
-> until that separate body of work lands. The verification bar for everything above is unit tests
-> and targeted package tests plus the docker-compose validation described in §12.6; true
-> live-network / end-to-end acceptance exercises (§12.7) have not been run.
+> work in §12.7. **§12.5's earlier "decided against" call on `registries/stellar` has since been
+> reversed in chapter 13**: a `registries/stellar` plugin was built, scoped narrowly to reading the
+> identity-registry contract's events (not `SaladinFactory`/instance-discovery, which stays
+> `domainmgr`'s job, matching `registries/evm`'s own precedent) — see chapter 13's Phase 4 for the
+> plugin itself and the accompanying event-selector fix it required. Note that the backend being
+> ready is not the same as a demo: no SNoto/SZeto/Sente contract or domain plugin exists yet (ch.
+> 13/14), so the 3-node network above has nothing domain-specific to run until that separate body
+> of work lands. The verification bar for everything above is unit tests and targeted package
+> tests plus the docker-compose validation described in §12.6; true live-network / end-to-end
+> acceptance exercises (§12.7) have not been run.
 
 ## 12.1 `stellarclient`
 
@@ -201,12 +202,15 @@ operations).
   instances. Because Soroban contracts can deploy contracts, domain factories **deploy and
   register in one atomic invocation** (an improvement over the EVM two-step). Not built yet —
   ch. 13/14 territory.
-- **Registries: decided — static only, no `registries/stellar` plugin.** The chain-agnostic
-  static registry plugin works on day one and is sufficient for the docker-compose demo (and
-  beyond); a `registries/stellar` plugin mirroring `registries/evm` — reading an on-chain
-  identity-registry contract (ch. 13) — was considered and explicitly decided against rather than
-  merely deferred. Static registry suffices through at least M5; revisit only if a concrete need
-  for on-chain identity discovery emerges.
+- **Registries: `registries/stellar` built (chapter 13), reversing this section's original call.**
+  The chain-agnostic static registry plugin remains available and sufficient for simple setups,
+  but a `registries/stellar` plugin mirroring `registries/evm` was in fact built in chapter 13
+  Phase 4 — scoped to reading the identity-registry contract's events only (not
+  `SaladinFactory`/instance-discovery, which stays `domainmgr`'s job on both chains, matching
+  `registries/evm`'s own precedent). See chapter 13 for the plugin, the event-selector fix it
+  needed (`ComputeEventSelectorWithSpec`, to disambiguate event names across multiple Soroban
+  contract specs), and the still-open gap around populating the `$specName` property for future
+  domain-instance contracts beyond this one.
 
 ## 12.6 Node operations additions
 
