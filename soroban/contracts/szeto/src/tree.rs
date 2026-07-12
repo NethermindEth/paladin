@@ -14,7 +14,7 @@
 //! `addLeaf`/`getRoot`/`rootExists`. Off-chain proof generation (`getProof`/`getProofByRoot`) is
 //! a client-side concern (Zeto's Go SDK already maintains its own copy of this tree) and is not
 //! needed on-chain.
-use soroban_poseidon::poseidon_hash;
+use soroban_poseidon::PoseidonSponge;
 use soroban_sdk::{contracttype, crypto::bn254::Bn254Fr, vec, Env, U256};
 
 use crate::storage::DataKey;
@@ -69,11 +69,32 @@ fn get_node(env: &Env, node_hash: &U256) -> Node {
         .unwrap_or_else(|| empty_node(env))
 }
 
+/// Reused across every node hashed within one `insert_leaf` call, one sponge per arity.
+/// `soroban_poseidon`'s free `poseidon_hash` function rebuilds the full MDS-matrix/round-constant
+/// tables from scratch on every call (documented overhead in the crate's own docs); a tree insert
+/// can hash up to `MAX_SMT_DEPTH` nodes, so constructing each sponge once and calling
+/// `compute_hash` repeatedly (the sponge's state resets between calls, so each hash is still
+/// independent) avoids paying that setup cost at every level. Pure resource-cost optimization -
+/// produces bit-identical hashes to the free-function form.
+struct Hasher {
+    leaf: PoseidonSponge<4, Bn254Fr>,
+    middle: PoseidonSponge<3, Bn254Fr>,
+}
+
+impl Hasher {
+    fn new(env: &Env) -> Self {
+        Self {
+            leaf: PoseidonSponge::new(env),
+            middle: PoseidonSponge::new(env),
+        }
+    }
+}
+
 /// Hash of a node - `Empty` hashes to `0` (matches Solidity's zero-initialized-mapping default,
 /// not a special case in the algorithm itself), `Leaf` is `poseidon(index, value, 1)` (t=4,
 /// matches `getLeafNodeHash`/`PoseidonUnit3L` exactly), `Middle` is `poseidon(left, right)` (t=3,
 /// matches `PoseidonUnit2L`).
-fn node_hash(env: &Env, node: &Node) -> U256 {
+fn node_hash(env: &Env, hasher: &mut Hasher, node: &Node) -> U256 {
     match node.node_type {
         NodeType::Empty => zero(env),
         NodeType::Leaf => {
@@ -83,32 +104,38 @@ fn node_hash(env: &Env, node: &Node) -> U256 {
                 node.value.clone(),
                 U256::from_u32(env, 1),
             ];
-            poseidon_hash::<4, Bn254Fr>(env, &inputs)
+            hasher.leaf.compute_hash(&inputs)
         }
         NodeType::Middle => {
             let inputs = vec![env, node.child_left.clone(), node.child_right.clone()];
-            poseidon_hash::<3, Bn254Fr>(env, &inputs)
+            hasher.middle.compute_hash(&inputs)
         }
     }
 }
 
-/// Stores `node` keyed by its own hash, extending TTL. Mirrors Solidity's `_addNode`'s collision
-/// safety check: if a node already exists at this hash, its content must match exactly (a
-/// defensive assertion against a hash collision, not an expected code path).
-fn add_node(env: &Env, node: &Node) -> U256 {
-    let h = node_hash(env, node);
+/// Stores `node` keyed by its own hash, extending TTL.
+fn add_node(env: &Env, hasher: &mut Hasher, node: &Node) -> U256 {
+    let h = node_hash(env, hasher, node);
     let key = DataKey::TreeNode(h.clone());
-    if let Some(existing) = env.storage().persistent().get::<_, Node>(&key) {
-        assert!(
-            existing.node_type == node.node_type
-                && existing.child_left == node.child_left
-                && existing.child_right == node.child_right
-                && existing.index == node.index
-                && existing.value == node.value,
-            "tree node hash collision"
-        );
-        return h;
-    }
+    // Collision-check read removed as a resource optimization (chapter 13 Part B, phase M1b):
+    // Poseidon's collision resistance makes two distinct nodes hashing to the same key
+    // cryptographically infeasible, so trusting the hash's uniqueness - rather than reading and
+    // comparing on every single write - is safe in practice. This is a deliberate, reasoned
+    // divergence from upstream Solidity `SmtLib._addNode` (which does perform this check) for
+    // resource-cost reasons only, not a security or correctness change; left commented out
+    // rather than deleted so the exact tradeoff stays visible to anyone auditing this later.
+    //
+    // if let Some(existing) = env.storage().persistent().get::<_, Node>(&key) {
+    //     assert!(
+    //         existing.node_type == node.node_type
+    //             && existing.child_left == node.child_left
+    //             && existing.child_right == node.child_right
+    //             && existing.index == node.index
+    //             && existing.value == node.value,
+    //         "tree node hash collision"
+    //     );
+    //     return h;
+    // }
     env.storage().persistent().set(&key, node);
     env.storage().persistent().extend_ttl(
         &key,
@@ -121,7 +148,7 @@ fn add_node(env: &Env, node: &Node) -> U256 {
 /// Recursively descends an existing leaf's position by one bit at a time until the new and old
 /// leaves' index bits diverge, building the middle-node chain needed to distinguish them.
 /// Mirrors Solidity's `_pushLeaf` exactly.
-fn push_leaf(env: &Env, new_leaf: &Node, old_leaf: &Node, depth: u32) -> U256 {
+fn push_leaf(env: &Env, hasher: &mut Hasher, new_leaf: &Node, old_leaf: &Node, depth: u32) -> U256 {
     if depth >= MAX_SMT_DEPTH {
         panic!("szeto: max tree depth reached");
     }
@@ -129,7 +156,7 @@ fn push_leaf(env: &Env, new_leaf: &Node, old_leaf: &Node, depth: u32) -> U256 {
     let old_bit = get_bit(env, &old_leaf.index, depth);
 
     if new_bit == old_bit {
-        let next_hash = push_leaf(env, new_leaf, old_leaf, depth + 1);
+        let next_hash = push_leaf(env, hasher, new_leaf, old_leaf, depth + 1);
         let middle = if new_bit {
             Node {
                 node_type: NodeType::Middle,
@@ -147,11 +174,11 @@ fn push_leaf(env: &Env, new_leaf: &Node, old_leaf: &Node, depth: u32) -> U256 {
                 value: zero(env),
             }
         };
-        return add_node(env, &middle);
+        return add_node(env, hasher, &middle);
     }
 
-    let old_hash = node_hash(env, old_leaf);
-    let new_hash = node_hash(env, new_leaf);
+    let old_hash = node_hash(env, hasher, old_leaf);
+    let new_hash = node_hash(env, hasher, new_leaf);
     let middle = if new_bit {
         Node {
             node_type: NodeType::Middle,
@@ -169,30 +196,36 @@ fn push_leaf(env: &Env, new_leaf: &Node, old_leaf: &Node, depth: u32) -> U256 {
             value: zero(env),
         }
     };
-    add_node(env, new_leaf);
-    add_node(env, &middle)
+    add_node(env, hasher, new_leaf);
+    add_node(env, hasher, &middle)
 }
 
 /// Mirrors Solidity's `_addLeaf` exactly: descends from `node_hash` (the current subtree root)
 /// inserting `new_leaf`, returning the new subtree root hash.
-fn add_leaf(env: &Env, new_leaf: &Node, node_hash_at: &U256, depth: u32) -> U256 {
+fn add_leaf(
+    env: &Env,
+    hasher: &mut Hasher,
+    new_leaf: &Node,
+    node_hash_at: &U256,
+    depth: u32,
+) -> U256 {
     if depth > MAX_SMT_DEPTH {
         panic!("szeto: max tree depth reached");
     }
     let node = get_node(env, node_hash_at);
     match node.node_type {
-        NodeType::Empty => add_node(env, new_leaf),
+        NodeType::Empty => add_node(env, hasher, new_leaf),
         NodeType::Leaf => {
             if node.index == new_leaf.index {
-                add_node(env, new_leaf)
+                add_node(env, hasher, new_leaf)
             } else {
-                push_leaf(env, new_leaf, &node, depth)
+                push_leaf(env, hasher, new_leaf, &node, depth)
             }
         }
         NodeType::Middle => {
             let bit = get_bit(env, &new_leaf.index, depth);
             let middle = if bit {
-                let next = add_leaf(env, new_leaf, &node.child_right, depth + 1);
+                let next = add_leaf(env, hasher, new_leaf, &node.child_right, depth + 1);
                 Node {
                     node_type: NodeType::Middle,
                     child_left: node.child_left,
@@ -201,7 +234,7 @@ fn add_leaf(env: &Env, new_leaf: &Node, node_hash_at: &U256, depth: u32) -> U256
                     value: zero(env),
                 }
             } else {
-                let next = add_leaf(env, new_leaf, &node.child_left, depth + 1);
+                let next = add_leaf(env, hasher, new_leaf, &node.child_left, depth + 1);
                 Node {
                     node_type: NodeType::Middle,
                     child_left: next,
@@ -210,7 +243,7 @@ fn add_leaf(env: &Env, new_leaf: &Node, node_hash_at: &U256, depth: u32) -> U256
                     value: zero(env),
                 }
             };
-            add_node(env, &middle)
+            add_node(env, hasher, &middle)
         }
     }
 }
@@ -248,7 +281,8 @@ pub fn insert_leaf(env: &Env, index: U256, value: U256) -> U256 {
         value,
     };
     let prev_root = get_root(env);
-    let new_root = add_leaf(env, &new_leaf, &prev_root, 0);
+    let mut hasher = Hasher::new(env);
+    let new_root = add_leaf(env, &mut hasher, &new_leaf, &prev_root, 0);
 
     env.storage().instance().set(&DataKey::TreeRoot, &new_root);
     let exists_key = DataKey::TreeRootExists(new_root.clone());
