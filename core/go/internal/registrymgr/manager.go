@@ -27,6 +27,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/registrymgr/metrics"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/google/uuid"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
@@ -52,6 +53,15 @@ type registryManager struct {
 	// a cache of resolved nodes by name - which is a global index, across all registries.
 	transportDetailsCache cache.Cache[string, []*components.RegistryNodeTransportEntry]
 
+	// specNameCache maps a chain-address string (see pldtypes.ChainAddress.String()) to its
+	// registered "$specName" reserved property value (chapter 13 Phase 4's event-selector fix).
+	// Populated reactively, from upsertRegistryRecords' own post-commit hook - a fresh process
+	// restart starts with an empty cache and only warms up as registries re-sync entries/
+	// properties, exactly like transportDetailsCache above. There is deliberately no cold-start
+	// DB query fallback: a cache miss here is an explicitly-sanctioned outcome (see
+	// stellar.SpecResolver's own doc comment - "resolve-or-fallback, not resolve-or-fail").
+	specNameCache cache.Cache[string, string]
+
 	registriesByID   map[uuid.UUID]*registry
 	registriesByName map[string]*registry
 	metrics          metrics.RegistryManagerMetrics
@@ -65,6 +75,7 @@ func NewRegistryManager(bgCtx context.Context, conf *pldconf.RegistryManagerInli
 		registriesByName:         make(map[string]*registry),
 		registryTransportLookups: make(map[string]*transportLookup),
 		transportDetailsCache:    cache.NewCache[string, []*components.RegistryNodeTransportEntry](&conf.RegistryManager.RegistryCache, &pldconf.PaladinConfigDefaults.RegistryManager.RegistryCache),
+		specNameCache:            cache.NewCache[string, string](&conf.RegistryManager.RegistryCache, &pldconf.PaladinConfigDefaults.RegistryManager.RegistryCache),
 	}
 }
 
@@ -204,4 +215,12 @@ func (rm *registryManager) GetNodeTransports(ctx context.Context, node string) (
 	log.L(ctx).Infof("No transports found for node '%s' after checking %d registries configured with transports lookups", node, regLookupsChecked)
 
 	return nil, i18n.NewError(ctx, msgs.MsgRegistryNodeEntiresNotFound, node)
+}
+
+// ResolveContractSpecName implements components.RegistryManager (and structurally satisfies
+// baseledger/stellar's SpecResolver interface, without this package needing to import it - the
+// componentmgr wiring is what ties the two together). A pure cache lookup, deliberately with no
+// DB fallback - see specNameCache's own doc comment.
+func (rm *registryManager) ResolveContractSpecName(_ context.Context, emitter pldtypes.ChainAddress) (string, bool) {
+	return rm.specNameCache.Get(emitter.String())
 }

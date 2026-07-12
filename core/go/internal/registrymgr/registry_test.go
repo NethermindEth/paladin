@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql/driver"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
@@ -303,6 +305,41 @@ func TestUpsertRegistryRecordsRealDBok(t *testing.T) {
 	propsMap = filteredPropsMap(allProps, pldtypes.MustParseHexBytes(rootEntry2.Id))
 	require.Len(t, propsMap, 1)
 	require.Equal(t, rootEntry2Props2.Value, propsMap[rootEntry2Props2.Name])
+}
+
+func TestUpsertRegistryRecordsPopulatesSpecNameCache(t *testing.T) {
+	ctx, rm, tp, _, done := newTestRegistry(t, true)
+	defer done()
+
+	chainAddr, err := pldtypes.NewStellarContractAddress("CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB")
+	require.NoError(t, err)
+
+	// Before any $specName property is upserted, the cache has nothing for this address.
+	_, ok := rm.ResolveContractSpecName(ctx, chainAddr)
+	require.False(t, ok)
+
+	// Convention: entries carrying a $specName property use the chain address's own String()
+	// form (UTF-8 bytes, hex-encoded) as their entry ID.
+	entryID := hex.EncodeToString([]byte(chainAddr.String()))
+	entry := &prototk.RegistryEntry{Id: entryID, Name: "identity-registry-instance", Active: true}
+	specNameProp := newSystemPropFor(entryID, "$specName", "identity-registry")
+
+	res, err := tp.r.UpsertRegistryRecords(ctx, &prototk.UpsertRegistryRecordsRequest{
+		Entries:    []*prototk.RegistryEntry{entry},
+		Properties: []*prototk.RegistryProperty{specNameProp},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	specName, ok := rm.ResolveContractSpecName(ctx, chainAddr)
+	require.True(t, ok)
+	require.Equal(t, "identity-registry", specName)
+
+	// A different, never-upserted address still misses.
+	otherAddr, err := pldtypes.NewStellarContractAddress("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM")
+	require.NoError(t, err)
+	_, ok = rm.ResolveContractSpecName(ctx, otherAddr)
+	require.False(t, ok)
 }
 
 func TestUpsertRegistryRecordsRealDBNameIsUniqueScopedToParentId(t *testing.T) {
@@ -619,6 +656,70 @@ func TestConfigureEventStreamBadEventContractAddr(t *testing.T) {
 	err := tp.r.configureEventStream(ctx, tp.r.rm.p.NOTX())
 	assert.Regexp(t, "PD012102", err)
 
+}
+
+// Confirms a Stellar-shaped RegistryEventSource (event_symbols/contract_spec_name, no ABI) builds
+// an EventStreamSource with Selectors computed via the exact same formula the Stellar ingestor
+// uses (ComputeEventSelectorWithSpec), and that the existing EVM ABI-based path (tested above,
+// TestRegistryWithEventStreams) is unaffected by this additive change.
+func TestConfigureEventStreamStellarSelectors(t *testing.T) {
+	definition := &blockindexer.EventStreamDefinition{ID: uuid.New()}
+	mockES := blockindexermocks.NewEventStream(t)
+	mockES.On("Definition").Return(definition).Maybe()
+	mockES.On("ID").Return(definition.ID).Maybe()
+
+	contractAddr := "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB"
+	expectedChainAddr, err := pldtypes.NewStellarContractAddress(contractAddr)
+	require.NoError(t, err)
+
+	_, _, tp, _, done := newTestRegistry(t, false, func(mc *mockComponents, conf *pldconf.RegistryManagerInlineConfig, regConf *prototk.RegistryConfig) {
+		mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.MatchedBy(func(ies *blockindexer.InternalEventStream) bool {
+			require.Len(t, ies.Definition.Sources, 1)
+			source := ies.Definition.Sources[0]
+			assert.Empty(t, source.ABI)
+			assert.Equal(t, expectedChainAddr, *source.Address)
+			require.Len(t, source.Selectors, 2)
+			assert.Equal(t, baseledgerstellar.ComputeEventSelectorWithSpec("identity-registry", "identity_registered"), source.Selectors[0])
+			assert.Equal(t, baseledgerstellar.ComputeEventSelectorWithSpec("identity-registry", "property_set"), source.Selectors[1])
+			return true
+		})).Return(mockES, nil)
+
+		regConf.EventSources = []*prototk.RegistryEventSource{
+			{
+				ContractAddress:  contractAddr,
+				EventSymbols:     []string{"identity_registered", "property_set"},
+				ContractSpecName: "identity-registry",
+			},
+		}
+	})
+	defer done()
+
+	assert.Equal(t, mockES, tp.r.eventStream)
+}
+
+// A Stellar-shaped source with no contract_spec_name falls back to the unqualified selector
+// formula - matching the resolve-or-fallback design used ingestor-side.
+func TestConfigureEventStreamStellarSelectorsNoSpecName(t *testing.T) {
+	definition := &blockindexer.EventStreamDefinition{ID: uuid.New()}
+	mockES := blockindexermocks.NewEventStream(t)
+	mockES.On("Definition").Return(definition).Maybe()
+	mockES.On("ID").Return(definition.ID).Maybe()
+
+	_, _, tp, _, done := newTestRegistry(t, false, func(mc *mockComponents, conf *pldconf.RegistryManagerInlineConfig, regConf *prototk.RegistryConfig) {
+		mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.MatchedBy(func(ies *blockindexer.InternalEventStream) bool {
+			require.Len(t, ies.Definition.Sources, 1)
+			require.Len(t, ies.Definition.Sources[0].Selectors, 1)
+			assert.Equal(t, baseledgerstellar.ComputeEventSelector("reg"), ies.Definition.Sources[0].Selectors[0])
+			return true
+		})).Return(mockES, nil)
+
+		regConf.EventSources = []*prototk.RegistryEventSource{
+			{EventSymbols: []string{"reg"}},
+		}
+	})
+	defer done()
+
+	assert.Equal(t, mockES, tp.r.eventStream)
 }
 
 func TestConfigureEventStreamBadEventABITypes(t *testing.T) {

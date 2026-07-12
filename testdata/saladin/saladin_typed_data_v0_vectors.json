@@ -158,5 +158,13 @@
     "type_name": "snoto.Timepoint",
     "payload_scval_xdr_base64": "AAAABwAAAAAAADA5",
     "digest_hex": "c11f6d6222e6f2de24603e6e6a7deed234924ca0c36478e86c461751e3109937"
+  },
+  {
+    "name": "u256_parts",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "contract_id": "CBBEGRCFIZDUQSKKJNGE2TSPKBIVEU2UKVLFOWCZLJNVYXK6L5QGDRBB",
+    "type_name": "snoto.U256",
+    "payload_scval_xdr_base64": "AAAACwAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAC",
+    "digest_hex": "c72c1dfd7e8d5c117ba04586e4b02d82a71ec08ca288c1f9f8a76371f35547f6"
   }
 ]

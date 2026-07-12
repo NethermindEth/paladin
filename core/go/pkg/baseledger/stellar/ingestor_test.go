@@ -123,7 +123,7 @@ func TestDecodeLedgerSuccessfulTransaction(t *testing.T) {
 	copy(contractID[:], []byte("contract-id-32-bytes-long!!!!!!"))
 
 	ledger := buildTestLedger(t, kp.Address(), contractID, true)
-	unit, err := decodeLedger(testPassphrase, ledger)
+	unit, err := decodeLedger(context.Background(), testPassphrase, ledger, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, uint64(100), unit.Sequence)
@@ -150,7 +150,7 @@ func TestDecodeLedgerFailedTransaction(t *testing.T) {
 	var contractID xdr.ContractId
 	ledger := buildTestLedger(t, kp.Address(), contractID, false)
 
-	unit, err := decodeLedger(testPassphrase, ledger)
+	unit, err := decodeLedger(context.Background(), testPassphrase, ledger, nil)
 	require.NoError(t, err)
 	require.Len(t, unit.Txs, 1)
 	require.Equal(t, "FAILED", unit.Txs[0].Result)
@@ -158,17 +158,77 @@ func TestDecodeLedgerFailedTransaction(t *testing.T) {
 }
 
 func TestDecodeLedgerInvalidMetadata(t *testing.T) {
-	_, err := decodeLedger(testPassphrase, protocol.LedgerInfo{
+	_, err := decodeLedger(context.Background(), testPassphrase, protocol.LedgerInfo{
 		Sequence:       1,
 		Hash:           "aa00000000000000000000000000000000000000000000000000000000000000"[:64],
 		LedgerMetadata: "not valid base64 xdr",
-	})
+	}, nil)
 	require.ErrorContains(t, err, "invalid ledger metadata")
 }
 
 func TestComputeEventSelector(t *testing.T) {
 	expected := sha256.Sum256([]byte("saladin:transfer:v0"))
 	require.Equal(t, pldtypes.Bytes32(expected), ComputeEventSelector("transfer"))
+}
+
+func TestComputeEventSelectorWithSpec(t *testing.T) {
+	expected := sha256.Sum256([]byte("saladin:snoto:transfer:v0"))
+	require.Equal(t, pldtypes.Bytes32(expected), ComputeEventSelectorWithSpec("snoto", "transfer"))
+}
+
+// Two different specs' identically-named "transfer" event must never collide, and neither may
+// collide with the unqualified formula a resolver-miss falls back to - the whole point of this fix.
+func TestComputeEventSelectorWithSpecNoCollision(t *testing.T) {
+	unqualified := ComputeEventSelector("transfer")
+	snoto := ComputeEventSelectorWithSpec("snoto", "transfer")
+	identityRegistry := ComputeEventSelectorWithSpec("identity-registry", "transfer")
+	require.NotEqual(t, unqualified, snoto)
+	require.NotEqual(t, unqualified, identityRegistry)
+	require.NotEqual(t, snoto, identityRegistry)
+}
+
+type fakeSpecResolver struct {
+	specs map[pldtypes.ChainAddress]string
+}
+
+func (f *fakeSpecResolver) ResolveContractSpecName(_ context.Context, emitter pldtypes.ChainAddress) (string, bool) {
+	name, ok := f.specs[emitter]
+	return name, ok
+}
+
+func TestDecodeLedgerResolverHit(t *testing.T) {
+	kp := keypair.MustRandom()
+	var contractID xdr.ContractId
+	copy(contractID[:], []byte("contract-id-32-bytes-long!!!!!!"))
+
+	ledger := buildTestLedger(t, kp.Address(), contractID, true)
+	unqualified, err := decodeLedger(context.Background(), testPassphrase, ledger, nil)
+	require.NoError(t, err)
+	require.Len(t, unqualified.Events, 1)
+	emitter := unqualified.Events[0].Emitter
+
+	resolver := &fakeSpecResolver{specs: map[pldtypes.ChainAddress]string{emitter: "snoto"}}
+	resolved, err := decodeLedger(context.Background(), testPassphrase, ledger, resolver)
+	require.NoError(t, err)
+	require.Len(t, resolved.Events, 1)
+
+	require.Equal(t, ComputeEventSelector("transfer"), unqualified.Events[0].Selector)
+	require.Equal(t, ComputeEventSelectorWithSpec("snoto", "transfer"), resolved.Events[0].Selector)
+	require.NotEqual(t, unqualified.Events[0].Selector, resolved.Events[0].Selector)
+}
+
+func TestDecodeLedgerResolverMissFallsBackToUnqualified(t *testing.T) {
+	kp := keypair.MustRandom()
+	var contractID xdr.ContractId
+	copy(contractID[:], []byte("contract-id-32-bytes-long!!!!!!"))
+
+	ledger := buildTestLedger(t, kp.Address(), contractID, true)
+	// A resolver that knows about no emitters at all - every lookup misses.
+	resolver := &fakeSpecResolver{specs: map[pldtypes.ChainAddress]string{}}
+	unit, err := decodeLedger(context.Background(), testPassphrase, ledger, resolver)
+	require.NoError(t, err)
+	require.Len(t, unit.Events, 1)
+	require.Equal(t, ComputeEventSelector("transfer"), unit.Events[0].Selector)
 }
 
 type fakeLedgerRPC struct {

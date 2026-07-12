@@ -12,6 +12,7 @@ use (
 	./operator
 	./registries/evm
 	./registries/static
+	./registries/stellar
 	./rpcauth/basicauth
 	./sdk/go
 	./signingmodules/example

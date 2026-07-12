@@ -49,6 +49,11 @@ type RegistryManager interface {
 	RegistryRegistered(name string, id uuid.UUID, toRegistry RegistryManagerToRegistry) (fromRegistry plugintk.RegistryCallbacks, err error)
 	GetNodeTransports(ctx context.Context, node string) ([]*RegistryNodeTransportEntry, error)
 	GetRegistry(ctx context.Context, name string) (Registry, error)
+	// ResolveContractSpecName resolves the contract-spec name (e.g. "snoto", "identity-registry")
+	// registered against a chain address, via a reserved "$specName" registry property (chapter
+	// 13 Phase 4's event-selector fix). ok is false whenever no spec name is known for emitter -
+	// callers must treat that as "unresolved," not an error.
+	ResolveContractSpecName(ctx context.Context, emitter pldtypes.ChainAddress) (specName string, ok bool)
 }
 
 type Registry interface {

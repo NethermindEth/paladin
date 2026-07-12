@@ -48,4 +48,10 @@ message HandleRegistryEventsResponse {
 message RegistryEventSource {
   string contract_address = 1; // the contract address to listen to
   string abi_events_json = 2; // ABI events that the registry listens to from the chain
+  // event_symbols/contract_spec_name are the non-ABI (Stellar) way to describe wanted events -
+  // mirrors blockindexer.EventStreamSource.Selectors, added for the same reason (chapter 12):
+  // chains whose event streams are not ABI-typed need a different description than abi_events_json.
+  // Additive, EVM-behavior-preserving: both are simply absent/empty for EVM registries.
+  repeated string event_symbols = 3; // non-ABI event names (topic0 symbols) to listen for, for chains without ABI-typed events
+  string contract_spec_name = 4; // this contract's spec name, folded into ComputeEventSelectorWithSpec (chapter 13 Phase 4)
 }

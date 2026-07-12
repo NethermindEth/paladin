@@ -401,6 +401,20 @@ func (cm *componentManager) startBlockIndexer() (err error) {
 	return err
 }
 
+// lazyRegistrySpecResolver adapts componentManager to baseledger/stellar's SpecResolver,
+// resolving lazily against cm.registryManager - see initStellarLedgerIndexer's call site for why
+// this can't just be cm.registryManager directly at construction time.
+type lazyRegistrySpecResolver struct {
+	cm *componentManager
+}
+
+func (r *lazyRegistrySpecResolver) ResolveContractSpecName(ctx context.Context, emitter pldtypes.ChainAddress) (string, bool) {
+	if r.cm.registryManager == nil {
+		return "", false
+	}
+	return r.cm.registryManager.ResolveContractSpecName(ctx, emitter)
+}
+
 // initStellarLedgerIndexer constructs (but does not start) the Stellar ledger indexer - the
 // type: stellar counterpart to blockIndexer's construction in Init(). It gets its own stellar-rpc
 // connection (via stellarclient.NewClient), separate from the one newBaseLedgerClient constructs
@@ -416,6 +430,11 @@ func (cm *componentManager) initStellarLedgerIndexer() error {
 	pollInterval := confutil.DurationMin(ingestorConf.PollInterval, 100*time.Millisecond, *pldconf.StellarClientDefaults.Ingestor.PollInterval)
 	insertDBBatchSize := confutil.IntMin(ingestorConf.InsertDBBatchSize, 1, *pldconf.StellarClientDefaults.Ingestor.InsertDBBatchSize)
 	ingestor := baseledgerstellar.NewIngestor(rpc, cm.conf.BaseLedger.Stellar.NetworkPassphrase, pollInterval)
+	// cm.registryManager doesn't exist yet at this point in Init() (it's constructed later in the
+	// same sequence) - lazyRegistrySpecResolver defers the actual lookup until resolve-time
+	// (well after Init() completes, once real event ingestion begins), rather than requiring
+	// initStellarLedgerIndexer to run after registry-manager construction.
+	ingestor.SetSpecResolver(&lazyRegistrySpecResolver{cm: cm})
 	ingestRetry := retry.NewRetryIndefinite(&ingestorConf.Retry)
 	cm.stellarLedgerIndexer = ledgerindexerstellar.NewIndexer(cm.bgCtx, ingestor, cm.persistence, ingestRetry, insertDBBatchSize)
 	cm.stellarEventStreamMgr = ledgerindexerstellar.NewEventStreamEngine(cm.bgCtx, cm.persistence, ingestRetry)

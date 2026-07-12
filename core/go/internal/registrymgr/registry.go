@@ -28,6 +28,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/filters"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
@@ -116,25 +117,41 @@ func (r *registry) configureEventStream(ctx context.Context, dbTX persistence.DB
 
 	for i, es := range r.config.EventSources {
 
+		// Chain-neutral: auto-detects EVM 0x.../Stellar G.../C... - a clean, additive,
+		// EVM-behavior-preserving change from the previous EVM-only ParseEthAddress.
 		var contractAddrChain *pldtypes.ChainAddress
 		if es.ContractAddress != "" {
-			contractAddr, err := pldtypes.ParseEthAddress(es.ContractAddress)
+			chainAddr, err := pldtypes.ParseChainAddress(es.ContractAddress)
 			if err != nil {
 				return i18n.WrapError(ctx, err, msgs.MsgRegistryInvalidEventSource, i)
 			}
-			chainAddr := contractAddr.ChainAddress()
-			contractAddrChain = &chainAddr
+			contractAddrChain = chainAddr
 		}
 
-		var eventsABI abi.ABI
-		if err := json.Unmarshal([]byte(es.AbiEventsJson), &eventsABI); err != nil {
-			return i18n.WrapError(ctx, err, msgs.MsgRegistryInvalidEventSource, i)
+		source := blockindexer.EventStreamSource{Address: contractAddrChain}
+
+		if len(es.EventSymbols) > 0 {
+			// Non-ABI (Stellar) source: describe wanted events by selector rather than ABI -
+			// mirrors the ingestor's own ComputeEventSelector[WithSpec] formula exactly, or the
+			// two will never match (chapter 13 Phase 4's event-selector fix).
+			selectors := make([]pldtypes.Bytes32, len(es.EventSymbols))
+			for j, symbol := range es.EventSymbols {
+				if es.ContractSpecName != "" {
+					selectors[j] = baseledgerstellar.ComputeEventSelectorWithSpec(es.ContractSpecName, symbol)
+				} else {
+					selectors[j] = baseledgerstellar.ComputeEventSelector(symbol)
+				}
+			}
+			source.Selectors = selectors
+		} else {
+			var eventsABI abi.ABI
+			if err := json.Unmarshal([]byte(es.AbiEventsJson), &eventsABI); err != nil {
+				return i18n.WrapError(ctx, err, msgs.MsgRegistryInvalidEventSource, i)
+			}
+			source.ABI = eventsABI
 		}
 
-		stream.Sources = append(stream.Sources, blockindexer.EventStreamSource{
-			Address: contractAddrChain,
-			ABI:     eventsABI,
-		})
+		stream.Sources = append(stream.Sources, source)
 	}
 
 	streamHash, err := stream.Sources.Hash(ctx)
@@ -342,6 +359,19 @@ func (r *registry) upsertRegistryRecords(ctx context.Context, dbTX persistence.D
 		return err
 	}
 
+	// Populate the chain-address -> spec-name cache (chapter 13 Phase 4's event-selector fix) from
+	// any "$specName" reserved properties in this batch. Convention: entries carrying a $specName
+	// property use the emitting contract's own pldtypes.ChainAddress.String() (UTF-8 bytes,
+	// hex-encoded) as their entry ID - a different convention from "normal" identity entries
+	// (typically a hash of parent_id+name), scoped to this one reserved-property use case.
+	specNames := make(map[string]string)
+	for _, dbp := range dbProps {
+		if dbp.Name != "$specName" {
+			continue
+		}
+		specNames[string(dbp.EntryID)] = dbp.Value
+	}
+
 	dbTX.AddPostCommit(func(ctx context.Context) {
 		// It's a lot of work to determine which parts of the node transport cache are affected,
 		// as the upserts above happen simply by storing properties that might/might-not match
@@ -349,6 +379,10 @@ func (r *registry) upsertRegistryRecords(ctx context.Context, dbTX persistence.D
 		//
 		// So instead we just zap the whole cache when we have an update.
 		r.rm.transportDetailsCache.Clear()
+
+		for chainAddrString, specName := range specNames {
+			r.rm.specNameCache.Set(chainAddrString, specName)
+		}
 	})
 	return nil
 }

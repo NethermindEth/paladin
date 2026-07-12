@@ -46,6 +46,17 @@ type ledgerRPCClient interface {
 	GetLatestLedger(ctx context.Context) (protocol.GetLatestLedgerResponse, error)
 }
 
+// SpecResolver resolves the contract-spec name registered for a given emitter address (e.g.
+// "snoto", "identity-registry"), so ComputeEventSelectorWithSpec can fold it into the selector and
+// disambiguate identically-named events from different domains/specs. Resolve-or-fallback, not
+// resolve-or-fail: a nil resolver, or one that returns ok=false for a given emitter (no registered
+// spec, or not yet caught up), causes the caller to fall back to the unqualified
+// ComputeEventSelector - ingestion never blocks on registry state, and existing rows written under
+// the unqualified formula stay valid with no migration/backfill.
+type SpecResolver interface {
+	ResolveContractSpecName(ctx context.Context, emitter pldtypes.ChainAddress) (specName string, ok bool)
+}
+
 // Ingestor implements baseledger.Ingestor by polling getLedgers on a fixed interval (~2s per
 // chapter 12 §12.4). It never re-processes a ledger it has already emitted: StreamLedgers resumes
 // from the given checkpoint's next sequence, or from the current chain tip if no checkpoint is
@@ -54,12 +65,21 @@ type Ingestor struct {
 	rpc               ledgerRPCClient
 	networkPassphrase string
 	pollInterval      time.Duration
+	specResolver      SpecResolver
 }
 
 // NewIngestor constructs a Stellar baseledger.Ingestor. rpc is typically the same *rpcclient.Client
 // stellarclient.NewClient constructs (it satisfies ledgerRPCClient structurally).
 func NewIngestor(rpc ledgerRPCClient, networkPassphrase string, pollInterval time.Duration) *Ingestor {
 	return &Ingestor{rpc: rpc, networkPassphrase: networkPassphrase, pollInterval: pollInterval}
+}
+
+// SetSpecResolver wires a spec-name resolver into an already-constructed Ingestor - mirroring
+// componentmgr's own SetEventStreamEngine setter-injection pattern, so NewIngestor's existing call
+// sites (and its 3-arg signature) don't need to change. Safe to leave unset: decodeContractEvent
+// treats a nil resolver exactly like one that never resolves anything.
+func (i *Ingestor) SetSpecResolver(r SpecResolver) {
+	i.specResolver = r
 }
 
 // BackfillSource reports that deep history (beyond stellar-rpc's 24h-7d retention) would come from
@@ -112,7 +132,7 @@ func (i *Ingestor) poll(ctx context.Context, start uint64, ch chan<- *baseledger
 			continue
 		}
 		for _, l := range resp.Ledgers {
-			unit, decodeErr := decodeLedger(i.networkPassphrase, l)
+			unit, decodeErr := decodeLedger(ctx, i.networkPassphrase, l, i.specResolver)
 			if decodeErr != nil {
 				log.L(ctx).Errorf("failed to decode ledger %d: %s", l.Sequence, decodeErr)
 				return
@@ -131,7 +151,7 @@ func (i *Ingestor) poll(ctx context.Context, start uint64, ch chan<- *baseledger
 // (ingest.NewLedgerTransactionReaderFromLedgerCloseMeta) rather than hand-parsing the union/nested
 // TransactionMeta structures - the SDK's reader already handles the V0/V1/V2 LedgerCloseMeta and
 // TransactionMeta version differences correctly.
-func decodeLedger(networkPassphrase string, l protocol.LedgerInfo) (*baseledger.LedgerUnit, error) {
+func decodeLedger(ctx context.Context, networkPassphrase string, l protocol.LedgerInfo, resolver SpecResolver) (*baseledger.LedgerUnit, error) {
 	var lcm xdr.LedgerCloseMeta
 	if err := xdr.SafeUnmarshalBase64(l.LedgerMetadata, &lcm); err != nil {
 		return nil, fmt.Errorf("invalid ledger metadata for ledger %d: %w", l.Sequence, err)
@@ -193,7 +213,7 @@ func decodeLedger(networkPassphrase string, l protocol.LedgerInfo) (*baseledger.
 			return nil, fmt.Errorf("failed to read contract events for transaction %d of ledger %d: %w", txIndex, l.Sequence, eventsErr)
 		}
 		for eventIndex, event := range events {
-			indexedEvent, ok, decodeErr := decodeContractEvent(unit.Sequence, txIndex, int64(eventIndex), event)
+			indexedEvent, ok, decodeErr := decodeContractEvent(ctx, unit.Sequence, txIndex, int64(eventIndex), event, resolver)
 			if decodeErr != nil {
 				return nil, fmt.Errorf("failed to decode contract event %d of transaction %d of ledger %d: %w", eventIndex, txIndex, l.Sequence, decodeErr)
 			}
@@ -212,7 +232,7 @@ func decodeLedger(networkPassphrase string, l protocol.LedgerInfo) (*baseledger.
 // (V0 body only, and topic[0] must be a symbol - the "eventName" convention chapter 12's book
 // text assumes) rather than an error, since not every emitted event necessarily follows that
 // convention.
-func decodeContractEvent(ledgerSequence uint64, txIndex, eventIndex int64, event xdr.ContractEvent) (*baseledger.IndexedChainEvent, bool, error) {
+func decodeContractEvent(ctx context.Context, ledgerSequence uint64, txIndex, eventIndex int64, event xdr.ContractEvent, resolver SpecResolver) (*baseledger.IndexedChainEvent, bool, error) {
 	body, ok := event.Body.GetV0()
 	if !ok || len(body.Topics) == 0 {
 		return nil, false, nil
@@ -234,6 +254,13 @@ func decodeContractEvent(ledgerSequence uint64, txIndex, eventIndex int64, event
 		}
 	}
 
+	selector := ComputeEventSelector(string(topic0))
+	if resolver != nil && event.ContractId != nil {
+		if specName, ok := resolver.ResolveContractSpecName(ctx, emitter); ok {
+			selector = ComputeEventSelectorWithSpec(specName, string(topic0))
+		}
+	}
+
 	topics := make([][]byte, len(body.Topics))
 	for i, t := range body.Topics {
 		topicBytes, err := t.MarshalBinary()
@@ -252,19 +279,28 @@ func decodeContractEvent(ledgerSequence uint64, txIndex, eventIndex int64, event
 		TxIndex:    txIndex,
 		EventIndex: eventIndex,
 		Emitter:    emitter,
-		Selector:   ComputeEventSelector(string(topic0)),
+		Selector:   selector,
 		Topics:     topics,
 		Data:       data,
 	}, true, nil
 }
 
 // ComputeEventSelector implements chapter 12 §12.4's event-selector scheme:
-// SHA-256("saladin:" + topic0Symbol + ":v0"). The book's own formula also folds in a
-// "contract_spec_name" component (so semantically-identical events from different domains/specs
-// don't collide) - that requires resolving the emitting contract's registered spec, which needs
-// the registries/stellar plugin (chapter 12 §12.5, a separate, still-pending piece) to exist
-// first. Exported so §12.5's future event-stream consumer registration can compute the exact same
-// selector this ingestor writes.
+// SHA-256("saladin:" + topic0Symbol + ":v0"). Kept as the fallback formula for events whose
+// emitting contract has no resolvable spec name (see SpecResolver/ComputeEventSelectorWithSpec,
+// chapter 13 Phase 4) - existing rows written under this formula remain valid forever, since a
+// resolver miss always falls back to this exact computation.
 func ComputeEventSelector(topic0Symbol string) pldtypes.Bytes32 {
 	return sha256.Sum256([]byte("saladin:" + topic0Symbol + ":v0"))
+}
+
+// ComputeEventSelectorWithSpec extends ComputeEventSelector with a contract-spec-name component
+// (chapter 12 §12.4's own formula, deferred at the time to "a separate, still-pending piece" -
+// chapter 13 Phase 4 is that piece), so identically-named events from different domains/specs no
+// longer collide: SHA-256("saladin:" + contractSpecName + ":" + topic0Symbol + ":v0"). Whatever
+// resolves contractSpecName (a registry plugin's `$specName` reserved property, see
+// registrymgr/registry.go) must resolve to the exact same string an EventStreamSource.Selectors
+// entry is built from, or the two will never match.
+func ComputeEventSelectorWithSpec(contractSpecName, topic0Symbol string) pldtypes.Bytes32 {
+	return sha256.Sum256([]byte("saladin:" + contractSpecName + ":" + topic0Symbol + ":v0"))
 }
