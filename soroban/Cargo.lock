@@ -1489,6 +1489,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soroban-poseidon"
+version = "27.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b241822373adc51c23d5412e412b3b91b0d6b6bba146584946391aa32667820d"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "soroban-sdk"
 version = "27.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1669,6 +1678,11 @@ dependencies = [
 name = "szeto"
 version = "0.0.0"
 dependencies = [
+ "hex",
+ "num-bigint",
+ "serde",
+ "serde_json",
+ "soroban-poseidon",
  "soroban-sdk",
 ]
 
