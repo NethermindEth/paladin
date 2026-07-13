@@ -88,6 +88,8 @@ func (dm *domainManager) populateDomainConfig(result *pldapi.Domain, config *pro
 		if len(config.SigningAlgorithms) > 0 {
 			result.Config.SigningAlgorithms = config.SigningAlgorithms
 		}
+		result.Config.MaxInputStates = config.MaxInputStates
+		result.Config.MaxOutputStates = config.MaxOutputStates
 	}
 }
 

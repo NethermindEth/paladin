@@ -22,6 +22,8 @@ import (
 
 type DomainConfig struct {
 	SigningAlgorithms map[string]int32 `docstruct:"DomainConfig" json:"signingAlgorithms,omitempty"`
+	MaxInputStates    int32            `docstruct:"DomainConfig" json:"maxInputStates,omitempty"`
+	MaxOutputStates   int32            `docstruct:"DomainConfig" json:"maxOutputStates,omitempty"`
 }
 
 type Domain struct {

@@ -238,6 +238,69 @@ func TestRPCGetDomain_WithSigningAlgorithms(t *testing.T) {
 	assert.Equal(t, domainConfig.SigningAlgorithms, result.Config.SigningAlgorithms, "SigningAlgorithms should match")
 }
 
+func TestRPCGetDomain_WithBatchCaps(t *testing.T) {
+	ctx, dm, mc, done := newTestDomainManager(t, false, &pldconf.DomainManagerInlineConfig{
+		Domains: map[string]*pldconf.DomainConfig{
+			"test1": {
+				RegistryAddress: pldtypes.RandHex(20),
+			},
+		},
+	})
+	defer done()
+
+	// Create a domain config with max_input_states/max_output_states (chapter 13 AC#5 plumbing)
+	domainConfig := goodDomainConf()
+	domainConfig.MaxInputStates = 5
+	domainConfig.MaxOutputStates = 5
+
+	// Register the domain
+	tp := newTestPlugin(nil)
+	tp.Functions = &plugintk.DomainAPIFunctions{
+		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
+			return &prototk.ConfigureDomainResponse{
+				DomainConfig: domainConfig,
+			}, nil
+		},
+		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
+			return &prototk.InitDomainResponse{}, nil
+		},
+	}
+	mc.stateStore.On("EnsureABISchemas", mock.Anything, mock.Anything, "test1", mock.Anything).Return(nil, nil)
+	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	mc.db.ExpectBegin()
+	mc.db.ExpectCommit()
+	registerTestDomain(t, dm, tp)
+
+	handler := dm.rpcGetDomain()
+
+	req := &rpcclient.RPCRequest{
+		JSONRpc: "2.0",
+		ID:      pldtypes.RawJSON(`"1"`),
+		Method:  "domain_getDomain",
+		Params: []pldtypes.RawJSON{
+			pldtypes.JSONString("test1"),
+		},
+	}
+
+	resp := handler.Handle(ctx, req)
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.Error, "Expected no error")
+
+	var result pldapi.Domain
+	err := json.Unmarshal(resp.Result.Bytes(), &result)
+	require.NoError(t, err)
+	require.NotNil(t, result.Config, "Config should be populated")
+	assert.Equal(t, int32(5), result.Config.MaxInputStates, "MaxInputStates should match")
+	assert.Equal(t, int32(5), result.Config.MaxOutputStates, "MaxOutputStates should match")
+
+	// The accessors on domain itself (consumed by future chain-kind-aware coin selection, per
+	// chapter 14) should agree with what's exposed over RPC.
+	d, err := dm.getDomainByName(ctx, "test1")
+	require.NoError(t, err)
+	assert.Equal(t, int32(5), d.MaxInputStates())
+	assert.Equal(t, int32(5), d.MaxOutputStates())
+}
+
 func TestRPCGetDomain_DomainNotFound(t *testing.T) {
 	ctx, dm, mc, done := newTestDomainManager(t, false, &pldconf.DomainManagerInlineConfig{
 		Domains: map[string]*pldconf.DomainConfig{

@@ -106,6 +106,14 @@ func (dc *domainContract) buildTransactionSpecification(ctx context.Context, loc
 		return nil, i18n.NewError(ctx, msgs.MsgDomainTxnInputDefinitionInvalid)
 	}
 
+	// blockIndexer (the full EVM-shaped interface) is nil on a Stellar-configured node - see
+	// domainManager's own doc comment on the field. Fail with a clear, actionable error here
+	// rather than a nil-pointer panic; implementing this lookup for non-EVM chain kinds is a
+	// separate, later piece of work (chapter 14).
+	if dc.dm.blockIndexer == nil {
+		kind := dc.dm.allComponents.BaseLedger().ChainInfo().Kind
+		return nil, i18n.NewError(ctx, msgs.MsgDomainBlockIndexerUnavailableForChain, kind)
+	}
 	latestConfirmedBlock, err := dc.dm.blockIndexer.GetLatestConfirmedBlockMetadata(ctx)
 	if err != nil {
 		return nil, err

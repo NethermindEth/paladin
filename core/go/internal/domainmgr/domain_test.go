@@ -30,6 +30,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
@@ -1974,6 +1975,10 @@ func TestDomainGetBlockHeight(t *testing.T) {
 }
 
 func TestDomainInitRejectsUnsupportedChainKind(t *testing.T) {
+	// The node here is EVM-configured (newTestDomainManager's default BaseLedger), and the domain
+	// declares support for neither "evm" nor "stellar" - a genuinely unsupported kind, now that
+	// "stellar" itself is a legitimately accepted kind (see
+	// TestDomainInitAcceptsStellarChainKind below).
 	_, dm, mc, dmDone := newTestDomainManager(t, false, &pldconf.DomainManagerInlineConfig{
 		Domains: map[string]*pldconf.DomainConfig{
 			"test1": {
@@ -1994,7 +1999,7 @@ func TestDomainInitRejectsUnsupportedChainKind(t *testing.T) {
 			require.NotNil(t, cdr.ChainInfo)
 			return &prototk.ConfigureDomainResponse{
 				DomainConfig:        goodDomainConf(),
-				SupportedChainKinds: []string{"stellar"},
+				SupportedChainKinds: []string{"solana"},
 			}, nil
 		},
 		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
@@ -2008,7 +2013,76 @@ func TestDomainInitRejectsUnsupportedChainKind(t *testing.T) {
 
 	require.False(t, tp.d.Initialized())
 	require.NotNil(t, tp.d.initError.Load())
-	require.Regexp(t, "PD011668.*test1.*evm.*stellar", *tp.d.initError.Load())
+	require.Regexp(t, "PD011668.*test1.*evm.*solana", *tp.d.initError.Load())
+}
+
+// stellarChainInfoOnly is a minimal baseledger.Client test double for simulating a
+// Stellar-configured node - only ChainInfo() is exercised by the chain-kind-gate flow under
+// test; every other method panics if called, since this flow shouldn't reach them.
+type stellarChainInfoOnly struct{}
+
+func (stellarChainInfoOnly) Close() {}
+func (stellarChainInfoOnly) ChainInfo() baseledger.ChainInfo {
+	return baseledger.ChainInfo{Kind: baseledger.ChainKindStellar, NetworkID: "Test Stellar Network ; 2026"}
+}
+func (stellarChainInfoOnly) Call(ctx context.Context, req *baseledger.CallRequest) (*baseledger.CallResult, error) {
+	panic("not expected in this test")
+}
+func (stellarChainInfoOnly) GetAccountInfo(ctx context.Context, addr pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+	panic("not expected in this test")
+}
+func (stellarChainInfoOnly) EstimateResources(ctx context.Context, tx *baseledger.UnsignedChainTx) (*baseledger.ResourceEstimate, error) {
+	panic("not expected in this test")
+}
+func (stellarChainInfoOnly) BuildTransaction(ctx context.Context, tx *baseledger.UnsignedChainTx, est *baseledger.ResourceEstimate) (baseledger.SignablePayload, error) {
+	panic("not expected in this test")
+}
+func (stellarChainInfoOnly) Submit(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+	panic("not expected in this test")
+}
+func (stellarChainInfoOnly) GetTransactionResult(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+	panic("not expected in this test")
+}
+
+func TestDomainInitAcceptsStellarChainKind(t *testing.T) {
+	_, dm, mc, dmDone := newTestDomainManager(t, true /* real DB, so init proceeds all the way through processDomainConfig */, &pldconf.DomainManagerInlineConfig{
+		Domains: map[string]*pldconf.DomainConfig{
+			"test1": {
+				Config:          map[string]any{"some": "conf"},
+				RegistryAddress: pldtypes.RandHex(20),
+				DefaultGasLimit: confutil.P(uint64(100000)),
+				Init:            pldconf.DomainInitConfig{},
+			},
+		},
+	}, func(mc *mockComponents) {
+		mc.c.On("BaseLedger").Return(stellarChainInfoOnly{})
+	})
+	defer dmDone()
+
+	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+
+	tp := newTestPlugin(nil)
+	tp.Functions = &plugintk.DomainAPIFunctions{
+		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
+			require.NotNil(t, cdr.ChainInfo)
+			assert.Equal(t, "stellar", cdr.ChainInfo.ChainKind)
+			assert.Equal(t, "Test Stellar Network ; 2026", cdr.ChainInfo.NetworkId)
+			assert.Equal(t, int64(0), cdr.ChainId)
+			return &prototk.ConfigureDomainResponse{
+				DomainConfig:        goodDomainConf(),
+				SupportedChainKinds: []string{"stellar"},
+			}, nil
+		},
+		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
+			return &prototk.InitDomainResponse{}, nil
+		},
+	}
+
+	registerTestDomain(t, dm, tp)
+	<-tp.d.initDone
+
+	require.Nil(t, tp.d.initError.Load())
+	require.True(t, tp.d.Initialized())
 }
 
 func TestEnqueueCompletionsContextDone(t *testing.T) {

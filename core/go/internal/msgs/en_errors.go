@@ -317,6 +317,7 @@ var (
 	MsgDomainXDRSCValEncodingFail             = pde("PD011672", "XDR_SCVAL encoding request failed")
 	MsgDomainXDRSCValDecodingInvalid          = pde("PD011673", "XDR_SCVAL decoding request invalid")
 	MsgDomainXDRSCValDecodingFail             = pde("PD011674", "XDR_SCVAL decoding request failed")
+	MsgDomainBlockIndexerUnavailableForChain  = pde("PD011675", "Block indexer metadata lookup is not yet supported for base ledger kind '%s'")
 
 	// Entrypoint PD0117XX
 	MsgEntrypointUnknownRunMode = pde("PD011700", "Unknown run mode '%s'")

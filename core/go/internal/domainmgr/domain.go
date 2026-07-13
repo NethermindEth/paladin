@@ -21,7 +21,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +30,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/internal/plugins"
+	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/google/uuid"
@@ -241,23 +241,33 @@ func (d *domain) init() {
 	// (which the plugin manager will do if the domain disconnects)
 	err := d.initRetry.Do(d.ctx, func(attempt int) (bool, error) {
 
+		// Derive chain info generically from the configured base ledger, rather than assuming EVM -
+		// the base ledger client is guaranteed constructed by this point (see allComponents' doc
+		// comment on domainManager), even though domainManager's own Start() may not have run yet.
+		chainInfo := d.dm.allComponents.BaseLedger().ChainInfo()
+		protoChainInfo := &prototk.ChainInfo{
+			ChainKind: string(chainInfo.Kind),
+			NetworkId: chainInfo.NetworkID,
+		}
+		var legacyChainID int64
+		if chainInfo.Kind == baseledger.ChainKindEVM {
+			protoChainInfo.EvmChainId = chainInfo.EVMChainID
+			legacyChainID = chainInfo.EVMChainID
+		}
+
 		// Send the configuration to the domain for processing
 		confRes, err := d.api.ConfigureDomain(d.ctx, &prototk.ConfigureDomainRequest{
 			Name:                    d.name,
 			RegistryContractAddress: d.RegistryAddress().String(),
-			ChainId:                 d.dm.ethClientFactory.ChainID(),
-			ChainInfo: &prototk.ChainInfo{
-				ChainKind:  "evm",
-				NetworkId:  strconv.FormatInt(d.dm.ethClientFactory.ChainID(), 10),
-				EvmChainId: d.dm.ethClientFactory.ChainID(),
-			},
-			ConfigJson:           pldtypes.JSONString(d.conf.Config).String(),
-			FixedSigningIdentity: d.fixedSigningIdentity,
+			ChainId:                 legacyChainID,
+			ChainInfo:               protoChainInfo,
+			ConfigJson:              pldtypes.JSONString(d.conf.Config).String(),
+			FixedSigningIdentity:    d.fixedSigningIdentity,
 		})
 		if err != nil {
 			return true, err
 		}
-		if err = d.checkSupportedChainKinds(confRes); err != nil {
+		if err = d.checkSupportedChainKinds(confRes, chainInfo.Kind); err != nil {
 			return false, err
 		}
 
@@ -289,18 +299,18 @@ func (d *domain) init() {
 	}
 }
 
-func (d *domain) checkSupportedChainKinds(confRes *prototk.ConfigureDomainResponse) error {
+func (d *domain) checkSupportedChainKinds(confRes *prototk.ConfigureDomainResponse, configuredKind baseledger.ChainKind) error {
 	supportedKinds := confRes.GetSupportedChainKinds()
 	if len(supportedKinds) == 0 {
 		// Legacy domain binaries predate supported_chain_kinds and are EVM-only.
-		supportedKinds = []string{"evm"}
+		supportedKinds = []string{string(baseledger.ChainKindEVM)}
 	}
 	for _, kind := range supportedKinds {
-		if kind == "evm" {
+		if kind == string(configuredKind) {
 			return nil
 		}
 	}
-	return i18n.NewError(d.ctx, msgs.MsgDomainUnsupportedChainKind, d.name, "evm", supportedKinds)
+	return i18n.NewError(d.ctx, msgs.MsgDomainUnsupportedChainKind, d.name, configuredKind, supportedKinds)
 }
 
 func (d *domain) newInFlightDomainRequest(dbTX persistence.DBTX, dc components.DomainContext, readOnly bool) *inFlightDomainRequest {
@@ -907,6 +917,16 @@ func (d *domain) CustomHashFunction() bool {
 func (d *domain) FullStateAvailablityRequired() bool {
 	// note config assured to be non-nil by GetDomainByName() not returning a domain until init complete
 	return d.config.FullStateAvailablityRequired
+}
+
+func (d *domain) MaxInputStates() int32 {
+	// note config assured to be non-nil by GetDomainByName() not returning a domain until init complete
+	return d.config.MaxInputStates
+}
+
+func (d *domain) MaxOutputStates() int32 {
+	// note config assured to be non-nil by GetDomainByName() not returning a domain until init complete
+	return d.config.MaxOutputStates
 }
 
 func (d *domain) ValidateStateHashes(ctx context.Context, states []*components.FullState) ([]pldtypes.HexBytes, error) {

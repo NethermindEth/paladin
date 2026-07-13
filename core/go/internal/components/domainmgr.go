@@ -55,6 +55,8 @@ type Domain interface {
 	Configuration() *prototk.DomainConfig
 	CustomHashFunction() bool
 	FullStateAvailablityRequired() bool
+	MaxInputStates() int32
+	MaxOutputStates() int32
 	FixedSigningIdentity() string
 	// GetBlockHeight returns the highest block number that has been fully confirmed as
 	// processed by this domain's event stream. Equivalent to the domain's event stream

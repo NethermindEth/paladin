@@ -28,6 +28,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/ethclientmocks"
+	baseledgerevm "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/evm"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 
@@ -66,6 +67,7 @@ func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManager
 		c:                allComponents,
 		blockIndexer:     blockindexermocks.NewBlockIndexer(t),
 		stateStore:       componentsmocks.NewStateManager(t),
+		ethClient:        ethclientmocks.NewEthClient(t),
 		ethClientFactory: ethclientmocks.NewEthClientFactory(t),
 		keyManager:       componentsmocks.NewKeyManager(t),
 		txManager:        componentsmocks.NewTXManager(t),
@@ -80,6 +82,7 @@ func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManager
 	mc.ethClientFactory.On("ChainID").Return(int64(12345)).Maybe()
 	mc.ethClientFactory.On("HTTPClient").Return(mc.ethClient).Maybe()
 	mc.ethClientFactory.On("WSClient").Return(mc.ethClient).Maybe()
+	mc.ethClient.On("ChainID").Return(int64(12345)).Maybe()
 	allComponents.On("BlockIndexer").Return(mc.blockIndexer)
 	allComponents.On("EventStreamManager").Return(mc.blockIndexer)
 	mc.keyManager.On("AddInMemorySigner", "domain", mock.Anything).Return().Maybe()
@@ -116,6 +119,22 @@ func newTestDomainManager(t *testing.T, realDB bool, conf *pldconf.DomainManager
 
 	for _, fn := range extraSetup {
 		fn(mc)
+	}
+
+	// BaseLedger is chain-neutral - default to an EVM-kind client wrapping the same mocked
+	// ethClient, mirroring publictxmgr's test setup, unless a test's extraSetup already
+	// registered its own (e.g. to simulate a Stellar-configured node). Registered after
+	// extraSetup, and only if absent, because testify's mock resolves same-method stubs in
+	// registration order - an unconditional default here would always win over a later one.
+	hasBaseLedgerStub := false
+	for _, call := range allComponents.ExpectedCalls {
+		if call.Method == "BaseLedger" {
+			hasBaseLedgerStub = true
+			break
+		}
+	}
+	if !hasBaseLedgerStub {
+		allComponents.On("BaseLedger").Return(baseledgerevm.WrapClient(mc.ethClient)).Maybe()
 	}
 
 	dm := NewDomainManager(ctx, conf)

@@ -102,6 +102,14 @@ type domainManager struct {
 	rpcModule        *rpcserver.RPCModule
 	publicTxManager  components.PublicTxManager
 	groupManager     components.GroupManager
+	// allComponents is retained (rather than eagerly grabbing BaseLedger() in PostInit) because the
+	// base ledger client is only fully constructed during StartManagers() - after every manager's
+	// PostInit has already run - mirroring publictxmgr's identical rationale. A domain plugin can
+	// register (and call d.init(), which needs the base ledger's ChainInfo) as early as
+	// pluginManager.Start(), which runs before domainManager.Start() in StartManagers() - so
+	// ChainInfo is read via allComponents.BaseLedger() at the point of use in d.init(), not cached
+	// in a field only populated by domainManager's own Start().
+	allComponents components.AllComponents
 
 	domainsByName    map[string]*domain
 	domainsByAddress map[pldtypes.EthAddress]*domain
@@ -125,6 +133,7 @@ func (dm *domainManager) PreInit(c components.PreInitComponents) (*components.Ma
 }
 
 func (dm *domainManager) PostInit(c components.AllComponents) error {
+	dm.allComponents = c
 	dm.stateStore = c.StateManager()
 	dm.txManager = c.TxManager()
 	dm.sequencerManager = c.SequencerManager()

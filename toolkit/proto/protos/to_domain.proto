@@ -316,6 +316,8 @@ message DomainConfig {
   string abi_events_json = 3; // ABI events that the domain will process for state updates
   map<string, int32> signing_algorithms = 4; // A list of supported signing algorithms with the minimum key lengths for each algorithm
   bool full_state_availablity_required = 5; // If true, CheckStateCompletion always returns a definitive answer; core will maintain a global completion index for assembly/endorsement gating
+  int32 max_input_states = 6; // Optional maximum number of input states the domain's coin selection should include when assembling a transaction (0/unset = unbounded)
+  int32 max_output_states = 7; // Optional maximum number of output states the domain's coin selection should include when assembling a transaction (0/unset = unbounded)
 }
 
 message ContractInfo {
