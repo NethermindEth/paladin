@@ -73,12 +73,18 @@ pub const NONBATCH_SLOTS: u32 = 2;
 /// ⚠️ Real, measured on-chain tree-maintenance cost (`soroban/spikes/m0-groth16-bench/
 /// BENCHMARK.md`, phases M1/M1b) puts the *actually safe* worst-case batch size at N=5-6 today,
 /// not N=10 - a transfer using close to `BATCH_SLOTS` real outputs may exceed Soroban's real
-/// per-transaction resource ceiling even though this contract's own shape-check allows it. This
-/// is a live operational constraint documented for visibility, not enforced here as a contract-
-/// level cap - matching EVM parity is the deliberate choice for this phase (chapter 13 Part B,
-/// phase B.3), on the expectation that further optimization or higher network limits closes the
-/// gap; re-check `BENCHMARK.md` before relying on batch sizes above ~5-6 in a real deployment.
+/// per-transaction resource ceiling even though this constant matches EVM parity. `BATCH_SLOTS`
+/// itself stays at 10 because it's the embedded `_N10` VK's fixed circuit shape, not a tunable
+/// parameter - `MAX_SAFE_BATCH_OUTPUTS` (below) is the actual contract-level cap enforced in
+/// `transfer`, set to the measured-safe value; raise it only after re-benchmarking.
 pub const BATCH_SLOTS: u32 = 10;
+/// Measured-safe worst-case batch size for real (non-padding) `outputs` per `transfer()` call,
+/// per the M1/M1b spike (`soroban/spikes/m0-groth16-bench/BENCHMARK.md`): N=5 real outputs holds
+/// 22.0% worst-case headroom; N=6 is only marginally safe (4.7%); N=10 (`BATCH_SLOTS`) is over
+/// budget (-73.8% worst-case). This bounds `outputs` specifically because the M1/M1b benchmark
+/// measured `tree::insert_leaf` cost, which only real (non-zero) outputs trigger - nullifier
+/// spends are flat storage writes and aren't the resource driver this cap protects against.
+pub const MAX_SAFE_BATCH_OUTPUTS: u32 = 5;
 /// `nPublic` for the non-batch circuit: nullifiers(`NONBATCH_SLOTS`) + root(1) +
 /// enables(`NONBATCH_SLOTS`) + outputs(`NONBATCH_SLOTS`).
 const NONBATCH_NPUBLIC: u32 = 3 * NONBATCH_SLOTS + 1;
@@ -369,12 +375,12 @@ impl Contract {
     /// zeto_anon_nullifier.sol`): notary-authorized, verifies a Groth16 proof of valid spend, then
     /// spends the nullifiers and inserts the new output commitments into the on-chain tree.
     ///
-    /// `nullifiers`/`outputs` are the caller's *real* (non-padding) values - 1 to
-    /// `BATCH_SLOTS` (10) each. The contract zero-pads up to `NONBATCH_SLOTS` (2) or
-    /// `BATCH_SLOTS` (10), whichever fits, and picks the matching embedded VK - matches EVM's own
-    /// `checkAndPadCommitments`/`verifyProof` regular-vs-batch selection exactly (chapter 13 Part
-    /// B, phase B.3). See `BATCH_SLOTS`'s doc comment for the real, measured resource-cost caveat
-    /// on batch sizes above ~5-6.
+    /// `nullifiers`/`outputs` are the caller's *real* (non-padding) values - 1 to `BATCH_SLOTS`
+    /// (10) nullifiers, 1 to `MAX_SAFE_BATCH_OUTPUTS` (5) outputs (the contract's own enforced,
+    /// measured-safe cap - see its doc comment). The contract zero-pads up to `NONBATCH_SLOTS`
+    /// (2) or `BATCH_SLOTS` (10), whichever fits, and picks the matching embedded VK - matches
+    /// EVM's own `checkAndPadCommitments`/`verifyProof` regular-vs-batch selection exactly
+    /// (chapter 13 Part B, phase B.3).
     pub fn transfer(
         env: Env,
         tx_id: BytesN<32>,
@@ -386,6 +392,9 @@ impl Contract {
     ) {
         if nullifiers.len() > BATCH_SLOTS || outputs.len() > BATCH_SLOTS {
             panic!("szeto: transfer supports at most 10 nullifiers and 10 outputs");
+        }
+        if outputs.len() > MAX_SAFE_BATCH_OUTPUTS {
+            panic!("szeto: transfer supports at most 5 real outputs (measured safe batch size — see BENCHMARK.md)");
         }
         let slots = if nullifiers.len() > NONBATCH_SLOTS || outputs.len() > NONBATCH_SLOTS {
             BATCH_SLOTS

@@ -398,10 +398,12 @@ impl Contract {
     /// Unshields (withdraws) `amount` of the pooled SAC asset to `recipient`, spending `inputs` -
     /// book §13.6. Notary-authorized and `tx_id`-replay-guarded like `transfer` (there is no
     /// separately-authorizing real party here besides the notary, submitted via an anonymous
-    /// channel account per chapter 12's model). The node's own trustline pre-flight (ch. 12)
-    /// is expected to reject a `recipient` without an authorized trustline *before* assembly,
-    /// not here - a `G…` recipient lacking one fails at the SAC's own `transfer` call instead,
-    /// which is a real Soroban host error, not a decoded, actionable one at this layer.
+    /// channel account per chapter 12's model). The node's own trustline pre-flight (ch. 12) is
+    /// meant to reject a `recipient` without an authorized trustline *before* assembly, so
+    /// failures there are early and clear; but even if a `G…` recipient without one reaches this
+    /// call, the SAC's own `transfer` fails with a genuine decoded `Error(Contract, #13)`
+    /// (`TrustlineMissingError`) here too, not an undecodable host trap - see
+    /// `test::withdraw_rejects_recipient_without_trustline`.
     pub fn withdraw(
         env: Env,
         tx_id: BytesN<32>,

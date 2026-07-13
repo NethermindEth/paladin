@@ -6,7 +6,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{storage::Persistent as _, Address as _, Ledger as _};
-use soroban_sdk::Env;
+use soroban_sdk::{xdr, Env, TryIntoVal};
+use std::rc::Rc;
 
 const NETWORK_PASSPHRASE: &[u8] = b"Test SDF Network ; September 2015";
 
@@ -330,13 +331,26 @@ struct ShieldSetup {
     env: Env,
     contract_id: Address,
     sac: Address,
+    asset: xdr::Asset,
 }
 
 fn shield_setup() -> ShieldSetup {
+    shield_setup_with_issuer_flags(&[])
+}
+
+/// Same as `shield_setup`, but lets a test configure issuer flags (`AUTH_REQUIRED`,
+/// `AUTH_CLAWBACK_ENABLED`, ...) on the pooled SAC before the domain contract is initialized -
+/// needed for the `AUTH_REQUIRED`/clawback tests below (chapter 13 §13.6/§13.7 AC#8/#9).
+fn shield_setup_with_issuer_flags(flags: &[soroban_sdk::testutils::IssuerFlags]) -> ShieldSetup {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let sac = env.register_stellar_asset_contract_v2(admin).address();
+    let sac_contract = env.register_stellar_asset_contract_v2(admin);
+    for flag in flags.iter().copied() {
+        sac_contract.issuer().set_flag(flag);
+    }
+    let sac = sac_contract.address();
+    let asset = sac_contract.asset();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
@@ -345,7 +359,78 @@ fn shield_setup() -> ShieldSetup {
         env,
         contract_id,
         sac,
+        asset,
     }
+}
+
+/// Builds a classic (`G…`) account ledger entry directly via the same low-level `xdr`/
+/// `env.host()` API `register_stellar_asset_contract_v2` itself uses internally -
+/// `Address::generate()` (testutils) only ever produces contract addresses, so a genuine classic
+/// recipient for trustline tests has to be constructed by hand.
+fn classic_account_id(tag: u8) -> xdr::AccountId {
+    xdr::AccountId(xdr::PublicKey::PublicKeyTypeEd25519(xdr::Uint256([tag; 32])))
+}
+
+fn ensure_classic_account(env: &Env, account_id: &xdr::AccountId) -> Address {
+    let key = Rc::new(xdr::LedgerKey::Account(xdr::LedgerKeyAccount {
+        account_id: account_id.clone(),
+    }));
+    if env.host().get_ledger_entry(&key).unwrap().is_none() {
+        let entry = Rc::new(xdr::LedgerEntry {
+            data: xdr::LedgerEntryData::Account(xdr::AccountEntry {
+                account_id: account_id.clone(),
+                balance: 0,
+                flags: 0,
+                home_domain: Default::default(),
+                inflation_dest: None,
+                num_sub_entries: 0,
+                seq_num: xdr::SequenceNumber(0),
+                thresholds: xdr::Thresholds([1; 4]),
+                signers: xdr::VecM::default(),
+                ext: xdr::AccountEntryExt::V0,
+            }),
+            last_modified_ledger_seq: 0,
+            ext: xdr::LedgerEntryExt::V0,
+        });
+        env.host().add_ledger_entry(&key, &entry, None).unwrap();
+    }
+    xdr::ScAddress::Account(account_id.clone())
+        .try_into_val(env)
+        .unwrap()
+}
+
+/// Adds a trustline for `account_id` to `asset` - the recipient side of the shield/unshield
+/// pattern's pre-flight check (chapter 13 §13.6). With no trustline entry at all, `withdraw` to
+/// a classic account fails with a genuine decoded `Error(Contract, #13)` (`TrustlineMissingError`),
+/// not a raw host trap - see `withdraw`'s (corrected) doc comment.
+fn add_trustline(env: &Env, account_id: &xdr::AccountId, asset: xdr::Asset, authorized: bool) {
+    let trustline_asset = match asset {
+        xdr::Asset::Native => xdr::TrustLineAsset::Native,
+        xdr::Asset::CreditAlphanum4(a) => xdr::TrustLineAsset::CreditAlphanum4(a),
+        xdr::Asset::CreditAlphanum12(a) => xdr::TrustLineAsset::CreditAlphanum12(a),
+    };
+    let key = Rc::new(xdr::LedgerKey::Trustline(xdr::LedgerKeyTrustLine {
+        account_id: account_id.clone(),
+        asset: trustline_asset.clone(),
+    }));
+    let flags = if authorized {
+        xdr::TrustLineFlags::AuthorizedFlag as u32
+    } else {
+        0
+    };
+    let entry = Rc::new(xdr::LedgerEntry {
+        data: xdr::LedgerEntryData::Trustline(xdr::TrustLineEntry {
+            account_id: account_id.clone(),
+            asset: trustline_asset,
+            balance: 0,
+            limit: i64::MAX,
+            flags,
+            ext: xdr::TrustLineEntryExt::V0,
+        }),
+        last_modified_ledger_seq: 0,
+        ext: xdr::LedgerEntryExt::V0,
+    });
+    env.host().add_ledger_entry(&key, &entry, None).unwrap();
 }
 
 #[test]
@@ -479,6 +564,167 @@ fn withdraw_rejects_unknown_input() {
         &recipient,
         &500,
         &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+}
+
+/// Chapter 13 §13.6/§13.7 AC#8: under issuer `AUTH_REQUIRED`, the pool's own contract balance
+/// must be `set_authorized` by the issuer before it can receive - shield fails with a genuine
+/// decoded SAC error (`Error(Contract, #11)`, `BalanceDeauthorizedError`), not a raw host trap,
+/// until then. The depositor's own first balance write (via `mint`) independently needs the same
+/// authorization, which this test grants up front so only the pool's lack of authorization is
+/// under test.
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn deposit_rejects_unauthorized_pool_under_auth_required() {
+    let s = shield_setup_with_issuer_flags(&[soroban_sdk::testutils::IssuerFlags::RequiredFlag]);
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.set_authorized(&depositor, &true);
+    token.mint(&depositor, &1_000);
+
+    // The pool itself is never authorized here - deposit must fail.
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+}
+
+/// Companion to the rejection test above: once the issuer authorizes the pool, the identical
+/// deposit call succeeds.
+#[test]
+fn deposit_succeeds_once_pool_authorized_under_auth_required() {
+    let s = shield_setup_with_issuer_flags(&[soroban_sdk::testutils::IssuerFlags::RequiredFlag]);
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.set_authorized(&depositor, &true);
+    token.set_authorized(&s.contract_id, &true);
+    token.mint(&depositor, &1_000);
+
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+
+    assert_eq!(token_balance.balance(&s.contract_id), 500);
+}
+
+/// Chapter 13 §13.6/§13.7 AC#9: clawback-eligibility is stamped onto a contract balance at
+/// *creation* time from the issuer's `AUTH_CLAWBACK_ENABLED` flag, not re-checked live - so the
+/// flag must be set before the pool's first deposit for this test to exercise real clawback
+/// semantics. Demonstrates the book's explicit warning (§13.6): clawback is pool-wide, hitting
+/// every shielded holder's backing balance at once, not a single holder's coin.
+#[test]
+fn issuer_can_clawback_pool_balance_after_shield() {
+    let s =
+        shield_setup_with_issuer_flags(&[soroban_sdk::testutils::IssuerFlags::ClawbackEnabledFlag]);
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+    assert_eq!(token_balance.balance(&s.contract_id), 500);
+
+    // A systemic action affecting every shielded holder backed by this pool at once - not a
+    // per-holder operation.
+    token.clawback(&s.contract_id, &500);
+    assert_eq!(token_balance.balance(&s.contract_id), 0);
+}
+
+/// Chapter 13 §13.6/§13.7 AC#7: native-asset E2E - shield, a private transfer inside the domain,
+/// then unshield to a classic (`G…`) account that already holds an authorized trustline.
+#[test]
+fn native_asset_e2e_shield_transfer_unshield() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+    let input = state_id(&s.env, 1);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [input.clone()]),
+        &Bytes::new(&s.env),
+    );
+
+    let transferred = state_id(&s.env, 2);
+    client.transfer(
+        &state_id(&s.env, 101),
+        &Vec::from_array(&s.env, [input]),
+        &Vec::from_array(&s.env, [transferred.clone()]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+
+    let recipient_id = classic_account_id(9);
+    let recipient = ensure_classic_account(&s.env, &recipient_id);
+    add_trustline(&s.env, &recipient_id, s.asset.clone(), true);
+
+    client.withdraw(
+        &state_id(&s.env, 102),
+        &recipient,
+        &500,
+        &Vec::from_array(&s.env, [transferred]),
+        &Bytes::new(&s.env),
+    );
+
+    assert_eq!(token_balance.balance(&recipient), 500);
+    assert_eq!(token_balance.balance(&s.contract_id), 0);
+}
+
+/// AC#7's rejection half: a classic recipient with no trustline at all is rejected with a
+/// genuine decoded `Error(Contract, #13)` (`TrustlineMissingError`) - not a raw, undecodable host
+/// trap, correcting the assumption `withdraw`'s doc comment previously made.
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn withdraw_rejects_recipient_without_trustline() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+    let input = state_id(&s.env, 1);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [input.clone()]),
+        &Bytes::new(&s.env),
+    );
+
+    let recipient_id = classic_account_id(10);
+    let recipient = ensure_classic_account(&s.env, &recipient_id);
+    // Deliberately no trustline for `recipient`.
+
+    client.withdraw(
+        &state_id(&s.env, 101),
+        &recipient,
+        &500,
+        &Vec::from_array(&s.env, [input]),
         &Bytes::new(&s.env),
     );
 }

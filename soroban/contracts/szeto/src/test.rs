@@ -97,6 +97,27 @@ fn transfer_rejects_too_many_nullifiers() {
     );
 }
 
+/// Chapter 13 §13.3's open risk, now closed: the M1/M1b spike
+/// (`soroban/spikes/m0-groth16-bench/BENCHMARK.md`) measured the real, worst-case safe batch size
+/// for `outputs` (the resource driver, via `tree::insert_leaf`) at N=5 - below `BATCH_SLOTS` (10),
+/// which only bounds the circuit/VK shape. Six real outputs clears the circuit-shape check but
+/// must still be rejected by the tighter, measured-safe cap.
+#[test]
+#[should_panic(expected = "szeto: transfer supports at most 5 real outputs")]
+fn transfer_rejects_too_many_real_outputs() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let six = Vec::from_array(&s.env, core::array::from_fn::<_, 6, _>(|_| zero32(&s.env)));
+    client.transfer(
+        &b32(&s.env, 100),
+        &padded(&s.env),
+        &six,
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
 /// A short (fewer-than-`NONBATCH_SLOTS`) real-value list is valid input - the contract pads it,
 /// the caller doesn't need to pre-pad. This reaches `verify_proof` (and fails there, on the dummy
 /// proof) rather than being rejected for "wrong shape", confirming the shape check itself no
