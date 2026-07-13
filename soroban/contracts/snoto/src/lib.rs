@@ -42,7 +42,8 @@ mod storage;
 use saladin_typed_data::{current_contract_id, digest};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec,
+    contract, contractevent, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
+    MuxedAddress, Vec,
 };
 use storage::LockInfo;
 
@@ -118,6 +119,31 @@ pub struct CancelUnlock {
     pub data: Bytes,
 }
 
+/// Shield disclosure profile matches EVM Zeto's own `deposit` (book §13.6): amount and depositor
+/// are public. SNoto has no privacy layer at all (coin data already lives entirely off-chain), so
+/// this is simply `transfer` with zero real inputs plus a real SAC pull - no ZK proof involved.
+#[contractevent(topics = ["deposit"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deposit {
+    #[topic]
+    pub tx_id: BytesN<32>,
+    pub from: Address,
+    pub amount: i128,
+    pub outputs: Vec<BytesN<32>>,
+    pub data: Bytes,
+}
+
+#[contractevent(topics = ["withdraw"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Withdraw {
+    #[topic]
+    pub tx_id: BytesN<32>,
+    pub recipient: Address,
+    pub amount: i128,
+    pub inputs: Vec<BytesN<32>>,
+    pub data: Bytes,
+}
+
 #[contract]
 pub struct Contract;
 
@@ -129,12 +155,13 @@ impl Contract {
     /// passphrase, not a pre-hashed value, so it can't be derived from `env.ledger().
     /// network_id()` alone). The book leaves `config` unspecified; this is the concrete meaning
     /// assigned here.
-    pub fn initialize(env: Env, notary: Address, config: Bytes) {
+    pub fn initialize(env: Env, notary: Address, config: Bytes, sac: Address) {
         if storage::has_notary(&env) {
             panic!("already initialized");
         }
         storage::init_notary(&env, &notary);
         storage::init_network_passphrase(&env, &config);
+        storage::init_sac(&env, &sac);
     }
 
     pub fn transfer(
@@ -325,6 +352,92 @@ impl Contract {
         for id in state_ids.iter() {
             storage::keepalive_one(&env, &id);
         }
+    }
+
+    /// Shields (deposits) `amount` of the pooled SAC asset, admitting `outputs` as new unspent
+    /// states - book §13.6. `from` authorizes the real SAC transfer itself; the notary also
+    /// authorizes admission of the output states, matching every other write path here. No ZK
+    /// proof is involved - SNoto's coin data already lives entirely off-chain (see this module's
+    /// doc comment), so this is exactly `transfer` with zero real inputs plus a real SAC pull.
+    pub fn deposit(
+        env: Env,
+        tx_id: BytesN<32>,
+        from: Address,
+        amount: i128,
+        outputs: Vec<BytesN<32>>,
+        data: Bytes,
+    ) {
+        from.require_auth();
+        if amount <= 0 {
+            panic!("deposit amount must be positive");
+        }
+        storage::notary(&env).require_auth();
+        storage::mark_tx_used(&env, &tx_id);
+
+        let sac = storage::sac(&env);
+        token::TokenClient::new(&env, &sac).transfer(
+            &from,
+            MuxedAddress::from(env.current_contract_address()),
+            &amount,
+        );
+
+        for id in outputs.iter() {
+            storage::mark_unspent(&env, &id);
+        }
+
+        Deposit {
+            tx_id,
+            from,
+            amount,
+            outputs,
+            data,
+        }
+        .publish(&env);
+    }
+
+    /// Unshields (withdraws) `amount` of the pooled SAC asset to `recipient`, spending `inputs` -
+    /// book §13.6. Notary-authorized and `tx_id`-replay-guarded like `transfer` (there is no
+    /// separately-authorizing real party here besides the notary, submitted via an anonymous
+    /// channel account per chapter 12's model). The node's own trustline pre-flight (ch. 12)
+    /// is expected to reject a `recipient` without an authorized trustline *before* assembly,
+    /// not here - a `G…` recipient lacking one fails at the SAC's own `transfer` call instead,
+    /// which is a real Soroban host error, not a decoded, actionable one at this layer.
+    pub fn withdraw(
+        env: Env,
+        tx_id: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+        inputs: Vec<BytesN<32>>,
+        data: Bytes,
+    ) {
+        if amount <= 0 {
+            panic!("withdraw amount must be positive");
+        }
+        storage::notary(&env).require_auth();
+        storage::mark_tx_used(&env, &tx_id);
+
+        for id in inputs.iter() {
+            if !storage::is_unspent(&env, &id) {
+                panic!("input not unspent");
+            }
+            storage::spend(&env, &id);
+        }
+
+        let sac = storage::sac(&env);
+        token::TokenClient::new(&env, &sac).transfer(
+            &env.current_contract_address(),
+            MuxedAddress::from(recipient.clone()),
+            &amount,
+        );
+
+        Withdraw {
+            tx_id,
+            recipient,
+            amount,
+            inputs,
+            data,
+        }
+        .publish(&env);
     }
 }
 

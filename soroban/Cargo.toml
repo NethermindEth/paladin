@@ -6,6 +6,7 @@ members = [
     "contracts/snoto",
     "contracts/szeto",
     "contracts/satom",
+    "contracts/satom-factory",
     "contracts/identity-registry",
 ]
 

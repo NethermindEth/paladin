@@ -29,8 +29,9 @@ fn setup() -> Setup {
     env.mock_all_auths();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
-    client.initialize(&notary);
+    client.initialize(&notary, &sac);
     Setup { env, contract_id }
 }
 
@@ -71,14 +72,38 @@ fn initialize_rejects_double_init() {
     let env = Env::default();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
-    client.initialize(&notary);
-    client.initialize(&notary);
+    client.initialize(&notary, &sac);
+    client.initialize(&notary, &sac);
 }
 
+/// Chapter 13 Part B phase B.3 (batch support): `transfer` now accepts 1 to `BATCH_SLOTS` (10)
+/// real nullifiers/outputs, zero-padded by the contract itself (not the caller) - so a length of
+/// 1 is valid (padded to `NONBATCH_SLOTS`), it's only *more than* `BATCH_SLOTS` that's rejected.
 #[test]
-#[should_panic(expected = "szeto: transfer requires exactly 2 nullifiers and 2 outputs")]
-fn transfer_rejects_wrong_input_shape() {
+#[should_panic(expected = "szeto: transfer supports at most 10 nullifiers and 10 outputs")]
+fn transfer_rejects_too_many_nullifiers() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let eleven = Vec::from_array(&s.env, core::array::from_fn::<_, 11, _>(|_| zero32(&s.env)));
+    client.transfer(
+        &b32(&s.env, 100),
+        &eleven,
+        &padded(&s.env),
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+/// A short (fewer-than-`NONBATCH_SLOTS`) real-value list is valid input - the contract pads it,
+/// the caller doesn't need to pre-pad. This reaches `verify_proof` (and fails there, on the dummy
+/// proof) rather than being rejected for "wrong shape", confirming the shape check itself no
+/// longer requires an exact count.
+#[test]
+#[should_panic(expected = "szeto: invalid proof")]
+fn transfer_pads_short_nullifier_list() {
     let s = setup();
     let client = ContractClient::new(&s.env, &s.contract_id);
     client.transfer(
@@ -91,6 +116,47 @@ fn transfer_rejects_wrong_input_shape() {
     );
 }
 
+/// Confirms both embedded VKs are actually wired up and reachable via `verify_proof`'s length-
+/// based selection - `Err(InvalidProof)` (not `Err(MalformedPublicInputs)`) means the length was
+/// recognized and the matching VK was loaded far enough to reach the real pairing check, which
+/// then correctly rejects a garbage proof. Uses the public `verify` entrypoint directly (bypasses
+/// `transfer`'s padding) since it takes the field-element vector `verify_proof` itself expects.
+#[test]
+#[should_panic(expected = "Error(Contract, #0)")]
+fn verify_selects_nonbatch_vk_for_seven_public_inputs() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let inputs = Vec::from_array(
+        &s.env,
+        core::array::from_fn::<_, 7, _>(|_| Bn254Fr::from_bytes(zero32(&s.env))),
+    );
+    client.verify(&dummy_proof(&s.env), &inputs);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #0)")]
+fn verify_selects_batch_vk_for_thirty_one_public_inputs() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let inputs = Vec::from_array(
+        &s.env,
+        core::array::from_fn::<_, 31, _>(|_| Bn254Fr::from_bytes(zero32(&s.env))),
+    );
+    client.verify(&dummy_proof(&s.env), &inputs);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
+fn verify_rejects_public_input_length_matching_neither_circuit() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let inputs = Vec::from_array(
+        &s.env,
+        core::array::from_fn::<_, 8, _>(|_| Bn254Fr::from_bytes(zero32(&s.env))),
+    );
+    client.verify(&dummy_proof(&s.env), &inputs);
+}
+
 #[test]
 #[should_panic]
 fn transfer_rejects_unauthorized_notary() {
@@ -99,10 +165,11 @@ fn transfer_rejects_unauthorized_notary() {
     let env = Env::default();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
 
     env.mock_all_auths();
-    client.initialize(&notary);
+    client.initialize(&notary, &sac);
 
     env.set_auths(&[]);
     client.transfer(
@@ -281,4 +348,193 @@ fn insert_leaf_updates_root_and_extends_ttl() {
             .get_ttl(&storage::DataKey::TreeRootExists(new_root));
         assert!(ttl >= storage::TTL_THRESHOLD_LEDGERS);
     });
+}
+
+// `deposit`/`withdraw` tests below only exercise panics that fire *before* `verify_with_vk` is
+// reached (auth, amount validation, shape, tx_id replay, unknown root, nullifier reuse) - same
+// constraint as `transfer`'s own tests (see this file's leading doc comment): a proof that
+// actually verifies against the embedded `deposit`/`withdraw_nullifier` VKs needs its own
+// Go-harness-generated fixture (mirroring `real_transfer_test.rs`'s pattern for `transfer`),
+// which is future work, not done for this phase.
+
+#[test]
+#[should_panic]
+fn deposit_rejects_unauthorized_depositor() {
+    // No mock_all_auths() at all for the call under test - the depositor's require_auth() has
+    // nothing to satisfy it, and that check runs before any proof is touched.
+    let env = Env::default();
+    let contract_id = env.register(Contract, ());
+    let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
+    let client = ContractClient::new(&env, &contract_id);
+
+    env.mock_all_auths();
+    client.initialize(&notary, &sac);
+
+    env.set_auths(&[]);
+    let depositor = Address::generate(&env);
+    client.deposit(
+        &depositor,
+        &100,
+        &padded(&env),
+        &dummy_proof(&env),
+        &Bytes::new(&env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: deposit amount must be positive")]
+fn deposit_rejects_zero_amount() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let depositor = Address::generate(&s.env);
+    client.deposit(
+        &depositor,
+        &0,
+        &padded(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: deposit requires exactly 2 outputs")]
+fn deposit_rejects_wrong_output_count() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let depositor = Address::generate(&s.env);
+    client.deposit(
+        &depositor,
+        &100,
+        &Vec::from_array(&s.env, [zero32(&s.env)]),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic]
+fn withdraw_rejects_unauthorized_notary() {
+    let env = Env::default();
+    let contract_id = env.register(Contract, ());
+    let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
+    let client = ContractClient::new(&env, &contract_id);
+
+    env.mock_all_auths();
+    client.initialize(&notary, &sac);
+
+    env.set_auths(&[]);
+    let recipient = Address::generate(&env);
+    client.withdraw(
+        &b32(&env, 100),
+        &recipient,
+        &100,
+        &padded(&env),
+        &zero32(&env),
+        &zero32(&env),
+        &dummy_proof(&env),
+        &Bytes::new(&env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: withdraw amount must be positive")]
+fn withdraw_rejects_nonpositive_amount() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &b32(&s.env, 100),
+        &recipient,
+        &0,
+        &padded(&s.env),
+        &zero32(&s.env),
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: withdraw supports at most 2 nullifiers")]
+fn withdraw_rejects_too_many_nullifiers() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let recipient = Address::generate(&s.env);
+    let three = Vec::from_array(&s.env, core::array::from_fn::<_, 3, _>(|_| zero32(&s.env)));
+    client.withdraw(
+        &b32(&s.env, 100),
+        &recipient,
+        &100,
+        &three,
+        &zero32(&s.env),
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: tx_id already used")]
+fn withdraw_rejects_replayed_tx_id() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let tx_id = b32(&s.env, 100);
+    s.env.as_contract(&s.contract_id, || {
+        storage::mark_tx_used(&s.env, &tx_id);
+    });
+
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &tx_id,
+        &recipient,
+        &100,
+        &padded(&s.env),
+        &zero32(&s.env),
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: unknown root")]
+fn withdraw_rejects_unknown_root() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &b32(&s.env, 100),
+        &recipient,
+        &100,
+        &padded(&s.env),
+        &zero32(&s.env),
+        &b32(&s.env, 99),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "szeto: nullifier already spent")]
+fn withdraw_rejects_already_spent_nullifier() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let spent_nullifier = b32(&s.env, 1);
+    s.env.as_contract(&s.contract_id, || {
+        storage::mark_spent(&s.env, &spent_nullifier);
+    });
+
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &b32(&s.env, 100),
+        &recipient,
+        &100,
+        &Vec::from_array(&s.env, [spent_nullifier, zero32(&s.env)]),
+        &zero32(&s.env),
+        &zero32(&s.env),
+        &dummy_proof(&s.env),
+        &Bytes::new(&s.env),
+    );
 }

@@ -12,6 +12,7 @@ pub const TTL_EXTEND_TO_LEDGERS: u32 = 3_110_400; // ~180 days at ~5s/ledger
 #[contracttype]
 pub enum DataKey {
     Notary,
+    Sac,
     Nullifier(BytesN<32>),
     TxId(BytesN<32>),
     TreeNode(U256),
@@ -32,6 +33,19 @@ pub fn notary(env: &Env) -> Address {
         .instance()
         .get(&DataKey::Notary)
         .unwrap_or_else(|| panic!("not initialized"))
+}
+
+/// The pooled Stellar Asset Contract (SAC) address backing shielded balances - chapter 13 Part B
+/// phase B.4 (§13.6 native-asset shield/unshield). Set once at `initialize`, never mutated.
+pub fn init_sac(env: &Env, sac: &Address) {
+    env.storage().instance().set(&DataKey::Sac, sac);
+}
+
+pub fn sac(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::Sac)
+        .unwrap_or_else(|| panic!("szeto: no SAC configured"))
 }
 
 pub fn is_spent(env: &Env, nullifier: &BytesN<32>) -> bool {

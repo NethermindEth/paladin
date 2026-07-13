@@ -1191,6 +1191,17 @@ dependencies = [
 name = "satom"
 version = "0.0.0"
 dependencies = [
+ "saladin-typed-data",
+ "snoto",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "satom-factory"
+version = "0.0.0"
+dependencies = [
+ "factory",
+ "satom",
  "soroban-sdk",
 ]
 

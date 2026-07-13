@@ -109,8 +109,9 @@ fn transfer_verifies_real_anon_nullifier_transfer_proof() {
     env.mock_all_auths();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
-    client.initialize(&notary);
+    client.initialize(&notary, &sac);
 
     // Public-input order matches `constructPublicInputs`/lib.rs's own `transfer` assembly
     // exactly: nullifiers[0..2], root, enables[0..2], outputs[0..2] (nPublic: 7).

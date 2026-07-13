@@ -20,8 +20,9 @@ fn setup() -> Setup {
     env.mock_all_auths();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
-    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE));
+    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE), &sac);
     Setup { env, contract_id }
 }
 
@@ -116,10 +117,11 @@ fn transfer_rejects_unauthorized_notary() {
     let env = Env::default();
     let contract_id = env.register(Contract, ());
     let notary = Address::generate(&env);
+    let sac = Address::generate(&env);
     let client = ContractClient::new(&env, &contract_id);
 
     env.mock_all_auths();
-    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE));
+    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE), &sac);
 
     env.set_auths(&[]); // clear mocked auths before the call under test
     client.transfer(
@@ -319,6 +321,166 @@ fn keepalive_skips_nonexistent_ids_silently() {
 
     // A mixed batch: one real id, one that was never created. Must not panic.
     client.keepalive(&Vec::from_array(&s.env, [output, state_id(&s.env, 250)]));
+}
+
+/// Registers a real (testutils) Stellar Asset Contract instead of the plain generated `Address`
+/// `setup()` uses - `deposit`/`withdraw` genuinely call through to it (no ZK proof gates them,
+/// unlike SZeto's), so full success-path assertions on real token balances are possible here.
+struct ShieldSetup {
+    env: Env,
+    contract_id: Address,
+    sac: Address,
+}
+
+fn shield_setup() -> ShieldSetup {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(admin).address();
+    let contract_id = env.register(Contract, ());
+    let notary = Address::generate(&env);
+    let client = ContractClient::new(&env, &contract_id);
+    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE), &sac);
+    ShieldSetup {
+        env,
+        contract_id,
+        sac,
+    }
+}
+
+#[test]
+fn deposit_shields_amount_and_admits_output() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+
+    let output = state_id(&s.env, 1);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [output.clone()]),
+        &Bytes::new(&s.env),
+    );
+
+    assert_eq!(token_balance.balance(&depositor), 500);
+    assert_eq!(token_balance.balance(&s.contract_id), 500);
+
+    // The output is now spendable via a normal transfer - confirms `deposit` admitted it exactly
+    // like `transfer` would.
+    client.transfer(
+        &state_id(&s.env, 101),
+        &Vec::from_array(&s.env, [output]),
+        &Vec::from_array(&s.env, [state_id(&s.env, 2)]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic]
+fn deposit_rejects_unauthorized_depositor() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let depositor = Address::generate(&s.env);
+
+    s.env.set_auths(&[]); // clear the mocked auths from shield_setup() for the call under test
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "deposit amount must be positive")]
+fn deposit_rejects_nonpositive_amount() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let depositor = Address::generate(&s.env);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &0,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
+}
+
+#[test]
+fn withdraw_unshields_amount_to_recipient() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+    let input = state_id(&s.env, 1);
+    client.deposit(
+        &state_id(&s.env, 100),
+        &depositor,
+        &500,
+        &Vec::from_array(&s.env, [input.clone()]),
+        &Bytes::new(&s.env),
+    );
+
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &state_id(&s.env, 101),
+        &recipient,
+        &500,
+        &Vec::from_array(&s.env, [input]),
+        &Bytes::new(&s.env),
+    );
+
+    assert_eq!(token_balance.balance(&recipient), 500);
+    assert_eq!(token_balance.balance(&s.contract_id), 0);
+}
+
+#[test]
+#[should_panic]
+fn withdraw_rejects_unauthorized_notary() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(admin).address();
+    let contract_id = env.register(Contract, ());
+    let notary = Address::generate(&env);
+    let client = ContractClient::new(&env, &contract_id);
+
+    env.mock_all_auths();
+    client.initialize(&notary, &Bytes::from_slice(&env, NETWORK_PASSPHRASE), &sac);
+
+    env.set_auths(&[]);
+    let recipient = Address::generate(&env);
+    client.withdraw(
+        &state_id(&env, 100),
+        &recipient,
+        &500,
+        &Vec::from_array(&env, [state_id(&env, 1)]),
+        &Bytes::new(&env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "input not unspent")]
+fn withdraw_rejects_unknown_input() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let recipient = Address::generate(&s.env);
+    client.withdraw(
+        &state_id(&s.env, 100),
+        &recipient,
+        &500,
+        &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
+        &Bytes::new(&s.env),
+    );
 }
 
 /// Computes the exact same commitment digest `check_commitment` in `lib.rs` recomputes on-chain -

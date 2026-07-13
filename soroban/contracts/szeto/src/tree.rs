@@ -17,7 +17,7 @@
 use alloc::vec::Vec as StdVec;
 
 use soroban_poseidon::PoseidonSponge;
-use soroban_sdk::{contracttype, crypto::bn254::Bn254Fr, vec, Env, U256, Vec};
+use soroban_sdk::{contracttype, crypto::bn254::Bn254Fr, vec, Env, Vec, U256};
 
 use crate::storage::DataKey;
 

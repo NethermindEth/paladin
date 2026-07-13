@@ -18,6 +18,7 @@ pub const TTL_EXTEND_TO_LEDGERS: u32 = 3_110_400; // ~180 days at ~5s/ledger
 pub enum DataKey {
     Notary,
     NetworkPassphrase,
+    Sac,
     Unspent(BytesN<32>),
     Locked(BytesN<32>),
     Lock(BytesN<32>),
@@ -64,6 +65,19 @@ pub fn network_passphrase(env: &Env) -> Bytes {
         .instance()
         .get(&DataKey::NetworkPassphrase)
         .unwrap_or_else(|| panic!("not initialized"))
+}
+
+/// The pooled Stellar Asset Contract (SAC) address backing shielded balances - chapter 13 Part B
+/// phase B.4 (§13.6 native-asset shield/unshield). Set once at `initialize`, never mutated.
+pub fn init_sac(env: &Env, sac: &Address) {
+    env.storage().instance().set(&DataKey::Sac, sac);
+}
+
+pub fn sac(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::Sac)
+        .unwrap_or_else(|| panic!("no SAC configured"))
 }
 
 pub fn is_unspent(env: &Env, id: &BytesN<32>) -> bool {
