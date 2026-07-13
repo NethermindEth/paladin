@@ -543,40 +543,6 @@ func (n *Noto) findAvailableStates(ctx context.Context, stateQueryContext, schem
 	return res.States, nil
 }
 
-func (n *Noto) eip712Domain(contract *ethtypes.Address0xHex) map[string]any {
-	return map[string]any{
-		"name":              EIP712DomainName,
-		"version":           EIP712DomainVersion,
-		"chainId":           n.chainID,
-		"verifyingContract": contract,
-	}
-}
-
-func (n *Noto) encodeNotoCoins(coins []*types.NotoCoin) []any {
-	encodedCoins := make([]any, len(coins))
-	for i, coin := range coins {
-		encodedCoins[i] = map[string]any{
-			"salt":   coin.Salt,
-			"owner":  coin.Owner,
-			"amount": coin.Amount.String(),
-		}
-	}
-	return encodedCoins
-}
-
-func (n *Noto) encodeNotoLockedCoins(coins []*types.NotoLockedCoin) []any {
-	encodedCoins := make([]any, len(coins))
-	for i, coin := range coins {
-		encodedCoins[i] = map[string]any{
-			"salt":   coin.Salt,
-			"lockId": coin.LockID,
-			"owner":  coin.Owner,
-			"amount": coin.Amount.String(),
-		}
-	}
-	return encodedCoins
-}
-
 func encodedStateIDs(states []*pldapi.StateEncoded) []string {
 	inputs := make([]string, len(states))
 	for i, state := range states {
@@ -633,103 +599,35 @@ func stringToAny(ids []string) []any {
 	return result
 }
 
+// Thin delegations to n.chainIO (chapter 14 step 3) - see chainio.go/chainio_evm.go for the
+// actual EIP-712 encoding logic, moved there verbatim.
+
 func (n *Noto) encodeTransferUnmasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoTransferUnmaskedTypeSet,
-		PrimaryType: "Transfer",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"inputs":  n.encodeNotoCoins(inputs),
-			"outputs": n.encodeNotoCoins(outputs),
-		},
-	})
+	return n.getChainIO().EncodeTransferUnmasked(ctx, contract, inputs, outputs)
 }
 
 func (n *Noto) encodeTransferMasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*pldapi.StateEncoded, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoTransferMaskedTypeSet,
-		PrimaryType: "Transfer",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"inputs":  stringToAny(encodedStateIDs(inputs)),
-			"outputs": stringToAny(encodedStateIDs(outputs)),
-			"data":    data,
-		},
-	})
+	return n.getChainIO().EncodeTransferMasked(ctx, contract, inputs, outputs, data)
 }
 
 func (n *Noto) encodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoLockTypeSet,
-		PrimaryType: "Lock",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"inputs":        n.encodeNotoCoins(inputs),
-			"outputs":       n.encodeNotoCoins(outputs),
-			"lockedOutputs": n.encodeNotoLockedCoins(lockedOutputs),
-		},
-	})
+	return n.getChainIO().EncodeLock(ctx, contract, inputs, outputs, lockedOutputs)
 }
 
 func (n *Noto) encodeUnlock(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs []*types.NotoLockedCoin, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoUnlockTypeSet,
-		PrimaryType: "Unlock",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"lockedInputs":  n.encodeNotoLockedCoins(lockedInputs),
-			"lockedOutputs": n.encodeNotoLockedCoins(lockedOutputs),
-			"outputs":       n.encodeNotoCoins(outputs),
-		},
-	})
+	return n.getChainIO().EncodeUnlock(ctx, contract, lockedInputs, lockedOutputs, outputs)
 }
 
 func (n *Noto) unlockHashFromIDs_V0(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs, outputs []string, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoUnlockMaskedTypeSet_V0,
-		PrimaryType: "Unlock",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"lockedInputs":  stringToAny(lockedInputs),
-			"lockedOutputs": stringToAny(lockedOutputs),
-			"outputs":       stringToAny(outputs),
-			"data":          data,
-		},
-	})
+	return n.getChainIO().UnlockHashFromIDsV0(ctx, contract, lockedInputs, lockedOutputs, outputs, data)
 }
 
-func (n *Noto) unlockHashFromIDs_V1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (encoded pldtypes.Bytes32, err error) {
-	msg := map[string]any{
-		"txId":         txId,
-		"lockedInputs": stringToAny(lockedInputs),
-		"outputs":      stringToAny(outputs),
-		"data":         data,
-	}
-	b, err := eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoUnlockMaskedTypeSet_V1,
-		PrimaryType: "Unlock",
-		Domain:      n.eip712Domain(contract),
-		Message:     msg,
-	})
-	if err == nil {
-		copy(encoded[:], b[0:32])
-		jsonMsg, _ := json.Marshal(msg)
-		log.L(ctx).Infof("Encoded outcome hash '%s' for unlock operation %s: %s", encoded, lockID, jsonMsg)
-	}
-	return encoded, err
+func (n *Noto) unlockHashFromIDs_V1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (pldtypes.Bytes32, error) {
+	return n.getChainIO().UnlockHashFromIDsV1(ctx, contract, lockID, txId, lockedInputs, outputs, data)
 }
 
 func (n *Noto) encodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.EthAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
-		Types:       NotoDelegateLockTypeSet,
-		PrimaryType: "DelegateLock",
-		Domain:      n.eip712Domain(contract),
-		Message: map[string]any{
-			"lockId":   lockID,
-			"delegate": delegate,
-			"data":     data,
-		},
-	})
+	return n.getChainIO().EncodeDelegateLock(ctx, contract, lockID, delegate, data)
 }
 
 func (n *Noto) getAccountBalance(ctx context.Context, stateQueryContext string, owner *pldtypes.EthAddress, useNullifiers bool) (totalStates int, totalBalance *big.Int, overflow, revert bool, err error) {

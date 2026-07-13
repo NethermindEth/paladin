@@ -29,16 +29,13 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/solutils"
-	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/smt"
-	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
-	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
 )
 
 // ParamValidator defines the interface for validating transaction parameters
@@ -150,6 +147,7 @@ type Noto struct {
 	name                 string
 	config               types.DomainConfig
 	chainID              int64
+	chainIO              chainIO
 	fixedSigningIdentity string
 	coinSchema           *prototk.StateSchema
 	lockedCoinSchema     *prototk.StateSchema
@@ -508,6 +506,16 @@ func (n *Noto) ManifestSchemaID() string {
 	return n.manifestSchema.Id
 }
 
+// getChainIO lazily defaults to an EVM implementation if ConfigureDomain hasn't run yet (e.g. in
+// unit tests that construct *Noto directly, bypassing the normal ConfigureDomain lifecycle) -
+// this preserves zero-behavior-change for any code that predates this refactor.
+func (n *Noto) getChainIO() chainIO {
+	if n.chainIO == nil {
+		n.chainIO = newEVMChainIO(n.chainID)
+	}
+	return n.chainIO
+}
+
 func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
 	var config types.DomainConfig
 	err := json.Unmarshal([]byte(req.ConfigJson), &config)
@@ -518,7 +526,12 @@ func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomain
 	n.name = req.Name
 	n.config = config
 	n.chainID = req.ChainId
+	// Unconditional today - no real chain-kind switch exists yet (chapter 14 step 4's job, once
+	// a Soroban chainIO implementer exists to switch to). This wiring point is the one lifecycle
+	// hook where the framework tells the domain what chain it's running against.
+	n.chainIO = newEVMChainIO(n.chainID)
 	n.fixedSigningIdentity = req.FixedSigningIdentity
+
 
 	algoName := types.AlgoDomainNullifier(n.name)
 	// using the "Sign" lifecycle method to generate the nullifier,
@@ -595,8 +608,8 @@ func (n *Noto) InitDeploy(ctx context.Context, req *prototk.InitDeployRequest) (
 		RequiredVerifiers: []*prototk.ResolveVerifierRequest{
 			{
 				Lookup:       params.Notary,
-				Algorithm:    algorithms.ECDSA_SECP256K1,
-				VerifierType: verifiers.ETH_ADDRESS,
+				Algorithm:    n.getChainIO().SigningAlgorithm(),
+				VerifierType: n.getChainIO().VerifierType(),
 			},
 		},
 	}, nil
@@ -655,16 +668,7 @@ func (n *Noto) PrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequ
 		signer = fmt.Sprintf("%s.deploy.%s", n.name, uuid.New())
 	}
 
-	// Default to the V0 NotoFactory ABI if no version is specified
-	var abi abi.ABI
-	switch n.config.FactoryVersion {
-	case 1:
-		abi = factoryV1Build.ABI
-	case 2:
-		abi = factoryV2Build.ABI
-	default:
-		abi = factoryV0Build.ABI
-	}
+	abi := n.getChainIO().SelectFactoryABI(n.config.FactoryVersion)
 
 	functionName := "deploy"
 	if params.Implementation != "" {
@@ -977,19 +981,15 @@ func (n *Noto) ethAddressVerifiers(lookups ...string) []*prototk.ResolveVerifier
 	for i, lookup := range verifierList {
 		request[i] = &prototk.ResolveVerifierRequest{
 			Lookup:       lookup,
-			Algorithm:    algorithms.ECDSA_SECP256K1,
-			VerifierType: verifiers.ETH_ADDRESS,
+			Algorithm:    n.getChainIO().SigningAlgorithm(),
+			VerifierType: n.getChainIO().VerifierType(),
 		}
 	}
 	return request
 }
 
 func (n *Noto) recoverSignature(ctx context.Context, payload ethtypes.HexBytes0xPrefix, signature []byte) (*ethtypes.Address0xHex, error) {
-	sig, err := secp256k1.DecodeCompactRSV(ctx, signature)
-	if err != nil {
-		return nil, err
-	}
-	return sig.RecoverDirect(payload, n.chainID)
+	return n.getChainIO().RecoverSignature(ctx, payload, signature)
 }
 
 func (n *Noto) parseCoinList(ctx context.Context, label string, states []*prototk.EndorsableState) (*parsedCoins, error) {
@@ -1329,8 +1329,8 @@ func (n *Noto) CheckStateCompletion(ctx context.Context, req *prototk.CheckState
 	}
 	for addr := range uniqueAddresses {
 		lookupReq.Lookups = append(lookupReq.Lookups, &prototk.ReverseKeyLookup{
-			Algorithm:    algorithms.ECDSA_SECP256K1,
-			VerifierType: verifiers.ETH_ADDRESS,
+			Algorithm:    n.getChainIO().SigningAlgorithm(),
+			VerifierType: n.getChainIO().VerifierType(),
 			Verifier:     addr,
 		})
 	}
@@ -1382,41 +1382,12 @@ func (n *Noto) CheckStateCompletion(ctx context.Context, req *prototk.CheckState
 
 // getInterfaceABI returns the appropriate interface ABI based on the variant
 func (n *Noto) getInterfaceABI(variant pldtypes.HexUint64) abi.ABI {
-	if variant == types.NotoVariantV0 {
-		return interfaceV0Build.ABI
-	}
-	if variant == types.NotoVariantV1 {
-		return interfaceV1Build.ABI
-	}
-	return interfaceV2Build.ABI
+	return n.getChainIO().SelectInterfaceABI(variant)
 }
 
-// computeLockId computes the lockId the same way the contract does:
-// keccak256(abi.encode(address(this), msg.sender, txId))
+// computeLockId computes the lockId the same way the contract does - see chainIO.ComputeLockID.
 func (n *Noto) computeLockId(ctx context.Context, contractAddress *pldtypes.EthAddress, notaryAddress *pldtypes.EthAddress, txId string) (pldtypes.Bytes32, error) {
-	params := abi.ParameterArray{
-		{Name: "contract", Type: "address"},
-		{Name: "notary", Type: "address"},
-		{Name: "txId", Type: "bytes32"},
-	}
-
-	paramsJSON := map[string]any{
-		"contract": contractAddress.String(),
-		"notary":   notaryAddress.String(),
-		"txId":     txId,
-	}
-
-	jsonData, err := json.Marshal(paramsJSON)
-	if err != nil {
-		return pldtypes.Bytes32{}, err
-	}
-
-	encoded, err := params.EncodeABIDataJSONCtx(ctx, jsonData)
-	if err != nil {
-		return pldtypes.Bytes32{}, err
-	}
-
-	return pldtypes.Bytes32Keccak(encoded), nil
+	return n.getChainIO().ComputeLockID(ctx, contractAddress, notaryAddress, txId)
 }
 
 func (n *Noto) extractLockInfoV0(ctx context.Context, infoStates []*prototk.EndorsableState, required bool) (lockID *pldtypes.Bytes32, delegate *pldtypes.EthAddress, err error) {
