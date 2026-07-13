@@ -18,6 +18,7 @@ package noto
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
@@ -46,6 +47,8 @@ func newEVMChainIO(chainID int64) *evmChainIO {
 	return &evmChainIO{chainID: chainID}
 }
 
+func (e *evmChainIO) ChainKind() string { return "evm" }
+
 func (e *evmChainIO) SigningAlgorithm() string { return algorithms.ECDSA_SECP256K1 }
 func (e *evmChainIO) VerifierType() string     { return verifiers.ETH_ADDRESS }
 
@@ -58,15 +61,21 @@ func (e *evmChainIO) ResolveIdentity(ctx context.Context, errorDescription, look
 	if err != nil {
 		return nil, err
 	}
-	return &identityPair{identifier: lookup, address: address}, nil
+	return &identityPair{identifier: lookup, address: address, chainAddress: pldtypes.NewEVMChainAddress(*address)}, nil
 }
 
-func (e *evmChainIO) RecoverSignature(ctx context.Context, payload ethtypes.HexBytes0xPrefix, signature []byte) (*ethtypes.Address0xHex, error) {
+// VerifySignature recovers the signer address from a secp256k1 signature (EVM signatures are
+// recoverable, unlike ed25519's) and compares it against the expected verifier string.
+func (e *evmChainIO) VerifySignature(ctx context.Context, payload []byte, signature []byte, expectedVerifier string) (bool, error) {
 	sig, err := secp256k1.DecodeCompactRSV(ctx, signature)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	return sig.RecoverDirect(payload, e.chainID)
+	recovered, err := sig.RecoverDirect(ethtypes.HexBytes0xPrefix(payload), e.chainID)
+	if err != nil {
+		return false, err
+	}
+	return recovered.String() == expectedVerifier, nil
 }
 
 func (e *evmChainIO) eip712Domain(contract *ethtypes.Address0xHex) map[string]any {
@@ -78,16 +87,26 @@ func (e *evmChainIO) eip712Domain(contract *ethtypes.Address0xHex) map[string]an
 	}
 }
 
-func (e *evmChainIO) encodeNotoCoins(coins []*types.NotoCoin) []any {
+func (e *evmChainIO) encodeNotoCoins(coins []*types.NotoCoin) ([]any, error) {
 	encodedCoins := make([]any, len(coins))
 	for i, coin := range coins {
+		// coin.Owner is chain-neutral (*pldtypes.ChainAddress) since step 4 - unwrap back to the
+		// concrete EVM address the EIP-712 "address" type needs, so the digest bytes stay
+		// byte-identical to before this migration.
+		if coin.Owner == nil {
+			return nil, fmt.Errorf("coin has no owner")
+		}
+		owner, err := coin.Owner.EthAddress()
+		if err != nil {
+			return nil, err
+		}
 		encodedCoins[i] = map[string]any{
 			"salt":   coin.Salt,
-			"owner":  coin.Owner,
+			"owner":  owner,
 			"amount": coin.Amount.String(),
 		}
 	}
-	return encodedCoins
+	return encodedCoins, nil
 }
 
 func (e *evmChainIO) encodeNotoLockedCoins(coins []*types.NotoLockedCoin) []any {
@@ -104,13 +123,21 @@ func (e *evmChainIO) encodeNotoLockedCoins(coins []*types.NotoLockedCoin) []any 
 }
 
 func (e *evmChainIO) EncodeTransferUnmasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error) {
+	encodedInputs, err := e.encodeNotoCoins(inputs)
+	if err != nil {
+		return nil, err
+	}
+	encodedOutputs, err := e.encodeNotoCoins(outputs)
+	if err != nil {
+		return nil, err
+	}
 	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
 		Types:       NotoTransferUnmaskedTypeSet,
 		PrimaryType: "Transfer",
 		Domain:      e.eip712Domain(contract),
 		Message: map[string]any{
-			"inputs":  e.encodeNotoCoins(inputs),
-			"outputs": e.encodeNotoCoins(outputs),
+			"inputs":  encodedInputs,
+			"outputs": encodedOutputs,
 		},
 	})
 }
@@ -129,19 +156,31 @@ func (e *evmChainIO) EncodeTransferMasked(ctx context.Context, contract *ethtype
 }
 
 func (e *evmChainIO) EncodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error) {
+	encodedInputs, err := e.encodeNotoCoins(inputs)
+	if err != nil {
+		return nil, err
+	}
+	encodedOutputs, err := e.encodeNotoCoins(outputs)
+	if err != nil {
+		return nil, err
+	}
 	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
 		Types:       NotoLockTypeSet,
 		PrimaryType: "Lock",
 		Domain:      e.eip712Domain(contract),
 		Message: map[string]any{
-			"inputs":        e.encodeNotoCoins(inputs),
-			"outputs":       e.encodeNotoCoins(outputs),
+			"inputs":        encodedInputs,
+			"outputs":       encodedOutputs,
 			"lockedOutputs": e.encodeNotoLockedCoins(lockedOutputs),
 		},
 	})
 }
 
 func (e *evmChainIO) EncodeUnlock(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs []*types.NotoLockedCoin, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error) {
+	encodedOutputs, err := e.encodeNotoCoins(outputs)
+	if err != nil {
+		return nil, err
+	}
 	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
 		Types:       NotoUnlockTypeSet,
 		PrimaryType: "Unlock",
@@ -149,7 +188,7 @@ func (e *evmChainIO) EncodeUnlock(ctx context.Context, contract *ethtypes.Addres
 		Message: map[string]any{
 			"lockedInputs":  e.encodeNotoLockedCoins(lockedInputs),
 			"lockedOutputs": e.encodeNotoLockedCoins(lockedOutputs),
-			"outputs":       e.encodeNotoCoins(outputs),
+			"outputs":       encodedOutputs,
 		},
 	})
 }

@@ -273,11 +273,69 @@ func (h *transferCommon) hookInvokeTransfer(ctx context.Context, tx *types.Parse
 	}, nil
 }
 
+// stellarBaseLedgerInvokeTransfer builds a real PreparedChainTransaction.soroban (SorobanInvoke)
+// for SNoto's actual `transfer(tx_id, inputs, outputs, signature, data)` (chapter 13 §13.2),
+// mirroring mintHandler.stellarBaseLedgerInvoke but with real (non-empty) inputs. Settled scope
+// for this phase (chapter 14, extending mint's Stellar walking skeleton to transfer): the
+// nullifier variant's root+signature proof wrapping (encodeRootAndSignature) is not supported
+// here, same as mint's Stellar path - only the plain (non-nullifier) case works today.
+func (h *transferCommon) stellarBaseLedgerInvokeTransfer(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	sender := domain.FindAttestation("sender", req.AttestationResult)
+	if sender == nil {
+		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "sender")
+	}
+
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, req.InputStates, false))
+	if err != nil {
+		return nil, err
+	}
+	outputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, req.OutputStates, false))
+	if err != nil {
+		return nil, err
+	}
+
+	contractID, err := placeholderContractID(tx.ContractAddress)
+	if err != nil {
+		return nil, err
+	}
+	argsXDR, argsJSON, err := encodeSNotoTransferArgs(txID, inputs, outputs, sender.Payload, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   contractID,
+					FunctionName: "transfer",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *transferCommon) prepareTransfer(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest, from, to string, amount *pldtypes.HexUint256, data pldtypes.HexBytes) (*prototk.PrepareTransactionResponse, error) {
 	useNullifier := tx.DomainConfig.IsNullifierVariant()
 	endorsement := domain.FindAttestation("notary", req.AttestationResult)
 	if endorsement == nil || endorsement.Verifier.Lookup != tx.DomainConfig.NotaryLookup {
 		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "notary")
+	}
+
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvokeTransfer(ctx, tx, req)
 	}
 
 	baseTransaction, err := h.baseLedgerInvokeTransfer(ctx, tx, req, false, useNullifier)

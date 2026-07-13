@@ -271,7 +271,12 @@ type preparedLockInfo struct {
 
 type identityPair struct {
 	identifier string
-	address    *pldtypes.EthAddress
+	// address is EVM-only, used pervasively by lock/unlock/burn/transfer code this pass doesn't
+	// touch - nil when resolved by stellarChainIO.
+	address *pldtypes.EthAddress
+	// chainAddress is the chain-neutral representation (step 4), populated by every chainIO
+	// implementer - this is what NotoCoin.Owner is now sourced from (see prepareOutputs).
+	chainAddress pldtypes.ChainAddress
 }
 
 type identityList []*identityPair
@@ -317,7 +322,10 @@ func (n *Noto) prepareInputs(ctx context.Context, stateQueryContext string, owne
 		queryBuilder := query.NewQueryBuilder().
 			Limit(10).
 			Sort(".created").
-			Equal("owner", owner.address.String())
+			// owner.chainAddress (chain-neutral) not owner.address (EVM-only, nil for a
+			// Stellar-resolved identity) - safe for existing EVM coins, since a ChainAddress's
+			// EVM-kind text is exactly EthAddress.String() (see NotoCoin.Owner's doc comment).
+			Equal("owner", owner.chainAddress.String())
 
 		if lastStateTimestamp > 0 {
 			queryBuilder.GreaterThan(".created", lastStateTimestamp)
@@ -418,7 +426,7 @@ func (n *Noto) prepareOutputs(owner *identityPair, amount *pldtypes.HexUint256, 
 	// TODO: make this configurable
 	newCoin := &types.NotoCoin{
 		Salt:   pldtypes.RandBytes32(),
-		Owner:  owner.address,
+		Owner:  &owner.chainAddress,
 		Amount: amount,
 	}
 	newState, err := n.makeNewCoinState(newCoin, distributionList.identities())

@@ -1063,7 +1063,7 @@ func TestRecoverSignatureInvalid(t *testing.T) {
 	n := &Noto{}
 	ctx := t.Context()
 
-	_, err := n.recoverSignature(ctx, nil, nil)
+	_, err := n.verifySignature(ctx, nil, nil, "")
 	assert.ErrorContains(t, err, "FF22087")
 }
 

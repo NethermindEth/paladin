@@ -81,4 +81,5 @@ var (
 	MsgInvalidLockTransition              = pde("PD200041", "Invalid lock transition")
 	MsgUnknownSignPayload                 = pde("PD200042", "Sign payload type '%s' not recognized")
 	MsgNullifierGenerationFailed          = pde("PD200043", "Failed to generate nullifier for coin")
+	MsgSignatureVerificationFailed        = pde("PD200044", "Signature for '%s' did not verify against expected verifier '%s'")
 )

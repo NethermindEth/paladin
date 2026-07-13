@@ -233,8 +233,13 @@ func (n *Noto) handleNotaryPrivateUnlock(ctx context.Context, stateQueryContext 
 		if err != nil {
 			return err
 		}
+		// hooks.go (Pente-private-invoke) is EVM-only - ResolvedUnlockRecipient.To stays EthAddress.
+		ownerAddr, err := coin.Owner.EthAddress()
+		if err != nil {
+			return err
+		}
 		recipients[i] = &ResolvedUnlockRecipient{
-			To:     coin.Owner,
+			To:     ownerAddr,
 			Amount: coin.Amount,
 		}
 	}

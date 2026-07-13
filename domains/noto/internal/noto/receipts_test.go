@@ -62,9 +62,9 @@ func TestReceiptTransfers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, transfers, 0)
 
-	owner1 := pldtypes.MustEthAddress("0xbb2b99dde4ca2d4c99f149d13cd55a9edada69eb")
-	owner2 := pldtypes.MustEthAddress("0x3008ee73a70cd1cc57647c7d253a48defe86dd9b")
-	owner3 := pldtypes.MustEthAddress("0xea82df8cb94b9fa1a0a711d75a7f7dfdec2ef53c")
+	owner1 := pldtypes.MustParseChainAddress("0xbb2b99dde4ca2d4c99f149d13cd55a9edada69eb")
+	owner2 := pldtypes.MustParseChainAddress("0x3008ee73a70cd1cc57647c7d253a48defe86dd9b")
+	owner3 := pldtypes.MustParseChainAddress("0xea82df8cb94b9fa1a0a711d75a7f7dfdec2ef53c")
 
 	// Simple mint
 	transfers, err = n.receiptTransfers(ctx, &prototk.BuildReceiptRequest{

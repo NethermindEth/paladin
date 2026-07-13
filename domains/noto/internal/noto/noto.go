@@ -526,12 +526,16 @@ func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomain
 	n.name = req.Name
 	n.config = config
 	n.chainID = req.ChainId
-	// Unconditional today - no real chain-kind switch exists yet (chapter 14 step 4's job, once
-	// a Soroban chainIO implementer exists to switch to). This wiring point is the one lifecycle
-	// hook where the framework tells the domain what chain it's running against.
-	n.chainIO = newEVMChainIO(n.chainID)
+	// The chain-kind switch (chapter 14 step 4): domainmgr now sends a chain-neutral ChainInfo
+	// (chapter 14 step 1), so this is the one lifecycle hook where the framework tells the domain
+	// what chain it's actually running against. Falls back to EVM if ChainInfo is absent
+	// (legacy/test callers that predate it).
+	if req.ChainInfo != nil && req.ChainInfo.ChainKind == "stellar" {
+		n.chainIO = newStellarChainIO(req.ChainInfo.NetworkId)
+	} else {
+		n.chainIO = newEVMChainIO(n.chainID)
+	}
 	n.fixedSigningIdentity = req.FixedSigningIdentity
-
 
 	algoName := types.AlgoDomainNullifier(n.name)
 	// using the "Sign" lifecycle method to generate the nullifier,
@@ -545,6 +549,9 @@ func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomain
 			AbiEventsJson:       allEventsJSON,
 			SigningAlgorithms:   signingAlgos,
 		},
+		// Chapter 14 step 4: domains/noto's chainIO seam now has a real (if mint-scoped) Stellar
+		// implementer - declare support so domainmgr's chain-kind gate (step 1) accepts it.
+		SupportedChainKinds: []string{"evm", "stellar"},
 	}, nil
 }
 
@@ -988,8 +995,8 @@ func (n *Noto) ethAddressVerifiers(lookups ...string) []*prototk.ResolveVerifier
 	return request
 }
 
-func (n *Noto) recoverSignature(ctx context.Context, payload ethtypes.HexBytes0xPrefix, signature []byte) (*ethtypes.Address0xHex, error) {
-	return n.getChainIO().RecoverSignature(ctx, payload, signature)
+func (n *Noto) verifySignature(ctx context.Context, payload []byte, signature []byte, expectedVerifier string) (bool, error) {
+	return n.getChainIO().VerifySignature(ctx, payload, signature, expectedVerifier)
 }
 
 func (n *Noto) parseCoinList(ctx context.Context, label string, states []*prototk.EndorsableState) (*parsedCoins, error) {

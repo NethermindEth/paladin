@@ -43,7 +43,7 @@ func TestCreateBurnLock(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(150), // we'll have a remainder
 		},
 	}

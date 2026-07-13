@@ -16,7 +16,10 @@
 package noto
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,6 +33,8 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -252,6 +257,166 @@ func TestMint(t *testing.T) {
 	mt.withMissingNewStates(outCoin1State).
 		incompleteForIdentity(notaryKey.Address.String()).
 		incompleteForIdentity(receiverAddress)
+}
+
+// TestMint_Stellar proves chapter 14 step 4's walking skeleton: a mint against a Stellar-kind
+// configured Noto produces a real PreparedChainTransaction.soroban (SorobanInvoke) whose args_xdr
+// is genuine, well-formed XDR that round-trips back to the expected tx_id/inputs/outputs/
+// signature/data - not just that it compiles.
+func TestMint_Stellar(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:      mockCallbacks,
+		coinSchema:     testSchema("coin"),
+		dataSchemaV0:   testSchema("data"),
+		dataSchemaV1:   testSchema("data_v1"),
+		dataSchemaV2:   testSchema("data_v2"),
+		manifestSchema: testSchema("manifest"),
+		chainIO:        newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["mint"]
+
+	notaryPub, notaryPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	receiverPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	receiverAddress, err := strkey.Encode(strkey.VersionByteAccountID, receiverPub)
+	require.NoError(t, err)
+
+	// Placeholder only (see placeholderContractID's doc comment) - ParsedTransaction.ContractAddress
+	// stays EVM-shaped regardless of chain kind, out of scope for this pass.
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3"
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "notary@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress:    contractAddress,
+			ContractConfigJson: mustParseJSON(notoBasicConfigV1),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: `{
+			"to": "receiver@node2",
+			"amount": 100,
+			"data": "0x1234"
+		}`,
+	}
+
+	initRes, err := n.InitTransaction(ctx, &prototk.InitTransactionRequest{Transaction: tx})
+	require.NoError(t, err)
+	require.Len(t, initRes.RequiredVerifiers, 2)
+	assert.Equal(t, verifiers.STELLAR_ADDRESS, initRes.RequiredVerifiers[0].VerifierType)
+
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryAddress},
+		{Lookup: "receiver@node2", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: receiverAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	require.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+	require.Len(t, assembleRes.AssembledTransaction.OutputStates, 1)
+
+	outputCoin, err := n.unmarshalCoin(assembleRes.AssembledTransaction.OutputStates[0].StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, outputCoin.Owner)
+	assert.Equal(t, receiverAddress, outputCoin.Owner.String())
+
+	encodedMint, err := n.encodeTransferUnmasked(ctx, ethtypes.MustNewAddress(contractAddress), []*types.NotoCoin{}, []*types.NotoCoin{outputCoin})
+	require.NoError(t, err)
+	signature := ed25519.Sign(notaryPriv, encodedMint)
+
+	outputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("coin"),
+			Id:            "0x26b394af655bdc794a6d7cd7f8004eec20bffb374e4ddd24cdaefe554878d945",
+			StateDataJson: assembleRes.AssembledTransaction.OutputStates[0].StateDataJson,
+		},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("data_v2"),
+			Id:            "0x4cc7840e186de23c4127b4853c878708d2642f1942959692885e098f1944547d",
+			StateDataJson: assembleRes.AssembledTransaction.InfoStates[1].StateDataJson,
+		},
+	}
+
+	endorseRes, err := n.EndorseTransaction(ctx, &prototk.EndorseTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		Outputs:           outputStates,
+		Info:              infoStates,
+		EndorsementRequest: &prototk.AttestationRequest{
+			Name: "notary",
+		},
+		Signatures: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: notaryAddress},
+				Payload:  signature,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.EndorseTransactionResponse_ENDORSER_SUBMIT, endorseRes.EndorsementResult)
+
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: notaryAddress},
+				Payload:  signature,
+			},
+			{
+				Name:     "notary",
+				Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban, ok := prepareRes.ChainTransaction.Payload.(*prototk.PreparedChainTransaction_Soroban)
+	require.True(t, ok)
+	assert.Equal(t, "transfer", soroban.Soroban.FunctionName)
+	assert.NotEmpty(t, soroban.Soroban.ContractId)
+
+	// Decode the real XDR args back and confirm they round-trip to the expected values - proving
+	// the plumbing works, not just that it compiles.
+	var args xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
+	require.NoError(t, err)
+	require.Len(t, args, 5)
+
+	txIDBytes32 := pldtypes.MustParseBytes32(tx.TransactionId)
+	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
+	assert.Equal(t, txIDBytes32[:], []byte(*args[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[1].Type)
+	assert.Len(t, **args[1].Vec, 0) // mint has no inputs
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
+	outputsVec := **args[2].Vec
+	require.Len(t, outputsVec, 1)
+	require.Equal(t, xdr.ScValTypeScvBytes, outputsVec[0].Type)
+	outputIDBytes32 := pldtypes.MustParseBytes32(outputStates[0].Id)
+	assert.Equal(t, outputIDBytes32[:], []byte(*outputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[3].Type)
+	assert.Equal(t, []byte(signature), []byte(*args[3].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
+	assert.NotEmpty(t, *args[4].Bytes)
 }
 
 func TestMint_V0(t *testing.T) {

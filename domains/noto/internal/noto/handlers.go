@@ -150,12 +150,12 @@ func (n *Noto) validateSignature(ctx context.Context, name string, attestations 
 	if signature == nil {
 		return i18n.NewError(ctx, msgs.MsgAttestationNotFound, name)
 	}
-	recoveredSignature, err := n.recoverSignature(ctx, encodedMessage, signature.Payload)
+	valid, err := n.verifySignature(ctx, encodedMessage, signature.Payload, signature.Verifier.Verifier)
 	if err != nil {
 		return err
 	}
-	if recoveredSignature.String() != signature.Verifier.Verifier {
-		return i18n.NewError(ctx, msgs.MsgSignatureDoesNotMatch, name, signature.Verifier.Verifier, recoveredSignature.String())
+	if !valid {
+		return i18n.NewError(ctx, msgs.MsgSignatureVerificationFailed, name, signature.Verifier.Verifier)
 	}
 	return nil
 }
@@ -168,7 +168,7 @@ func (n *Noto) validateOwners(ctx context.Context, owner string, verifiers []*pr
 	}
 
 	for i, coin := range coins {
-		if !coin.Owner.Equals(fromAddress.address) {
+		if !coin.Owner.Equals(&fromAddress.chainAddress) {
 			return i18n.NewError(ctx, msgs.MsgStateWrongOwner, states[i].Id, owner)
 		}
 	}

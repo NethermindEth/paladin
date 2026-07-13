@@ -59,9 +59,9 @@ type ReceiptState struct {
 }
 
 type ReceiptTransfer struct {
-	From   *pldtypes.EthAddress `json:"from,omitempty"`
-	To     *pldtypes.EthAddress `json:"to,omitempty"`
-	Amount *pldtypes.HexUint256 `json:"amount"`
+	From   *pldtypes.ChainAddress `json:"from,omitempty"`
+	To     *pldtypes.ChainAddress `json:"to,omitempty"`
+	Amount *pldtypes.HexUint256   `json:"amount"`
 }
 
 type NotoCoinState struct {
@@ -72,9 +72,16 @@ type NotoCoinState struct {
 }
 
 type NotoCoin struct {
-	Salt   pldtypes.Bytes32     `json:"salt"`
-	Owner  *pldtypes.EthAddress `json:"owner"`
-	Amount *pldtypes.HexUint256 `json:"amount"`
+	Salt pldtypes.Bytes32 `json:"salt"`
+	// Owner is chain-neutral (step 4) - the ABI schema below already typed "owner" as a generic
+	// "string" (not "address"), so this migration doesn't change the schema ID or, for existing
+	// EVM coins, the persisted JSON string (pldtypes.ChainAddress's EVM-kind text is exactly
+	// pldtypes.EthAddress.String()) - zero regression to already-deployed EVM Noto coins. Kept as
+	// a pointer (not a bare value) so an unset owner round-trips through JSON as null, exactly
+	// like the previous *pldtypes.EthAddress did - encoding/json's omitempty can't do this for a
+	// struct-valued field, and ChainAddress's UnmarshalJSON rejects an empty string outright.
+	Owner  *pldtypes.ChainAddress `json:"owner"`
+	Amount *pldtypes.HexUint256   `json:"amount"`
 }
 
 var NotoCoinABI = &abi.Parameter{

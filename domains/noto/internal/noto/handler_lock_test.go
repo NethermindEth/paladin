@@ -57,7 +57,7 @@ func TestLock(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}
@@ -400,7 +400,7 @@ func TestLock_V0(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}

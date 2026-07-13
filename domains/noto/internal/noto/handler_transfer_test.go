@@ -16,7 +16,10 @@
 package noto
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,6 +33,8 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +95,7 @@ func TestTransfer(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}
@@ -358,6 +363,206 @@ func TestTransfer(t *testing.T) {
 
 }
 
+// TestTransfer_Stellar extends chapter 14 step 4's mint-only walking skeleton to transfer: a real
+// input coin gets spent, proving prepareInputs' coin-selection query (fixed to use
+// identityPair.chainAddress, not the EVM-only .address) works for a Stellar-resolved sender, and
+// that the resulting SorobanInvoke.ArgsXdr carries a genuine non-empty inputs vec.
+func TestTransfer_Stellar(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:      mockCallbacks,
+		coinSchema:     testSchema("coin"),
+		dataSchemaV0:   testSchema("data"),
+		dataSchemaV1:   testSchema("data_v1"),
+		dataSchemaV2:   testSchema("data_v2"),
+		manifestSchema: testSchema("manifest"),
+		chainIO:        newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["transfer"]
+
+	notaryPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryStellarAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	senderAddress, err := strkey.Encode(strkey.VersionByteAccountID, senderPub)
+	require.NoError(t, err)
+
+	receiverPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	receiverAddress, err := strkey.Encode(strkey.VersionByteAccountID, receiverPub)
+	require.NoError(t, err)
+
+	// Exact-amount transfer (no remainder) to keep this test focused on proving a real input
+	// round-trips - TestTransfer already covers the remainder-output case for EVM.
+	inputCoin := &types.NotoCoinState{
+		ID: pldtypes.RandBytes32(),
+		Data: types.NotoCoin{
+			Owner:  pldtypes.MustParseChainAddress(senderAddress),
+			Amount: pldtypes.Int64ToInt256(100),
+		},
+	}
+	mockCallbacks.MockFindAvailableStates = func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
+		return &prototk.FindAvailableStatesResponse{
+			States: []*prototk.StoredState{
+				{
+					Id:       inputCoin.ID.String(),
+					SchemaId: hashName("coin"),
+					DataJson: mustParseJSON(inputCoin.Data),
+				},
+			},
+		}, nil
+	}
+
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3" // placeholder - see placeholderContractID
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "sender@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress:    contractAddress,
+			ContractConfigJson: mustParseJSON(notoBasicConfigV1),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: `{
+			"to": "receiver@node2",
+			"amount": 100,
+			"data": "0x1234"
+		}`,
+	}
+
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryStellarAddress},
+		{Lookup: "sender@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: senderAddress},
+		{Lookup: "receiver@node2", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: receiverAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	require.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+	require.Len(t, assembleRes.AssembledTransaction.InputStates, 1)
+	require.Len(t, assembleRes.AssembledTransaction.OutputStates, 1) // exact amount, no remainder
+	assert.Equal(t, inputCoin.ID.String(), assembleRes.AssembledTransaction.InputStates[0].Id)
+
+	outputCoin, err := n.unmarshalCoin(assembleRes.AssembledTransaction.OutputStates[0].StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, outputCoin.Owner)
+	assert.Equal(t, receiverAddress, outputCoin.Owner.String())
+
+	encodedTransfer, err := n.encodeTransferUnmasked(ctx, ethtypes.MustNewAddress(contractAddress),
+		[]*types.NotoCoin{&inputCoin.Data},
+		[]*types.NotoCoin{outputCoin},
+	)
+	require.NoError(t, err)
+	signature := ed25519.Sign(senderPriv, encodedTransfer)
+
+	inputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("coin"),
+			Id:            inputCoin.ID.String(),
+			StateDataJson: mustParseJSON(inputCoin.Data),
+		},
+	}
+	outputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("coin"),
+			Id:            "0x0000000000000000000000000000000000000000000000000000000000000001",
+			StateDataJson: assembleRes.AssembledTransaction.OutputStates[0].StateDataJson,
+		},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("manifest"),
+			Id:            "0x0000000000000000000000000000000000000000000000000000000000000003",
+			StateDataJson: assembleRes.AssembledTransaction.InfoStates[0].StateDataJson,
+		},
+		{
+			SchemaId:      hashName("data_v2"),
+			Id:            "0x0000000000000000000000000000000000000000000000000000000000000004",
+			StateDataJson: assembleRes.AssembledTransaction.InfoStates[1].StateDataJson,
+		},
+	}
+
+	endorseRes, err := n.EndorseTransaction(ctx, &prototk.EndorseTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		Inputs:            inputStates,
+		Outputs:           outputStates,
+		Info:              infoStates,
+		EndorsementRequest: &prototk.AttestationRequest{
+			Name: "notary",
+		},
+		Signatures: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.EndorseTransactionResponse_ENDORSER_SUBMIT, endorseRes.EndorsementResult)
+
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		InputStates:       inputStates,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+			{
+				Name:     "notary",
+				Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban, ok := prepareRes.ChainTransaction.Payload.(*prototk.PreparedChainTransaction_Soroban)
+	require.True(t, ok)
+	assert.Equal(t, "transfer", soroban.Soroban.FunctionName)
+	assert.NotEmpty(t, soroban.Soroban.ContractId)
+
+	var args xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
+	require.NoError(t, err)
+	require.Len(t, args, 5)
+
+	txIDBytes32 := pldtypes.MustParseBytes32(tx.TransactionId)
+	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
+	assert.Equal(t, txIDBytes32[:], []byte(*args[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[1].Type)
+	inputsVec := **args[1].Vec
+	require.Len(t, inputsVec, 1) // real input, not empty like mint
+	require.Equal(t, xdr.ScValTypeScvBytes, inputsVec[0].Type)
+	assert.Equal(t, inputCoin.ID[:], []byte(*inputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
+	outputsVec := **args[2].Vec
+	require.Len(t, outputsVec, 1)
+	require.Equal(t, xdr.ScValTypeScvBytes, outputsVec[0].Type)
+	outputIDBytes32 := pldtypes.MustParseBytes32(outputStates[0].Id)
+	assert.Equal(t, outputIDBytes32[:], []byte(*outputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[3].Type)
+	assert.Equal(t, []byte(signature), []byte(*args[3].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
+	assert.NotEmpty(t, *args[4].Bytes)
+}
+
 func TestTransfer_V0(t *testing.T) {
 	mockCallbacks := newMockCallbacks()
 	n := &Noto{
@@ -376,7 +581,7 @@ func TestTransfer_V0(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}
@@ -654,7 +859,7 @@ func TestTransfer_Nullifiers(t *testing.T) {
 	inputCoin := &types.NotoCoinState{
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoCoin{
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(senderKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}

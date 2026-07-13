@@ -276,10 +276,65 @@ func (h *mintHandler) hookInvoke(ctx context.Context, tx *types.ParsedTransactio
 	}, nil
 }
 
+// stellarBaseLedgerInvoke builds a real PreparedChainTransaction.soroban (SorobanInvoke) for a
+// mint (transfer with empty inputs, chapter 13 §13.2 - SNoto has no separate mint entry point).
+// This is the chapter 14 step 4 walking skeleton: real XDR-encoded args, a placeholder contract_id
+// (see placeholderContractID's doc comment), and no auth_entries_xdr/read_footprint_hints - that's
+// Paladin's core signing/submission pipeline's job, not this domain plugin's (mirrors how EVM's
+// own PreparedTransaction carries no signature either). Hooks mode is EVM/Pente-only and doesn't
+// apply here.
+func (h *mintHandler) stellarBaseLedgerInvoke(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	sender := domain.FindAttestation("sender", req.AttestationResult)
+	if sender == nil {
+		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "sender")
+	}
+
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
+	outputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, req.OutputStates, false))
+	if err != nil {
+		return nil, err
+	}
+
+	contractID, err := placeholderContractID(tx.ContractAddress)
+	if err != nil {
+		return nil, err
+	}
+	argsXDR, argsJSON, err := encodeSNotoTransferArgs(txID, nil /* inputs - mint has none */, outputs, sender.Payload, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   contractID,
+					FunctionName: "transfer",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *mintHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 	endorsement := domain.FindAttestation("notary", req.AttestationResult)
 	if endorsement == nil || endorsement.Verifier.Lookup != tx.DomainConfig.NotaryLookup {
 		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "notary")
+	}
+
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvoke(ctx, tx, req)
 	}
 
 	baseTransaction, err := h.baseLedgerInvoke(ctx, tx, req)

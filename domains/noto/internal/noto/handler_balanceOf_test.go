@@ -203,7 +203,7 @@ func TestBalanceOfExecCall(t *testing.T) {
 
 		coin := &types.NotoCoin{
 			Salt:   pldtypes.RandBytes32(),
-			Owner:  (*pldtypes.EthAddress)(&aliceKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(aliceKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(100),
 		}
 
@@ -239,12 +239,12 @@ func TestBalanceOfExecCall(t *testing.T) {
 
 		coin1 := &types.NotoCoin{
 			Salt:   pldtypes.RandBytes32(),
-			Owner:  (*pldtypes.EthAddress)(&aliceKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(aliceKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(75),
 		}
 		coin2 := &types.NotoCoin{
 			Salt:   pldtypes.RandBytes32(),
-			Owner:  (*pldtypes.EthAddress)(&aliceKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(aliceKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(25),
 		}
 
@@ -315,7 +315,7 @@ func TestBalanceOfExecCall(t *testing.T) {
 
 		coin := &types.NotoCoin{
 			Salt:   pldtypes.RandBytes32(),
-			Owner:  (*pldtypes.EthAddress)(&aliceKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(aliceKey.Address.String()),
 			Amount: pldtypes.Int64ToInt256(0),
 		}
 
@@ -353,7 +353,7 @@ func TestBalanceOfExecCall(t *testing.T) {
 		largeAmount := pldtypes.MustParseHexUint256("0x1fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 		coin := &types.NotoCoin{
 			Salt:   pldtypes.RandBytes32(),
-			Owner:  (*pldtypes.EthAddress)(&aliceKey.Address),
+			Owner:  pldtypes.MustParseChainAddress(aliceKey.Address.String()),
 			Amount: largeAmount,
 		}
 

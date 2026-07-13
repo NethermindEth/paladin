@@ -27,39 +27,56 @@ import (
 )
 
 // chainIO isolates domains/noto's base-ledger-specific logic behind a small interface, per
-// chapter 14 §14.1's "chain-kind switch, not a rewrite" plan. evmChainIO (chainio_evm.go) is the
-// sole implementer today - this is a pure refactor, no behavior change; every existing call path
-// still resolves to the exact same logic that used to live directly on *Noto, just one hop
-// through this interface. A chainio_stellar.go implementer, and the actual chain-kind switch that
-// picks between them, is separate, later work (chapter 14 step 4).
+// chapter 14 §14.1's "chain-kind switch, not a rewrite" plan. evmChainIO (chainio_evm.go) and
+// stellarChainIO (chainio_stellar.go) are the two implementers - step 3 landed the interface with
+// EVM as sole implementer (a pure refactor); step 4 adds a real Stellar implementer, scoped to
+// what the mint path actually exercises (identity resolution, the sender-signature
+// verify/recover step, and EncodeTransferUnmasked's state hashing) - transfer(masked)/lock/unlock
+// (EncodeTransferMasked/EncodeLock/EncodeUnlock/UnlockHashFromIDs*/EncodeDelegateLock) and
+// deploy/invoke ABI selection (SelectFactoryABI/SelectInterfaceABI) are NOT exercised by mint and
+// remain explicit "not yet implemented for Stellar" stubs on stellarChainIO - real work for when
+// this extends past mint, per chapter 14's own phrasing.
 //
 // Deliberately NOT covered by this interface (see the chapter 14 revision plan for the full
-// rationale): identity/address *representation* (identityPair.address, ParsedTransaction.
-// ContractAddress, and the persisted NotoCoin/NotoLockedCoin.Owner fields all stay
-// *pldtypes.EthAddress - changing that is a data-model change, not a logic seam); TransactionWrapper
-// (handlers.go) and its .prepare()/.encode() methods (no real chain-specific decision happens
-// there today - it's pure proto marshaling of whatever fields a handler already set; the actual
-// prepared-tx *shape* fork is step 4's job once a Soroban alternative exists); buildEndorsePlan
-// (handlers.go), a free function called directly by all 12 handler files with a fixed signature -
-// changing it would mean touching every handler file, which this pass deliberately avoids; and
-// hooks.go's Pente-private-invoke notary mode, which is EVM/Pente-only until Sente exists (tracked
-// as a leftover in chapter 14 rather than silently handled here).
+// rationale): ParsedTransaction.ContractAddress (shared toolkit type, used by both Noto and Zeto)
+// stays *ethtypes.Address0xHex - changing it is toolkit-wide, cross-domain work, out of scope
+// here. Every EIP-712-family method below still receives this EVM-shaped 20-byte value as its
+// "contract" parameter regardless of chain kind (since call sites pass tx.ContractAddress
+// unchanged) - stellarChainIO's real estate-hashing methods (like EncodeTransferUnmasked) treat
+// it as an opaque placeholder seed for the SALADIN_TYPED_DATA_V0 contract_id (zero-padded to 32
+// bytes), NOT a real Stellar contract ID, clearly documented at the implementation. Identity
+// *representation* (NotoCoin.Owner, identityPair's new chainAddress field) now uses
+// pldtypes.ChainAddress (step 4); TransactionWrapper (handlers.go) and buildEndorsePlan
+// (handlers.go, called directly by all 12 handler files with a fixed signature) stay untouched,
+// as does hooks.go's Pente-private-invoke notary mode (EVM/Pente-only until Sente exists, tracked
+// as a leftover in chapter 14).
 type chainIO interface {
+	// ChainKind identifies which base_ledger.ChainKind this implementer serves ("evm"/"stellar")
+	// - lets Prepare() branch on the prepared-tx shape without a new field on *Noto.
+	ChainKind() string
+
 	// SigningAlgorithm and VerifierType identify the signing scheme this chain kind uses for
 	// sender/notary attestations - today's algorithms.ECDSA_SECP256K1/verifiers.ETH_ADDRESS.
 	SigningAlgorithm() string
 	VerifierType() string
 
-	// ResolveIdentity resolves a lookup to an address-bearing identity from a verifier list -
-	// today's findEthAddressVerifier.
+	// ResolveIdentity resolves a lookup to an identity from a verifier list - today's
+	// findEthAddressVerifier. Populates identityPair.chainAddress (chain-neutral) as well as the
+	// legacy identityPair.address (EVM-only, used pervasively by lock/unlock/burn/transfer code
+	// this pass doesn't touch) - stellarChainIO leaves .address nil.
 	ResolveIdentity(ctx context.Context, errorDescription, lookup string, verifierList []*prototk.ResolvedVerifier) (*identityPair, error)
 
-	// RecoverSignature recovers the signer address from a signature over an already-encoded
-	// payload - today's recoverSignature (secp256k1 direct recovery against the chain ID).
-	RecoverSignature(ctx context.Context, payload ethtypes.HexBytes0xPrefix, signature []byte) (*ethtypes.Address0xHex, error)
+	// VerifySignature checks a signature over an already-encoded payload against the identity
+	// string Paladin resolved as the expected signer (AttestationResult.Verifier.Verifier).
+	// Deliberately "verify", not "recover": EVM/secp256k1 signatures are recoverable (get the
+	// signer's address back from the signature alone, then compare strings), but Stellar accounts
+	// use ed25519, which has no recovery - verification requires the claimed public key up front.
+	// A single recover-shaped method can't express both; this shape can.
+	VerifySignature(ctx context.Context, payload []byte, signature []byte, expectedVerifier string) (bool, error)
 
-	// State/message hashing family - today's EIP-712 encoders in states.go. A Soroban chainIO
-	// will encode SALADIN_TYPED_DATA_V0 digests here instead (chapter 13 §13.1).
+	// State/message hashing family - today's EIP-712 encoders in states.go for EVM. Stellar's
+	// EncodeTransferUnmasked computes a real SALADIN_TYPED_DATA_V0 digest (chapter 13 §13.1,
+	// sdk/go/pkg/saladintypes.DigestXDR) - the others remain stubs until this extends past mint.
 	EncodeTransferUnmasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error)
 	EncodeTransferMasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*pldapi.StateEncoded, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error)
 	EncodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error)

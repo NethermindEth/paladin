@@ -131,13 +131,15 @@ func (n *Noto) receiptTransfers(ctx context.Context, req *prototk.BuildReceiptRe
 		return nil, err
 	}
 
-	var from *pldtypes.EthAddress
+	// Bookkeeping is chain-neutral (pldtypes.ChainAddress) since step 4 - NotoLockedCoin.Owner
+	// (still *pldtypes.EthAddress, lock/unlock stay EVM-only for now) is wrapped at the boundary.
+	var from *pldtypes.ChainAddress
 	fromAmount := big.NewInt(0)
-	to := make(map[pldtypes.EthAddress]*big.Int)
+	to := make(map[pldtypes.ChainAddress]*big.Int)
 
-	parseInput := func(owner *pldtypes.EthAddress, amount *big.Int) bool {
+	parseInput := func(owner pldtypes.ChainAddress, amount *big.Int) bool {
 		if from == nil {
-			from = owner
+			from = &owner
 		} else if !owner.Equals(from) {
 			return false
 		}
@@ -145,7 +147,7 @@ func (n *Noto) receiptTransfers(ctx context.Context, req *prototk.BuildReceiptRe
 		return true
 	}
 
-	parseOutput := func(owner pldtypes.EthAddress, amount *big.Int) bool {
+	parseOutput := func(owner pldtypes.ChainAddress, amount *big.Int) bool {
 		if owner.Equals(from) {
 			fromAmount.Sub(fromAmount, amount)
 		} else if toAmount, ok := to[owner]; ok {
@@ -158,16 +160,16 @@ func (n *Noto) receiptTransfers(ctx context.Context, req *prototk.BuildReceiptRe
 
 	parsedOK := true
 	for _, coin := range inputCoins.coins {
-		parsedOK = parsedOK && parseInput(coin.Owner, coin.Amount.Int())
+		parsedOK = parsedOK && coin.Owner != nil && parseInput(*coin.Owner, coin.Amount.Int())
 	}
 	for _, coin := range inputCoins.lockedCoins {
-		parsedOK = parsedOK && parseInput(coin.Owner, coin.Amount.Int())
+		parsedOK = parsedOK && parseInput(pldtypes.NewEVMChainAddress(*coin.Owner), coin.Amount.Int())
 	}
 	for _, coin := range outputCoins.coins {
-		parsedOK = parsedOK && parseOutput(*coin.Owner, coin.Amount.Int())
+		parsedOK = parsedOK && coin.Owner != nil && parseOutput(*coin.Owner, coin.Amount.Int())
 	}
 	for _, coin := range outputCoins.lockedCoins {
-		parsedOK = parsedOK && parseOutput(*coin.Owner, coin.Amount.Int())
+		parsedOK = parsedOK && parseOutput(pldtypes.NewEVMChainAddress(*coin.Owner), coin.Amount.Int())
 	}
 	if !parsedOK {
 		log.L(ctx).Warnf("Failed to parse transfer coins")
