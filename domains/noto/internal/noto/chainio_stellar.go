@@ -185,18 +185,121 @@ func (s *stellarChainIO) EncodeTransferUnmasked(ctx context.Context, contract *e
 	return ethtypes.HexBytes0xPrefix(digest[:]), nil
 }
 
-// Not yet implemented for Stellar - transfer(masked)/lock/unlock don't have a Stellar branch yet
-// (mint only, chapter 14 step 4). Real implementations land when this extends past mint.
+// Not yet implemented for Stellar - transfer(masked) doesn't have a Stellar branch (nothing in the
+// Go handler layer calls it - mint/transfer/lock/unlock all use EncodeTransferUnmasked/EncodeLock/
+// EncodeUnlock instead; only chainIO's interface conformance requires it to exist).
 func (s *stellarChainIO) EncodeTransferMasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*pldapi.StateEncoded, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return nil, fmt.Errorf("stellarChainIO: EncodeTransferMasked not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+	return nil, fmt.Errorf("stellarChainIO: EncodeTransferMasked not yet implemented (not exercised by any Go handler)")
 }
 
+// encodeLockedCoinScVal encodes a single NotoLockedCoin's (salt, lockId, owner, amount) as an
+// ScVec - mirrors encodeCoinScVal, this is Paladin's own off-chain endorsement payload shape, not
+// required to match any on-chain Rust struct (SNoto's on-chain state is opaque 32-byte state IDs).
+func encodeLockedCoinScVal(coin *types.NotoLockedCoin) (xdr.ScVal, error) {
+	if coin.Owner == nil {
+		return xdr.ScVal{}, fmt.Errorf("locked coin has no owner")
+	}
+	salt, err := scValBytes(coin.Salt[:])
+	if err != nil {
+		return xdr.ScVal{}, err
+	}
+	lockID, err := scValBytes(coin.LockID[:])
+	if err != nil {
+		return xdr.ScVal{}, err
+	}
+	owner, err := scValString(coin.Owner.String())
+	if err != nil {
+		return xdr.ScVal{}, err
+	}
+	amount, err := scValString(coin.Amount.String())
+	if err != nil {
+		return xdr.ScVal{}, err
+	}
+	return scValVec([]xdr.ScVal{salt, lockID, owner, amount})
+}
+
+func encodeLockedCoinsScVal(coins []*types.NotoLockedCoin) (xdr.ScVal, error) {
+	items := make([]xdr.ScVal, len(coins))
+	for i, coin := range coins {
+		v, err := encodeLockedCoinScVal(coin)
+		if err != nil {
+			return xdr.ScVal{}, err
+		}
+		items[i] = v
+	}
+	return scValVec(items)
+}
+
+// EncodeLock hashes (inputs, outputs [unlocked remainder], lockedOutputs) coins - the off-chain
+// endorsement payload the sender signs, mirroring EncodeTransferUnmasked. Real on-chain calls use
+// encodeSNotoLockArgs instead (state IDs, not coin data).
 func (s *stellarChainIO) EncodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error) {
-	return nil, fmt.Errorf("stellarChainIO: EncodeLock not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+	contractID, err := placeholderContractID(contract)
+	if err != nil {
+		return nil, err
+	}
+	inputsVal, err := encodeCoinsScVal(inputs)
+	if err != nil {
+		return nil, err
+	}
+	outputsVal, err := encodeCoinsScVal(outputs)
+	if err != nil {
+		return nil, err
+	}
+	lockedOutputsVal, err := encodeLockedCoinsScVal(lockedOutputs)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := scValVec([]xdr.ScVal{inputsVal, outputsVal, lockedOutputsVal})
+	if err != nil {
+		return nil, err
+	}
+	payloadXDR, err := marshalScVal(payload)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := saladintypes.DigestXDR(s.networkPassphrase, contractID, "snoto.Lock", payloadXDR)
+	if err != nil {
+		return nil, err
+	}
+	return ethtypes.HexBytes0xPrefix(digest[:]), nil
 }
 
+// EncodeUnlock hashes (lockedInputs, lockedOutputs, outputs) coins - the off-chain endorsement
+// payload the sender signs. Uses type name "snoto.UnlockEndorsement", not "snoto.Unlock" - the
+// contract's own check_commitment (soroban/contracts/snoto/src/lib.rs) already uses "snoto.Unlock"
+// for a different digest, over raw state IDs rather than coin data; reusing the same type name for
+// this payload would be confusing even though the differing payload bytes mean no actual collision.
 func (s *stellarChainIO) EncodeUnlock(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs []*types.NotoLockedCoin, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error) {
-	return nil, fmt.Errorf("stellarChainIO: EncodeUnlock not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+	contractID, err := placeholderContractID(contract)
+	if err != nil {
+		return nil, err
+	}
+	lockedInputsVal, err := encodeLockedCoinsScVal(lockedInputs)
+	if err != nil {
+		return nil, err
+	}
+	lockedOutputsVal, err := encodeLockedCoinsScVal(lockedOutputs)
+	if err != nil {
+		return nil, err
+	}
+	outputsVal, err := encodeCoinsScVal(outputs)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := scValVec([]xdr.ScVal{lockedInputsVal, lockedOutputsVal, outputsVal})
+	if err != nil {
+		return nil, err
+	}
+	payloadXDR, err := marshalScVal(payload)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := saladintypes.DigestXDR(s.networkPassphrase, contractID, "snoto.UnlockEndorsement", payloadXDR)
+	if err != nil {
+		return nil, err
+	}
+	return ethtypes.HexBytes0xPrefix(digest[:]), nil
 }
 
 func (s *stellarChainIO) UnlockHashFromIDsV0(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs, outputs []string, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
@@ -283,6 +386,97 @@ func encodeSNotoTransferArgs(txID pldtypes.Bytes32, inputs, outputs []pldtypes.B
 		"outputs":   bytes32Strings(outputs),
 		"signature": pldtypes.HexBytes(signature).String(),
 		"data":      pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoLockArgs builds the real Soroban call args for SNoto's
+// `lock(tx_id, inputs, locked_outputs, outputs, signature, data)` (soroban/contracts/snoto/src/
+// lib.rs) - the `outputs` (unlocked remainder) list was added to the contract for this phase, to
+// match EVM Noto's three-list inputs/locked_outputs/outputs shape.
+func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs []pldtypes.Bytes32, signature []byte, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	inputsVal, err := scValBytes32Vec(inputs)
+	if err != nil {
+		return nil, "", err
+	}
+	lockedOutputsVal, err := scValBytes32Vec(lockedOutputs)
+	if err != nil {
+		return nil, "", err
+	}
+	outputsVal, err := scValBytes32Vec(outputs)
+	if err != nil {
+		return nil, "", err
+	}
+	sigVal, err := scValBytes(signature)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, inputsVal, lockedOutputsVal, outputsVal, sigVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":          txID.String(),
+		"inputs":         bytes32Strings(inputs),
+		"locked_outputs": bytes32Strings(lockedOutputs),
+		"outputs":        bytes32Strings(outputs),
+		"signature":      pldtypes.HexBytes(signature).String(),
+		"data":           pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoUnlockArgs builds the real Soroban call args for SNoto's
+// `unlock(lock_id, locked_inputs, outputs, data)` (soroban/contracts/snoto/src/lib.rs) - note there
+// is no signature/proof slot at all: the sender's signature has no on-chain role for unlock (only
+// for off-chain endorsement, already checked by Endorse/validateSignature via EncodeUnlock above),
+// and the commit-reveal digest is recomputed on-chain from these same 4 args, not passed in.
+func encodeSNotoUnlockArgs(lockID pldtypes.Bytes32, lockedInputs, outputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	lockedInputsVal, err := scValBytes32Vec(lockedInputs)
+	if err != nil {
+		return nil, "", err
+	}
+	outputsVal, err := scValBytes32Vec(outputs)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{lockIDVal, lockedInputsVal, outputsVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"lock_id":       lockID.String(),
+		"locked_inputs": bytes32Strings(lockedInputs),
+		"outputs":       bytes32Strings(outputs),
+		"data":          pldtypes.HexBytes(data).String(),
 	})
 	if err != nil {
 		return nil, "", err

@@ -127,19 +127,20 @@ func newValidV1LockTransition(t *testing.T, transitionType lockTransitionType, m
 	inputLockInfo := &types.NotoLockInfo_V1{
 		Salt:    pldtypes.RandBytes32(),
 		LockID:  lockID,
-		Owner:   owner,
-		Spender: owner,
+		Owner:   evmChainAddressPtr(owner),
+		Spender: evmChainAddressPtr(owner),
 	}
 	outputLockInfo := &types.NotoLockInfo_V1{
 		Salt:     pldtypes.RandBytes32(),
 		LockID:   lockID,
-		Owner:    owner,
-		Spender:  owner,
+		Owner:    evmChainAddressPtr(owner),
+		Spender:  evmChainAddressPtr(owner),
 		Replaces: inputStateID,
 	}
 	sender := &identityPair{
-		address:    owner,
-		identifier: "user1",
+		address:      owner,
+		chainAddress: pldtypes.NewEVMChainAddress(*owner),
+		identifier:   "user1",
 	}
 	for _, mod := range mods {
 		mod(sender, inputLockInfo, outputLockInfo)
@@ -172,7 +173,7 @@ func TestDecodeV1LockTransitionOKNoChange(t *testing.T) {
 
 func TestDecodeV1LockTransitionOKSpenderChange(t *testing.T) {
 	lt, err := newValidV1LockTransition(t, LOCK_UPDATE, func(sender *identityPair, in, out *types.NotoLockInfo_V1) {
-		out.Spender = pldtypes.RandAddress()
+		out.Spender = evmChainAddressPtr(pldtypes.RandAddress())
 	})
 	require.NoError(t, err)
 	require.NotEqual(t, lt.newLockInfo.Spender, lt.newLockInfo.Owner)

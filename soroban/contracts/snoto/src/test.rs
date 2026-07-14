@@ -179,6 +179,7 @@ fn lock_lifecycle_spend() {
         &lock_id,
         &Vec::from_array(&s.env, [input]),
         &Vec::from_array(&s.env, [locked_output.clone()]),
+        &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
     );
@@ -208,6 +209,46 @@ fn lock_lifecycle_spend() {
     );
 }
 
+/// Chapter 14's Go domain builds a lock's unlocked "remainder" (change) output in the same call
+/// that creates the locked output - proves `lock`'s `outputs` list actually reaches
+/// `storage::mark_unspent` by spending the remainder with a normal follow-up `transfer`.
+#[test]
+fn lock_with_remainder_produces_spendable_output() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+
+    let input = state_id(&s.env, 1);
+    client.transfer(
+        &state_id(&s.env, 100),
+        &Vec::new(&s.env),
+        &Vec::from_array(&s.env, [input.clone()]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+
+    let lock_id = state_id(&s.env, 101);
+    let locked_output = state_id(&s.env, 2);
+    let remainder_output = state_id(&s.env, 3);
+    client.lock(
+        &lock_id,
+        &Vec::from_array(&s.env, [input]),
+        &Vec::from_array(&s.env, [locked_output]),
+        &Vec::from_array(&s.env, [remainder_output.clone()]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+
+    // The remainder is an ordinary unspent state - spendable via a normal transfer, exactly like
+    // `transfer`'s own `outputs`.
+    client.transfer(
+        &state_id(&s.env, 102),
+        &Vec::from_array(&s.env, [remainder_output]),
+        &Vec::from_array(&s.env, [state_id(&s.env, 4)]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+}
+
 #[test]
 fn lock_lifecycle_cancel() {
     let s = setup();
@@ -228,6 +269,7 @@ fn lock_lifecycle_cancel() {
         &lock_id,
         &Vec::from_array(&s.env, [input]),
         &Vec::from_array(&s.env, [locked_output.clone()]),
+        &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
     );
@@ -278,6 +320,7 @@ fn unlock_rejects_wrong_preimage() {
         &lock_id,
         &Vec::from_array(&s.env, [input]),
         &Vec::from_array(&s.env, [locked_output.clone()]),
+        &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
     );

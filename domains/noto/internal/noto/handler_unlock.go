@@ -69,7 +69,7 @@ func (h *unlockHandler) Assemble(ctx context.Context, tx *types.ParsedTransactio
 		requiredTotal = requiredTotal.Add(requiredTotal, entry.Amount.Int())
 	}
 
-	lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, params.LockID, fromID.address, requiredTotal, true)
+	lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, params.LockID, &fromID.chainAddress, requiredTotal, true)
 	if res, err := assembleRevertOrError(revert, err); res != nil || err != nil {
 		return res, err
 	}
@@ -79,7 +79,7 @@ func (h *unlockHandler) Assemble(ctx context.Context, tx *types.ParsedTransactio
 	var outputs *preparedOutputs
 	var v0LockedOutputs *preparedLockedOutputs
 	if tx.DomainConfig.IsV0() {
-		outputs, v0LockedOutputs, err = h.assembleUnlockOutputs_V0(ctx, tx, params, req, fromID.address, remainder)
+		outputs, v0LockedOutputs, err = h.assembleUnlockOutputs_V0(ctx, tx, params, req, &fromID.chainAddress, remainder)
 	} else {
 		outputs, err = h.assembleUnlockOutputs_V1(ctx, tx, notaryID, fromID, params.Recipients, req.ResolvedVerifiers, remainder)
 	}
@@ -100,7 +100,7 @@ func (h *unlockHandler) Assemble(ctx context.Context, tx *types.ParsedTransactio
 	infoStates := unlockInfo.infoStates
 
 	if tx.DomainConfig.IsV0() {
-		lock, err := h.noto.prepareLockInfo_V0(params.LockID, fromID.address, nil, unlockInfo.infoDistribution)
+		lock, err := h.noto.prepareLockInfo_V0(params.LockID, &fromID.chainAddress, nil, unlockInfo.infoDistribution)
 		if err != nil {
 			return nil, err
 		}
@@ -276,10 +276,65 @@ func (h *unlockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTransact
 	}, nil
 }
 
+// stellarBaseLedgerInvokeUnlock builds a real PreparedChainTransaction.soroban (SorobanInvoke) for
+// SNoto's actual `unlock(lock_id, locked_inputs, outputs, data)` (chapter 13 §13.2). Unlike the EVM
+// path there is no signature/proof slot at all (see EncodeUnlock's doc comment: the sender's
+// signature has no on-chain role here) and `locked_inputs` must be the locked-coin state IDs only -
+// req.InputStates also carries the V1+ lock-info state ref Assemble appends (see Assemble's
+// `existingLock.stateRef` append), which SNoto has no on-chain concept of (its lock state lives in
+// native contract storage, keyed by lock_id, not a Paladin state). Settled scope, same as mint/
+// transfer/lock: only the V2 (basic notary mode, non-nullifier) variant is exercised.
+func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	inParams := tx.Params.(*types.UnlockParams)
+
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	lockedInputStates := h.noto.filterSchema(req.InputStates, []string{h.noto.lockedCoinSchema.Id})
+	lockedInputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, lockedInputStates, false))
+	if err != nil {
+		return nil, err
+	}
+	outputStates, _ := h.noto.splitStates(req.OutputStates)
+	outputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, outputStates, false))
+	if err != nil {
+		return nil, err
+	}
+
+	contractID, err := placeholderContractID(tx.ContractAddress)
+	if err != nil {
+		return nil, err
+	}
+	argsXDR, argsJSON, err := encodeSNotoUnlockArgs(inParams.LockID, lockedInputs, outputs, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   contractID,
+					FunctionName: "unlock",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *unlockHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 	endorsement := domain.FindAttestation("notary", req.AttestationResult)
 	if endorsement == nil || endorsement.Verifier.Lookup != tx.DomainConfig.NotaryLookup {
 		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "notary")
+	}
+
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvokeUnlock(ctx, tx, req)
 	}
 
 	baseTransaction, err := h.baseLedgerInvoke(ctx, tx, req)

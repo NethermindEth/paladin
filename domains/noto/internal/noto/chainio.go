@@ -75,8 +75,10 @@ type chainIO interface {
 	VerifySignature(ctx context.Context, payload []byte, signature []byte, expectedVerifier string) (bool, error)
 
 	// State/message hashing family - today's EIP-712 encoders in states.go for EVM. Stellar's
-	// EncodeTransferUnmasked computes a real SALADIN_TYPED_DATA_V0 digest (chapter 13 §13.1,
-	// sdk/go/pkg/saladintypes.DigestXDR) - the others remain stubs until this extends past mint.
+	// EncodeTransferUnmasked/EncodeLock/EncodeUnlock compute real SALADIN_TYPED_DATA_V0 digests
+	// (chapter 13 §13.1, sdk/go/pkg/saladintypes.DigestXDR) - EncodeTransferMasked/
+	// UnlockHashFromIDs*/EncodeDelegateLock remain stubs (not exercised by mint/transfer/lock/
+	// unlock's base handlers; real work for delegate_lock/prepare_unlock/the create-lock variants).
 	EncodeTransferUnmasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error)
 	EncodeTransferMasked(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*pldapi.StateEncoded, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error)
 	EncodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error)

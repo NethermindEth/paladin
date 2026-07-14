@@ -71,7 +71,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 	var existingLock *loadedLockInfo
 	if tx.DomainConfig.IsV0() {
 		// In V0 at least one locked input was always present here, to confirm lock ownership - not required in V1 due to lock state check.
-		lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, params.LockID, senderID.address, big.NewInt(1), false)
+		lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, params.LockID, &senderID.chainAddress, big.NewInt(1), false)
 		if res, err := assembleRevertOrError(revert, err); res != nil || err != nil {
 			return res, err
 		}
@@ -95,7 +95,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 	var outputStates []*prototk.NewState
 	var lock *preparedLockInfo
 	if tx.DomainConfig.IsV0() {
-		lock, err = h.noto.prepareLockInfo_V0(params.LockID, senderID.address, params.Delegate, infoDistribution)
+		lock, err = h.noto.prepareLockInfo_V0(params.LockID, &senderID.chainAddress, evmChainAddressPtr(params.Delegate), infoDistribution)
 		if err == nil {
 			infoStates = append(infoStates, lock.state) // in V0 lock states were just published as info
 		}
@@ -103,7 +103,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 		newLock := *existingLock.lockInfo
 		newLock.Salt = pldtypes.RandBytes32()
 		newLock.Replaces = existingLock.id
-		newLock.Spender = params.Delegate
+		newLock.Spender = evmChainAddressPtr(params.Delegate)
 		lock, err = h.noto.prepareLockInfo_V1(&newLock, identityList{notaryID, senderID})
 		if err == nil {
 			inputStates = append(inputStates, existingLock.stateRef)

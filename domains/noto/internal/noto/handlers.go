@@ -182,7 +182,7 @@ func (n *Noto) validateLockOwners(ctx context.Context, owner string, verifiers [
 		return err
 	}
 	for i, coin := range coins {
-		if !coin.Owner.Equals(fromAddress.address) {
+		if !coin.Owner.Equals(&fromAddress.chainAddress) {
 			return i18n.NewError(ctx, msgs.MsgStateWrongOwner, states[i].Id, owner)
 		}
 	}

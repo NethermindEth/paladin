@@ -130,8 +130,8 @@ func (h *createMintLockHandler) Assemble(ctx context.Context, tx *types.ParsedTr
 		lock, err = h.noto.prepareLockInfo_V1(&types.NotoLockInfo_V1{
 			Salt:          pldtypes.RandBytes32(),
 			LockID:        lockID,
-			Owner:         senderID.address,
-			Spender:       senderID.address,
+			Owner:         &senderID.chainAddress,
+			Spender:       &senderID.chainAddress,
 			SpendOutputs:  newStateAllocatedIDs(spendOutputs.states),
 			SpendData:     unlockInfo.spendData,
 			CancelOutputs: []pldtypes.Bytes32{ /* nothing to return */ },

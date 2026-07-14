@@ -16,7 +16,10 @@
 package noto
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,6 +33,8 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,7 +66,7 @@ func TestUnlock(t *testing.T) {
 		Data: types.NotoLockedCoin{
 			Salt:   pldtypes.RandBytes32(),
 			LockID: lockID,
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  evmChainAddressPtr((*pldtypes.EthAddress)(&senderKey.Address)),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}
@@ -364,6 +369,234 @@ func TestUnlock(t *testing.T) {
 		incompleteForIdentity(receiverAddress)
 }
 
+// TestUnlock_Stellar extends chapter 14's Stellar walking skeleton (mint, transfer, lock) to
+// unlock: proves the real SNoto `unlock(lock_id, locked_inputs, outputs, data)` call - no
+// signature slot, and `locked_inputs` must exclude the V1+ lock-info state ref that Assemble
+// bundles into req.InputStates alongside the locked-coin state (unlike EVM's spendLock, which
+// mixes both into one "Inputs" list since it has no on-chain equivalent of SNoto's separate,
+// disentangled locked_inputs). Per research, no prepare_unlock/delegate_lock setup is needed: a
+// fresh lock's spend_commitment is None (so check_commitment no-ops) and delegate defaults to the
+// notary.
+func TestUnlock_Stellar(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:        mockCallbacks,
+		coinSchema:       testSchema("coin"),
+		lockedCoinSchema: testSchema("lockedCoin"),
+		lockInfoSchemaV0: testSchema("lockInfo"),
+		lockInfoSchemaV1: testSchema("lockInfo_v1"),
+		dataSchemaV0:     testSchema("data"),
+		dataSchemaV1:     testSchema("data_v1"),
+		dataSchemaV2:     testSchema("data_v2"),
+		manifestSchema:   testSchema("manifest"),
+		chainIO:          newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["unlock"]
+
+	notaryPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryStellarAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	senderAddress, err := strkey.Encode(strkey.VersionByteAccountID, senderPub)
+	require.NoError(t, err)
+
+	receiverPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	receiverAddress, err := strkey.Encode(strkey.VersionByteAccountID, receiverPub)
+	require.NoError(t, err)
+
+	lockID := pldtypes.RandBytes32()
+	inputCoin := &types.NotoLockedCoinState{
+		ID: pldtypes.MustParseBytes32("0xe532ee16774660fceb6c941725d6045939d34263ce81cd17266e910ac0ec5277"),
+		Data: types.NotoLockedCoin{
+			Salt:   pldtypes.RandBytes32(),
+			LockID: lockID,
+			Owner:  pldtypes.MustParseChainAddress(senderAddress),
+			Amount: pldtypes.Int64ToInt256(100),
+		},
+	}
+	inputLockInfo := &prototk.StoredState{
+		Id:       pldtypes.RandBytes32().String(),
+		SchemaId: hashName("lockInfo_v1"),
+		DataJson: fmt.Sprintf(`{
+			"lockId": "%s",
+			"salt": "%s",
+			"owner": "%s",
+			"spender": "%s"
+		}`, lockID, pldtypes.RandBytes32(), senderAddress, senderAddress),
+	}
+	mockCallbacks.MockFindAvailableStates = func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
+		switch req.SchemaId {
+		case hashName("lockInfo_v1"):
+			return &prototk.FindAvailableStatesResponse{
+				States: []*prototk.StoredState{inputLockInfo},
+			}, nil
+		case hashName("lockedCoin"):
+			return &prototk.FindAvailableStatesResponse{
+				States: []*prototk.StoredState{
+					{
+						Id:        inputCoin.ID.String(),
+						SchemaId:  hashName("lockedCoin"),
+						DataJson:  mustParseJSON(inputCoin.Data),
+						CreatedAt: 1,
+					},
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("unmocked query")
+	}
+
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3" // placeholder - see placeholderContractID
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "sender@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress:    contractAddress,
+			ContractConfigJson: mustParseJSON(notoBasicConfigV1),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: fmt.Sprintf(`{
+		    "lockId": "%s",
+			"from": "sender@node1",
+			"recipients": [{
+				"to": "receiver@node2",
+				"amount": 100
+			}],
+			"data": "0x1234"
+		}`, lockID),
+	}
+
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryStellarAddress},
+		{Lookup: "sender@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: senderAddress},
+		{Lookup: "receiver@node2", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: receiverAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+	require.Len(t, assembleRes.AssembledTransaction.InputStates, 2) // locked coin and lock info
+	require.Len(t, assembleRes.AssembledTransaction.OutputStates, 1)
+	require.Len(t, assembleRes.AssembledTransaction.InfoStates, 3) // both manifests + output-info
+	assert.Equal(t, inputCoin.ID.String(), assembleRes.AssembledTransaction.InputStates[0].Id)
+
+	outputCoinState := assembleRes.AssembledTransaction.OutputStates[0]
+	outputCoin, err := n.unmarshalCoin(outputCoinState.StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, outputCoin.Owner)
+	assert.Equal(t, receiverAddress, outputCoin.Owner.String())
+	assert.Equal(t, "100", outputCoin.Amount.Int().String())
+
+	dataState := assembleRes.AssembledTransaction.InfoStates[2]
+	lockState := assembleRes.AssembledTransaction.InputStates[1]
+
+	encodedUnlock, err := n.encodeUnlock(ctx, ethtypes.MustNewAddress(contractAddress), []*types.NotoLockedCoin{&inputCoin.Data}, []*types.NotoLockedCoin{}, []*types.NotoCoin{outputCoin})
+	require.NoError(t, err)
+	signature := ed25519.Sign(senderPriv, encodedUnlock)
+
+	inputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("lockedCoin"),
+			Id:            inputCoin.ID.String(),
+			StateDataJson: mustParseJSON(inputCoin.Data),
+		},
+		{
+			SchemaId:      lockState.SchemaId,
+			Id:            lockState.Id,
+			StateDataJson: inputLockInfo.DataJson,
+		},
+	}
+	outputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      outputCoinState.SchemaId,
+			Id:            *outputCoinState.Id,
+			StateDataJson: outputCoinState.StateDataJson,
+		},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      dataState.SchemaId,
+			Id:            *dataState.Id,
+			StateDataJson: dataState.StateDataJson,
+		},
+	}
+
+	endorseRes, err := n.EndorseTransaction(ctx, &prototk.EndorseTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		Inputs:            inputStates,
+		Outputs:           outputStates,
+		Info:              infoStates,
+		EndorsementRequest: &prototk.AttestationRequest{
+			Name: "notary",
+		},
+		Signatures: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.EndorseTransactionResponse_ENDORSER_SUBMIT, endorseRes.EndorsementResult)
+
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		InputStates:       inputStates,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+			{
+				Name:     "notary",
+				Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban, ok := prepareRes.ChainTransaction.Payload.(*prototk.PreparedChainTransaction_Soroban)
+	require.True(t, ok)
+	assert.Equal(t, "unlock", soroban.Soroban.FunctionName)
+	assert.NotEmpty(t, soroban.Soroban.ContractId)
+
+	var args xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
+	require.NoError(t, err)
+	require.Len(t, args, 4) // lock_id, locked_inputs, outputs, data - no signature slot
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
+	assert.Equal(t, lockID[:], []byte(*args[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[1].Type)
+	lockedInputsVec := **args[1].Vec
+	require.Len(t, lockedInputsVec, 1) // locked-coin state only - the lock-info state ref is excluded
+	assert.Equal(t, inputCoin.ID[:], []byte(*lockedInputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
+	outputsVec := **args[2].Vec
+	require.Len(t, outputsVec, 1)
+	outputIDBytes32 := pldtypes.MustParseBytes32(*outputCoinState.Id)
+	assert.Equal(t, outputIDBytes32[:], []byte(*outputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[3].Type)
+	assert.NotEmpty(t, *args[3].Bytes)
+}
+
 func TestUnlock_V0(t *testing.T) {
 	mockCallbacks := newMockCallbacks()
 	n := &Noto{
@@ -387,7 +620,7 @@ func TestUnlock_V0(t *testing.T) {
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoLockedCoin{
 			LockID: lockID,
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  evmChainAddressPtr((*pldtypes.EthAddress)(&senderKey.Address)),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}

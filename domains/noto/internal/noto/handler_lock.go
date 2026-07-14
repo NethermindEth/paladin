@@ -156,7 +156,7 @@ func (h *lockHandler) Assemble(ctx context.Context, tx *types.ParsedTransaction,
 
 	var lock *preparedLockInfo
 	if tx.DomainConfig.IsV0() {
-		lock, err = h.noto.prepareLockInfo_V0(lockID, senderID.address, nil, infoDistribution)
+		lock, err = h.noto.prepareLockInfo_V0(lockID, &senderID.chainAddress, nil, infoDistribution)
 		if err == nil {
 			infoStates = append(infoStates, lock.state) // in V0 lock states were just published as info
 		}
@@ -164,8 +164,8 @@ func (h *lockHandler) Assemble(ctx context.Context, tx *types.ParsedTransaction,
 		lock, err = h.noto.prepareLockInfo_V1(&types.NotoLockInfo_V1{
 			Salt:          pldtypes.RandBytes32(),
 			LockID:        lockID,
-			Owner:         senderID.address,
-			Spender:       senderID.address,
+			Owner:         &senderID.chainAddress,
+			Spender:       &senderID.chainAddress,
 			SpendOutputs:  []pldtypes.Bytes32{},
 			SpendData:     pldtypes.HexBytes{},
 			CancelOutputs: []pldtypes.Bytes32{},
@@ -419,7 +419,76 @@ func (h *lockHandler) hookInvoke(ctx context.Context, lockID pldtypes.Bytes32, t
 	}, nil
 }
 
+// stellarBaseLedgerInvokeLock builds a real PreparedChainTransaction.soroban (SorobanInvoke) for
+// SNoto's actual `lock(tx_id, inputs, locked_outputs, outputs, signature, data)` (chapter 13
+// §13.2, extended this phase with the `outputs` unlocked-remainder list to match EVM Noto's
+// three-list inputs/locked_outputs/outputs shape). Mirrors stellarBaseLedgerInvokeTransfer
+// (handler_transfer_common.go). SNoto's lock_id is tx_id itself (see stellarChainIO.ComputeLockID),
+// so there's no separate lock ID to thread through here. Settled scope, same as mint/transfer:
+// only the V2 (basic notary mode, non-nullifier) variant is exercised.
+func (h *lockHandler) stellarBaseLedgerInvokeLock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	sender := domain.FindAttestation("sender", req.AttestationResult)
+	if sender == nil {
+		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "sender")
+	}
+
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, req.InputStates, false))
+	if err != nil {
+		return nil, err
+	}
+	outputStates, lockedOutputStates := h.noto.splitStates(req.OutputStates)
+	outputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, outputStates, false))
+	if err != nil {
+		return nil, err
+	}
+	lockedOutputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, lockedOutputStates, false))
+	if err != nil {
+		return nil, err
+	}
+
+	contractID, err := placeholderContractID(tx.ContractAddress)
+	if err != nil {
+		return nil, err
+	}
+	argsXDR, argsJSON, err := encodeSNotoLockArgs(txID, inputs, lockedOutputs, outputs, sender.Payload, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   contractID,
+					FunctionName: "lock",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *lockHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (_ *prototk.PrepareTransactionResponse, err error) {
+	endorsement := domain.FindAttestation("notary", req.AttestationResult)
+	if endorsement == nil || endorsement.Verifier.Lookup != tx.DomainConfig.NotaryLookup {
+		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "notary")
+	}
+
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvokeLock(ctx, tx, req)
+	}
+
 	var lockID *pldtypes.Bytes32
 	if tx.DomainConfig.IsV0() {
 		lockID, _, err = h.noto.extractLockInfoV0(ctx, req.InfoStates, true)
@@ -433,11 +502,6 @@ func (h *lockHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, 
 			return nil, err
 		}
 		lockID = &lt.newLockInfo.LockID
-	}
-
-	endorsement := domain.FindAttestation("notary", req.AttestationResult)
-	if endorsement == nil || endorsement.Verifier.Lookup != tx.DomainConfig.NotaryLookup {
-		return nil, i18n.NewError(ctx, msgs.MsgAttestationNotFound, "notary")
 	}
 
 	baseTransaction, err := h.baseLedgerInvoke(ctx, tx, *lockID, req)

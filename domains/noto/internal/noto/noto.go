@@ -1397,7 +1397,7 @@ func (n *Noto) computeLockId(ctx context.Context, contractAddress *pldtypes.EthA
 	return n.getChainIO().ComputeLockID(ctx, contractAddress, notaryAddress, txId)
 }
 
-func (n *Noto) extractLockInfoV0(ctx context.Context, infoStates []*prototk.EndorsableState, required bool) (lockID *pldtypes.Bytes32, delegate *pldtypes.EthAddress, err error) {
+func (n *Noto) extractLockInfoV0(ctx context.Context, infoStates []*prototk.EndorsableState, required bool) (lockID *pldtypes.Bytes32, delegate *pldtypes.ChainAddress, err error) {
 	lockStates := n.filterSchema(infoStates, []string{n.lockInfoSchemaV0.Id})
 	if len(lockStates) != 1 {
 		if !required {

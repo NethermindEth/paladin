@@ -58,7 +58,7 @@ func TestDelegateLock(t *testing.T) {
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoLockedCoin{
 			LockID: lockID,
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  evmChainAddressPtr((*pldtypes.EthAddress)(&senderKey.Address)),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}
@@ -355,7 +355,7 @@ func TestDelegateLock_V0(t *testing.T) {
 		ID: pldtypes.RandBytes32(),
 		Data: types.NotoLockedCoin{
 			LockID: lockID,
-			Owner:  (*pldtypes.EthAddress)(&senderKey.Address),
+			Owner:  evmChainAddressPtr((*pldtypes.EthAddress)(&senderKey.Address)),
 			Amount: pldtypes.Int64ToInt256(100),
 		},
 	}

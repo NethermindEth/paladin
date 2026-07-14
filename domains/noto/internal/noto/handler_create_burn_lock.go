@@ -140,8 +140,8 @@ func (h *createBurnLockHandler) Assemble(ctx context.Context, tx *types.ParsedTr
 	lock, err := h.noto.prepareLockInfo_V1(&types.NotoLockInfo_V1{
 		Salt:          pldtypes.RandBytes32(),
 		LockID:        lockID,
-		Owner:         senderID.address,
-		Spender:       senderID.address,
+		Owner:         &senderID.chainAddress,
+		Spender:       &senderID.chainAddress,
 		SpendOutputs:  []pldtypes.Bytes32{ /* none for burn */ },
 		SpendData:     unlockInfo.spendData,
 		CancelOutputs: newStateAllocatedIDs(cancelOutputs.states),

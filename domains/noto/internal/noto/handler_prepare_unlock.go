@@ -78,7 +78,7 @@ func (h *prepareUnlockHandler) Assemble(ctx context.Context, tx *types.ParsedTra
 		requiredTotal = requiredTotal.Add(requiredTotal, entry.Amount.Int())
 	}
 
-	lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, unlockParams.LockID, fromID.address, requiredTotal, true)
+	lockedInputs, revert, err := h.noto.prepareLockedInputs(ctx, req.StateQueryContext, unlockParams.LockID, &fromID.chainAddress, requiredTotal, true)
 	if res, err := assembleRevertOrError(revert, err); res != nil || err != nil {
 		return res, err
 	}
@@ -88,7 +88,7 @@ func (h *prepareUnlockHandler) Assemble(ctx context.Context, tx *types.ParsedTra
 	var outputs *preparedOutputs
 	var v0LockedOutputs *preparedLockedOutputs
 	if tx.DomainConfig.IsV0() {
-		outputs, v0LockedOutputs, err = h.assembleUnlockOutputs_V0(ctx, tx, unlockParams, req, fromID.address, remainder)
+		outputs, v0LockedOutputs, err = h.assembleUnlockOutputs_V0(ctx, tx, unlockParams, req, &fromID.chainAddress, remainder)
 	} else {
 		outputs, err = h.assembleUnlockOutputs_V1(ctx, tx, notaryID, fromID, unlockParams.Recipients, req.ResolvedVerifiers, remainder)
 	}
@@ -117,7 +117,7 @@ func (h *prepareUnlockHandler) Assemble(ctx context.Context, tx *types.ParsedTra
 	infoStates := unlockInfo.infoStates
 
 	if tx.DomainConfig.IsV0() {
-		lock, err := h.noto.prepareLockInfo_V0(unlockParams.LockID, fromID.address, nil, unlockInfo.infoDistribution)
+		lock, err := h.noto.prepareLockInfo_V0(unlockParams.LockID, &fromID.chainAddress, nil, unlockInfo.infoDistribution)
 		if err != nil {
 			return nil, err
 		}

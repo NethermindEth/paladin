@@ -30,6 +30,11 @@
 //!   `keccak256(address(this), msg.sender, txId)` because multiple distinct callers could create
 //!   locks; SNoto only ever has one caller (the fixed notary), so `tx_id`'s own replay-protected
 //!   uniqueness already serves as a unique lock identifier with no loss of security.
+//! - `lock` accepts an optional unlocked-remainder `outputs` list alongside `locked_outputs`,
+//!   matching EVM `Noto`/`ILockableCapability`'s three-list `inputs`/`locked_outputs`/`outputs`
+//!   shape (a partial lock spends more input value than it locks, returning the rest as ordinary
+//!   unspent states in the same call) - these reuse the same `Unspent` storage `transfer` already
+//!   writes its own `outputs` to, so no new storage key is needed.
 //! - `prepare_unlock`/`unlock`/`cancel_unlock` implement EVM's commit-reveal pattern
 //!   (`spendCommitment`/`cancelCommitment` checked via `_unlockHash` in `Noto.sol`) using
 //!   `saladin_typed_data::digest()` in place of EIP-712. `LockInfo.spend_commitment`/
@@ -78,6 +83,7 @@ pub struct Lock {
     pub lock_id: BytesN<32>,
     pub inputs: Vec<BytesN<32>>,
     pub locked_outputs: Vec<BytesN<32>>,
+    pub outputs: Vec<BytesN<32>>,
     pub signature: Bytes,
     pub data: Bytes,
 }
@@ -200,6 +206,7 @@ impl Contract {
         tx_id: BytesN<32>,
         inputs: Vec<BytesN<32>>,
         locked_outputs: Vec<BytesN<32>>,
+        outputs: Vec<BytesN<32>>,
         signature: Bytes,
         data: Bytes,
     ) {
@@ -218,6 +225,9 @@ impl Contract {
         for id in locked_outputs.iter() {
             storage::mark_locked(&env, &id, &lock_id);
         }
+        for id in outputs.iter() {
+            storage::mark_unspent(&env, &id);
+        }
         storage::set_lock(
             &env,
             &lock_id,
@@ -232,6 +242,7 @@ impl Contract {
             lock_id,
             inputs,
             locked_outputs,
+            outputs,
             signature,
             data,
         }

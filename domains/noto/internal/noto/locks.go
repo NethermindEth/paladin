@@ -116,8 +116,8 @@ func (n *Noto) validateV1LockTransition(ctx context.Context, transitionType lock
 		}
 
 		// Check ownership of the input lock is the from address of the transaction
-		if senderID != nil && !lt.prevLockInfo.Owner.Equals(senderID.address) {
-			return nil, i18n.NewError(ctx, msgs.MsgStateWrongOwner, lt.prevLockState.Id, senderID.address)
+		if senderID != nil && !lt.prevLockInfo.Owner.Equals(&senderID.chainAddress) {
+			return nil, i18n.NewError(ctx, msgs.MsgStateWrongOwner, lt.prevLockState.Id, senderID.chainAddress.String())
 		}
 	}
 

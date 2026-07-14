@@ -131,8 +131,8 @@ func (n *Noto) receiptTransfers(ctx context.Context, req *prototk.BuildReceiptRe
 		return nil, err
 	}
 
-	// Bookkeeping is chain-neutral (pldtypes.ChainAddress) since step 4 - NotoLockedCoin.Owner
-	// (still *pldtypes.EthAddress, lock/unlock stay EVM-only for now) is wrapped at the boundary.
+	// Bookkeeping is chain-neutral (pldtypes.ChainAddress) since step 4 (NotoCoin.Owner) and the
+	// lock/unlock phase (NotoLockedCoin.Owner) - both fields are ChainAddress now.
 	var from *pldtypes.ChainAddress
 	fromAmount := big.NewInt(0)
 	to := make(map[pldtypes.ChainAddress]*big.Int)
@@ -163,13 +163,13 @@ func (n *Noto) receiptTransfers(ctx context.Context, req *prototk.BuildReceiptRe
 		parsedOK = parsedOK && coin.Owner != nil && parseInput(*coin.Owner, coin.Amount.Int())
 	}
 	for _, coin := range inputCoins.lockedCoins {
-		parsedOK = parsedOK && parseInput(pldtypes.NewEVMChainAddress(*coin.Owner), coin.Amount.Int())
+		parsedOK = parsedOK && coin.Owner != nil && parseInput(*coin.Owner, coin.Amount.Int())
 	}
 	for _, coin := range outputCoins.coins {
 		parsedOK = parsedOK && coin.Owner != nil && parseOutput(*coin.Owner, coin.Amount.Int())
 	}
 	for _, coin := range outputCoins.lockedCoins {
-		parsedOK = parsedOK && parseOutput(pldtypes.NewEVMChainAddress(*coin.Owner), coin.Amount.Int())
+		parsedOK = parsedOK && coin.Owner != nil && parseOutput(*coin.Owner, coin.Amount.Int())
 	}
 	if !parsedOK {
 		log.L(ctx).Warnf("Failed to parse transfer coins")
@@ -206,8 +206,14 @@ func (n *Noto) receiptLockInfoV0(ctx context.Context, req *prototk.BuildReceiptR
 		lock, err = n.unmarshalLockV0(lockInfoStates[0].StateDataJson)
 		if err == nil {
 			lockInfo = &types.ReceiptLockInfo{LockID: lock.LockID}
-			if !lock.Delegate.IsZero() {
-				lockInfo.Delegate = lock.Delegate
+			// ReceiptLockInfo.Delegate is a receipt-facing type, deliberately left EVM-only -
+			// unwrap the chain-neutral lock.Delegate back to an EthAddress; a Stellar delegate
+			// has no representation here yet (receipt generation isn't Stellar-capable this
+			// phase), so it's simply omitted rather than erroring the whole receipt.
+			if lock.Delegate != nil && !lock.Delegate.IsZero() {
+				if delegateAddr, addrErr := lock.Delegate.EthAddress(); addrErr == nil {
+					lockInfo.Delegate = delegateAddr
+				}
 			}
 		}
 	}
@@ -215,15 +221,21 @@ func (n *Noto) receiptLockInfoV0(ctx context.Context, req *prototk.BuildReceiptR
 	if lockInfo != nil && len(receiptStates.ReadLockedInputs) > 0 && len(receiptStates.PreparedOutputs) > 0 {
 		// Old info-based decoding scheme
 		var lockID *pldtypes.Bytes32
-		var delegate *pldtypes.EthAddress
+		var delegate *pldtypes.ChainAddress
 		lockID, delegate, err = n.extractLockInfoV0(ctx, req.InfoStates, false)
 		if err != nil {
 			return nil, err
 		}
 		if lockID != nil {
 			lockInfo = &types.ReceiptLockInfo{
-				LockID:   *lockID,
-				Delegate: delegate, // delegate came directly from the info state in for V0
+				LockID: *lockID,
+			}
+			// delegate came directly from the info state in for V0 - unwrap to the receipt's
+			// EVM-only Delegate field, same treatment as receiptLockInfoV0 above.
+			if delegate != nil && !delegate.IsZero() {
+				if delegateAddr, addrErr := delegate.EthAddress(); addrErr == nil {
+					lockInfo.Delegate = delegateAddr
+				}
 			}
 
 			unlockInterfaceABI = n.getInterfaceABI(types.NotoVariantV0)
@@ -261,8 +273,12 @@ func (n *Noto) receiptLockInfoV1V2(ctx context.Context, req *prototk.BuildReceip
 	// Prepared locks have a spendTxId, and we add in extra info
 	if err == nil && !lt.newLockInfo.SpendTxId.IsZero() {
 		lockInfo.SpendTxId = &lt.newLockInfo.SpendTxId
+		// ReceiptLockInfo.Delegate is EVM-only (receipt generation isn't Stellar-capable this
+		// phase) - unwrap, same treatment as receiptLockInfoV0 above.
 		if lt.newLockInfo.Spender != lt.newLockInfo.Owner {
-			lockInfo.Delegate = lt.newLockInfo.Spender
+			if delegateAddr, addrErr := lt.newLockInfo.Spender.EthAddress(); addrErr == nil {
+				lockInfo.Delegate = delegateAddr
+			}
 		}
 
 		var lockedInputIDs []string

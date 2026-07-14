@@ -103,10 +103,14 @@ type NotoLockedCoinState struct {
 }
 
 type NotoLockedCoin struct {
-	Salt   pldtypes.Bytes32     `json:"salt"`
-	LockID pldtypes.Bytes32     `json:"lockId"`
-	Owner  *pldtypes.EthAddress `json:"owner"`
-	Amount *pldtypes.HexUint256 `json:"amount"`
+	Salt   pldtypes.Bytes32 `json:"salt"`
+	LockID pldtypes.Bytes32 `json:"lockId"`
+	// Owner is chain-neutral (chapter 14 lock/unlock phase), same treatment as NotoCoin.Owner:
+	// kept as a pointer so an unset owner round-trips through JSON as null, and a ChainAddress's
+	// EVM-kind text is exactly pldtypes.EthAddress.String() - zero regression to existing EVM
+	// locked coins.
+	Owner  *pldtypes.ChainAddress `json:"owner"`
+	Amount *pldtypes.HexUint256   `json:"amount"`
 }
 
 var NotoLockedCoinABI = &abi.Parameter{
@@ -157,10 +161,10 @@ var NotoManifestABI = &abi.Parameter{
 }
 
 type NotoLockInfo_V0 struct {
-	Salt     pldtypes.Bytes32     `json:"salt"`
-	LockID   pldtypes.Bytes32     `json:"lockId"`
-	Owner    *pldtypes.EthAddress `json:"owner"`
-	Delegate *pldtypes.EthAddress `json:"delegate"`
+	Salt     pldtypes.Bytes32       `json:"salt"`
+	LockID   pldtypes.Bytes32       `json:"lockId"`
+	Owner    *pldtypes.ChainAddress `json:"owner"`
+	Delegate *pldtypes.ChainAddress `json:"delegate"`
 }
 
 var NotoLockInfoABI_V0 = &abi.Parameter{
@@ -170,22 +174,27 @@ var NotoLockInfoABI_V0 = &abi.Parameter{
 	Components: abi.ParameterArray{
 		{Name: "salt", Type: "bytes32"},
 		{Name: "lockId", Type: "bytes32"},
-		{Name: "owner", Type: "address"},
-		{Name: "delegate", Type: "address"},
+		// owner/delegate are chain-neutral "string" (chapter 14 lock/unlock phase), matching
+		// NotoCoinABI/NotoLockedCoinABI's already-generic "owner" - a Stellar "G..." identity
+		// can't be stored under an "address"-typed field. This does change this schema's ID
+		// (unlike the coin migration, which found "string" already in place); acceptable since
+		// this fork has no deployed instances to preserve schema compatibility for.
+		{Name: "owner", Type: "string"},
+		{Name: "delegate", Type: "string"},
 	},
 }
 
 type NotoLockInfo_V1 struct {
-	Salt          pldtypes.Bytes32     `json:"salt"`
-	LockID        pldtypes.Bytes32     `json:"lockId"`
-	Owner         *pldtypes.EthAddress `json:"owner"`
-	Spender       *pldtypes.EthAddress `json:"spender"`
-	Replaces      pldtypes.Bytes32     `json:"replaces"`
-	SpendTxId     pldtypes.Bytes32     `json:"spendTxId"`
-	SpendOutputs  []pldtypes.Bytes32   `json:"spendOutputs"`
-	SpendData     pldtypes.HexBytes    `json:"spendData"`
-	CancelOutputs []pldtypes.Bytes32   `json:"cancelOutputs"`
-	CancelData    pldtypes.HexBytes    `json:"cancelData"`
+	Salt          pldtypes.Bytes32       `json:"salt"`
+	LockID        pldtypes.Bytes32       `json:"lockId"`
+	Owner         *pldtypes.ChainAddress `json:"owner"`
+	Spender       *pldtypes.ChainAddress `json:"spender"`
+	Replaces      pldtypes.Bytes32       `json:"replaces"`
+	SpendTxId     pldtypes.Bytes32       `json:"spendTxId"`
+	SpendOutputs  []pldtypes.Bytes32     `json:"spendOutputs"`
+	SpendData     pldtypes.HexBytes      `json:"spendData"`
+	CancelOutputs []pldtypes.Bytes32     `json:"cancelOutputs"`
+	CancelData    pldtypes.HexBytes      `json:"cancelData"`
 }
 
 // LockDetail_V1 is full representation of a lock, any prepared operation, and the current delegation
@@ -196,8 +205,10 @@ var NotoLockInfoABI_V1 = &abi.Parameter{
 	Components: abi.ParameterArray{
 		{Name: "salt", Type: "bytes32"},
 		{Name: "lockId", Type: "bytes32", Indexed: true},
-		{Name: "owner", Type: "address", Indexed: true},
-		{Name: "spender", Type: "address", Indexed: true},
+		// owner/spender are chain-neutral "string" (chapter 14 lock/unlock phase) - see
+		// NotoLockInfoABI_V0's comment for why, and the schema-ID caveat this implies.
+		{Name: "owner", Type: "string", Indexed: true},
+		{Name: "spender", Type: "string", Indexed: true},
 		{Name: "replaces", Type: "bytes32"},
 		{Name: "spendTxId", Type: "bytes32"},
 		{Name: "spendOutputs", Type: "bytes32[]"},

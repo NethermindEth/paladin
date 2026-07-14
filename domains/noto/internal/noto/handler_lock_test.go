@@ -16,7 +16,10 @@
 package noto
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,6 +33,8 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -378,6 +383,214 @@ func TestLock(t *testing.T) {
 	require.Empty(t, receipt.LockInfo.UnlockFunction) // not prepared
 	require.Nil(t, receipt.LockInfo.UnlockParams)     // not prepared
 	require.Equal(t, (*pldtypes.EthAddress)(&senderKey.Address), receipt.Sender)
+}
+
+// TestLock_Stellar extends chapter 14's Stellar walking skeleton (mint, transfer) to lock: a
+// partial lock (amount < input coin balance) proves SNoto's `lock` call now carries a genuine
+// unlocked-remainder `outputs` list too (the contract change this phase added), alongside the
+// locked_outputs list mint/transfer never exercised.
+func TestLock_Stellar(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:        mockCallbacks,
+		coinSchema:       testSchema("coin"),
+		lockedCoinSchema: testSchema("lockedCoin"),
+		lockInfoSchemaV0: testSchema("lockInfo"),
+		lockInfoSchemaV1: testSchema("lockInfo_v1"),
+		dataSchemaV0:     testSchema("data"),
+		dataSchemaV1:     testSchema("data_v1"),
+		dataSchemaV2:     testSchema("data_v2"),
+		manifestSchema:   testSchema("manifest"),
+		chainIO:          newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["lock"]
+
+	notaryPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryStellarAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	senderAddress, err := strkey.Encode(strkey.VersionByteAccountID, senderPub)
+	require.NoError(t, err)
+
+	// Balance (150) exceeds the lock amount (100), forcing a remainder - the case this phase's
+	// contract change (an `outputs` list on SNoto's `lock`) exists to support.
+	inputCoin := &types.NotoCoinState{
+		ID: pldtypes.RandBytes32(),
+		Data: types.NotoCoin{
+			Owner:  pldtypes.MustParseChainAddress(senderAddress),
+			Amount: pldtypes.Int64ToInt256(150),
+		},
+	}
+	mockCallbacks.MockFindAvailableStates = func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
+		return &prototk.FindAvailableStatesResponse{
+			States: []*prototk.StoredState{
+				{
+					Id:       inputCoin.ID.String(),
+					SchemaId: hashName("coin"),
+					DataJson: mustParseJSON(inputCoin.Data),
+				},
+			},
+		}, nil
+	}
+
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3" // placeholder - see placeholderContractID
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "sender@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress:    contractAddress,
+			ContractConfigJson: mustParseJSON(notoBasicConfigV1),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: `{
+			"amount": 100,
+			"data": "0x1234"
+		}`,
+	}
+
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryStellarAddress},
+		{Lookup: "sender@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: senderAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	require.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+	require.Len(t, assembleRes.AssembledTransaction.InputStates, 1)
+	require.Len(t, assembleRes.AssembledTransaction.OutputStates, 3) // locked coin + remainder + lock info
+	assert.Equal(t, inputCoin.ID.String(), assembleRes.AssembledTransaction.InputStates[0].Id)
+
+	lockedOutState := assembleRes.AssembledTransaction.OutputStates[0]
+	remainderState := assembleRes.AssembledTransaction.OutputStates[1]
+	lockState := assembleRes.AssembledTransaction.OutputStates[2]
+	dataState := assembleRes.AssembledTransaction.InfoStates[1]
+
+	lockedCoin, err := n.unmarshalLockedCoin(lockedOutState.StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, lockedCoin.Owner)
+	assert.Equal(t, senderAddress, lockedCoin.Owner.String())
+	assert.Equal(t, "100", lockedCoin.Amount.Int().String())
+
+	remainderCoin, err := n.unmarshalCoin(remainderState.StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, remainderCoin.Owner)
+	assert.Equal(t, senderAddress, remainderCoin.Owner.String())
+	assert.Equal(t, "50", remainderCoin.Amount.Int().String())
+
+	lockInfo, err := n.unmarshalLockV1(lockState.StateDataJson)
+	require.NoError(t, err)
+	require.NotNil(t, lockInfo.Owner)
+	assert.Equal(t, senderAddress, lockInfo.Owner.String())
+	assert.Equal(t, lockInfo.LockID, lockedCoin.LockID)
+
+	encodedLock, err := n.encodeLock(ctx, ethtypes.MustNewAddress(contractAddress),
+		[]*types.NotoCoin{&inputCoin.Data},
+		[]*types.NotoCoin{remainderCoin},
+		[]*types.NotoLockedCoin{lockedCoin},
+	)
+	require.NoError(t, err)
+	signature := ed25519.Sign(senderPriv, encodedLock)
+
+	inputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("coin"),
+			Id:            inputCoin.ID.String(),
+			StateDataJson: mustParseJSON(inputCoin.Data),
+		},
+	}
+	outputStates := []*prototk.EndorsableState{
+		{SchemaId: lockedOutState.SchemaId, Id: *lockedOutState.Id, StateDataJson: lockedOutState.StateDataJson},
+		{SchemaId: remainderState.SchemaId, Id: *remainderState.Id, StateDataJson: remainderState.StateDataJson},
+		{SchemaId: lockState.SchemaId, Id: *lockState.Id, StateDataJson: lockState.StateDataJson},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{SchemaId: dataState.SchemaId, Id: *dataState.Id, StateDataJson: dataState.StateDataJson},
+	}
+
+	endorseRes, err := n.EndorseTransaction(ctx, &prototk.EndorseTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		Inputs:            inputStates,
+		Outputs:           outputStates,
+		Info:              infoStates,
+		EndorsementRequest: &prototk.AttestationRequest{
+			Name: "notary",
+		},
+		Signatures: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.EndorseTransactionResponse_ENDORSER_SUBMIT, endorseRes.EndorsementResult)
+
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		InputStates:       inputStates,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+			{
+				Name:     "notary",
+				Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban, ok := prepareRes.ChainTransaction.Payload.(*prototk.PreparedChainTransaction_Soroban)
+	require.True(t, ok)
+	assert.Equal(t, "lock", soroban.Soroban.FunctionName)
+	assert.NotEmpty(t, soroban.Soroban.ContractId)
+
+	var args xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
+	require.NoError(t, err)
+	require.Len(t, args, 6) // tx_id, inputs, locked_outputs, outputs, signature, data
+
+	txIDBytes32 := pldtypes.MustParseBytes32(tx.TransactionId)
+	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
+	assert.Equal(t, txIDBytes32[:], []byte(*args[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[1].Type)
+	inputsVec := **args[1].Vec
+	require.Len(t, inputsVec, 1)
+	assert.Equal(t, inputCoin.ID[:], []byte(*inputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
+	lockedOutputsVec := **args[2].Vec
+	require.Len(t, lockedOutputsVec, 1)
+	lockedOutIDBytes32 := pldtypes.MustParseBytes32(*lockedOutState.Id)
+	assert.Equal(t, lockedOutIDBytes32[:], []byte(*lockedOutputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[3].Type)
+	outputsVec := **args[3].Vec
+	require.Len(t, outputsVec, 1) // the remainder - proves the new SNoto `outputs` list round-trips
+	remainderIDBytes32 := pldtypes.MustParseBytes32(*remainderState.Id)
+	assert.Equal(t, remainderIDBytes32[:], []byte(*outputsVec[0].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
+	assert.Equal(t, []byte(signature), []byte(*args[4].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[5].Type)
+	assert.NotEmpty(t, *args[5].Bytes)
 }
 
 func TestLock_V0(t *testing.T) {

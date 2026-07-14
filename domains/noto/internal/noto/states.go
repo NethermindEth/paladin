@@ -364,7 +364,7 @@ func (n *Noto) prepareInputs(ctx context.Context, stateQueryContext string, owne
 // Select from available locked states for a given lock ID and owner,
 // ensuring the total amount is at least the specified amount.
 // If selectAll is true, ALL available states will be found selected.
-func (n *Noto) prepareLockedInputs(ctx context.Context, stateQueryContext string, lockID pldtypes.Bytes32, owner *pldtypes.EthAddress, amount *big.Int, selectAll bool) (inputs *preparedLockedInputs, revert bool, err error) {
+func (n *Noto) prepareLockedInputs(ctx context.Context, stateQueryContext string, lockID pldtypes.Bytes32, owner *pldtypes.ChainAddress, amount *big.Int, selectAll bool) (inputs *preparedLockedInputs, revert bool, err error) {
 	var lastStateTimestamp int64
 	total := big.NewInt(0)
 	stateRefs := []*prototk.StateRef{}
@@ -453,7 +453,7 @@ func (n *Noto) prepareLockedOutputs(id pldtypes.Bytes32, owner *identityPair, am
 	newCoin := &types.NotoLockedCoin{
 		Salt:   pldtypes.RandBytes32(),
 		LockID: id,
-		Owner:  owner.address,
+		Owner:  &owner.chainAddress,
 		Amount: amount,
 	}
 	newState, err := n.makeNewLockedCoinState(newCoin, distributionList.identities())
@@ -478,9 +478,25 @@ func (n *Noto) prepareDataInfo(ctx context.Context, data pldtypes.HexBytes, vari
 	return []*prototk.NewState{newState}, err
 }
 
-func (n *Noto) prepareLockInfo_V0(lockID pldtypes.Bytes32, owner, delegate *pldtypes.EthAddress, distributionList identityList) (*preparedLockInfo, error) {
+// evmChainAddressPtr wraps an EVM address as a *pldtypes.ChainAddress, or nil if addr is nil -
+// used wherever an EVM-only request parameter (e.g. DelegateLockParams.Delegate) needs to flow
+// into a now chain-neutral field.
+func evmChainAddressPtr(addr *pldtypes.EthAddress) *pldtypes.ChainAddress {
+	if addr == nil {
+		return nil
+	}
+	ca := pldtypes.NewEVMChainAddress(*addr)
+	return &ca
+}
+
+func (n *Noto) prepareLockInfo_V0(lockID pldtypes.Bytes32, owner, delegate *pldtypes.ChainAddress, distributionList identityList) (*preparedLockInfo, error) {
 	if delegate == nil {
-		delegate = &pldtypes.EthAddress{}
+		// V0 is EVM-only (never extended to Stellar - chapter 14 lock/unlock phase). A zero-value
+		// ChainAddress{} marshals as an empty JSON string, which then fails to round-trip back
+		// (ChainAddress.UnmarshalJSON rejects ""), unlike the old zero *pldtypes.EthAddress{},
+		// whose zero value ("0x000...0") round-trips fine - so default to the equivalent EVM zero
+		// address instead of a bare zero ChainAddress.
+		delegate = evmChainAddressPtr(&pldtypes.EthAddress{})
 	}
 	newLockInfo := &types.NotoLockInfo_V0{
 		Salt:     pldtypes.RandBytes32(),
