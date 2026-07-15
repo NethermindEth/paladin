@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/saladin-plugin-rs", "crates/sente"]
+
+# Deliberately a standalone workspace, not a member of ../../soroban/'s own workspace: that
+# workspace's rust-toolchain.toml pins the wasm32v1-none target for its contract crates, while
+# this workspace compiles to a native target and pulls in a much heavier dependency graph
+# (soroban-env-host/soroban-simulation, tonic/prost, tokio) as production dependencies - mirroring
+# soroban/spikes/m0-groth16-bench's own precedent of detaching itself for the same reason.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"

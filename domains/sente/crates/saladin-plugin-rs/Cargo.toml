@@ -1,0 +1,21 @@
+[package]
+name = "saladin-plugin-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thin Rust re-implementation of Paladin's plugintk gRPC handshake (dial, ConnectDomain, REGISTER, request/response dispatch) - reusable for any future Rust plugin, not just Sente."
+
+[dependencies]
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-stream = "0.1"
+tower = "0.5"
+hyper-util = { version = "0.1", features = ["tokio"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+async-trait = "0.1"
+
+[build-dependencies]
+tonic-prost-build = "0.14"

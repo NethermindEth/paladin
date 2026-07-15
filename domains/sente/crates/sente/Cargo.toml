@@ -1,0 +1,16 @@
+[package]
+name = "sente"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sente domain plugin - Phase 0: hello-world only (ConfigureDomain/InitDomain), proving the Rust-cdylib-via-JNA loading path before any soroban-env-host embedding work starts."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+saladin-plugin-rs = { path = "../saladin-plugin-rs" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

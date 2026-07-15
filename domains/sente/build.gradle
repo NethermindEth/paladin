@@ -1,0 +1,76 @@
+/*
+ * Copyright © 2026 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import org.apache.tools.ant.taskdefs.condition.Os
+
+// A standalone Cargo workspace, not a member of soroban/'s own workspace - see Cargo.toml's own
+// comment (native target + heavy production dependencies vs. soroban/'s wasm32v1-none contract
+// crates, mirroring soroban/spikes/m0-groth16-bench's precedent for the same reason).
+
+configurations {
+    // Consumable configurations
+    libsente {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+
+def sourceFiles = fileTree(".") {
+    include "**/Cargo.toml"
+    include "**/src/**/*.rs"
+    include "**/build.rs"
+    exclude "target/**"
+}
+
+def libName
+if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+    libName = "sente.dll"
+} else if (Os.isFamily(Os.FAMILY_MAC)) {
+    libName = "libsente.dylib"
+} else {
+    libName = "libsente.so"
+}
+def outputLib = file("target/release/${libName}")
+
+// Phase 0 (chapter 14 §14.3's M0 spike): builds only the hello-world `sente` cdylib, proving the
+// Rust-cdylib-via-JNA loading path before any soroban-env-host embedding work starts. Cargo builds
+// the whole workspace's dependency graph regardless of `-p`, so this doesn't need per-crate tasks
+// yet - revisit once later phases add more crates with meaningfully different build needs.
+task cargoBuild(type: Exec) {
+    executable 'cargo'
+    args 'build', '--release', '--locked', '-p', 'sente'
+
+    inputs.files(sourceFiles)
+    inputs.file("Cargo.lock")
+    outputs.file(outputLib)
+}
+
+task test(type: Exec, dependsOn: cargoBuild) {
+    executable 'cargo'
+    args 'test', '--workspace', '--locked'
+
+    inputs.files(sourceFiles)
+    inputs.file("Cargo.lock")
+}
+
+task build {
+    dependsOn cargoBuild
+}
+
+artifacts {
+    libsente(outputLib) {
+        builtBy cargoBuild
+    }
+}
