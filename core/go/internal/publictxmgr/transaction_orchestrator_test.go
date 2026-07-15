@@ -34,6 +34,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mustEthAddr unwraps the EVM-kind ChainAddress the orchestrator carries into the
+// pldtypes.EthAddress the ethClient mock (still EVM-only) is keyed by.
+func mustEthAddr(t *testing.T, a pldtypes.ChainAddress) pldtypes.EthAddress {
+	t.Helper()
+	ethAddr, err := a.EthAddress()
+	require.NoError(t, err)
+	return *ethAddr
+}
+
 func newTestOrchestrator(t *testing.T, cbs ...func(mocks *mocksAndTestControl, conf *pldconf.PublicTxManagerConfig)) (context.Context, *orchestrator, *mocksAndTestControl, func()) {
 	ctx, ptm, m, done := newTestPublicTxManager(t, false, func(mocks *mocksAndTestControl, conf *pldconf.PublicTxManagerConfig) {
 		mocks.disableManagerStart = true // we don't want the manager running - this gives us a fake nonce manager too
@@ -42,7 +51,7 @@ func newTestOrchestrator(t *testing.T, cbs ...func(mocks *mocksAndTestControl, c
 		}
 	})
 
-	signingAddress := pldtypes.EthAddress(pldtypes.RandBytes(20))
+	signingAddress := pldtypes.EthAddress(pldtypes.RandBytes(20)).ChainAddress()
 	o := NewOrchestrator(ptm, signingAddress, ptm.conf)
 
 	return ctx, o, m, done
@@ -51,11 +60,11 @@ func newTestOrchestrator(t *testing.T, cbs ...func(mocks *mocksAndTestControl, c
 
 func newInflightTransaction(o *orchestrator, nonce uint64, txMods ...func(tx *DBPublicTxn)) (*inFlightTransactionStageController, *inFlightTransactionState) {
 	tx := &DBPublicTxn{
-		From:    o.signingAddress.ChainAddress(),
+		From:    o.signingAddress,
 		Nonce:   &nonce,
 		Gas:     2000,
 		Created: pldtypes.TimestampNow(),
-		To:      ethAddressChainAddress(pldtypes.EthAddressBytes(pldtypes.RandBytes(20))),
+		To:      confutil.P(pldtypes.EthAddressBytes(pldtypes.RandBytes(20)).ChainAddress()),
 	}
 	for _, txMod := range txMods {
 		txMod(tx)
@@ -93,7 +102,7 @@ func TestNewOrchestratorLoadsSecondTxAndQueuesBalanceCheck(t *testing.T) {
 	m.db.ExpectQuery("SELECT.*public_submissions").WillReturnRows(sqlmock.NewRows([]string{}))
 
 	addressBalanceChecked := make(chan bool)
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(100), nil).Run(func(args mock.Arguments) {
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(100), nil).Run(func(args mock.Arguments) {
 		select {
 		case <-addressBalanceChecked:
 			// the channel only needs to be closed the first time
@@ -101,7 +110,7 @@ func TestNewOrchestratorLoadsSecondTxAndQueuesBalanceCheck(t *testing.T) {
 			close(addressBalanceChecked)
 		}
 	})
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).Return(confutil.P(pldtypes.HexUint64(0)), nil)
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).Return(confutil.P(pldtypes.HexUint64(0)), nil)
 	oDone, _ := o.Start(ctx)
 	<-addressBalanceChecked
 	o.Stop()
@@ -203,8 +212,8 @@ func TestOrchestratorWaitingForBalance(t *testing.T) {
 	m.db.ExpectQuery("SELECT.*public_txn_bindings").WillReturnRows(sqlmock.NewRows([]string{"transaction"}).AddRow(uuid.New().String()))
 
 	// Mock the insufficient balance on the account that's submitting
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil)
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).Return(confutil.P(pldtypes.HexUint64(0)), nil)
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil)
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).Return(confutil.P(pldtypes.HexUint64(0)), nil)
 
 	oDone, err := o.Start(ctx)
 	require.NoError(t, err)
@@ -222,9 +231,9 @@ func TestAllocateNoncesGetTransactionCountError(t *testing.T) {
 	defer done()
 
 	// nextNonce is nil so allocateNonces will call GetTransactionCount
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(nil, fmt.Errorf("rpc error")).Once()
 
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
@@ -242,8 +251,8 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	// lastNonceAlloc is zero time so cache is always expired and GetTransactionCount is called
 
 	// Mempool reports nonce 4 (lower than our cached 5) - so we keep our cached nonce
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(confutil.P(pldtypes.HexUint64(4)), nil).Once()
 
 	// DB transaction to record the nonce assignment must succeed
@@ -251,7 +260,7 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 1))
 	m.db.ExpectCommit()
 
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
 	assert.NoError(t, err)
 	// nextNonce should have advanced by 1 (we allocated nonce 5)
@@ -263,8 +272,8 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	defer done()
 
 	// nextNonce is nil so GetTransactionCount is called
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(confutil.P(pldtypes.HexUint64(10)), nil).Once()
 
 	// DB transaction fails
@@ -272,7 +281,7 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	m.db.ExpectExec("WITH nonce_updates").WillReturnError(fmt.Errorf("db transaction error"))
 	m.db.ExpectRollback()
 
-	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress.ChainAddress()}
+	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "db transaction error")
@@ -303,8 +312,8 @@ func TestAllocateNoncesChannelAccountRoundRobin(t *testing.T) {
 	}}
 
 	// PublicTxnID 10 % 2 == 0 (channel0, nonce 100), PublicTxnID 11 % 2 == 1 (channel1, nonce 200)
-	txn0 := &DBPublicTxn{PublicTxnID: 10, From: o.signingAddress.ChainAddress()}
-	txn1 := &DBPublicTxn{PublicTxnID: 11, From: o.signingAddress.ChainAddress()}
+	txn0 := &DBPublicTxn{PublicTxnID: 10, From: o.signingAddress}
+	txn1 := &DBPublicTxn{PublicTxnID: 11, From: o.signingAddress}
 
 	m.db.ExpectBegin()
 	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 2))
@@ -323,7 +332,7 @@ func TestAllocateNoncesChannelAccountRoundRobin(t *testing.T) {
 	assert.Equal(t, *channel1, *txn1.ChannelAccount)
 
 	// a third transaction landing on the same slot as txn0 should get the next sequence for that slot
-	txn2 := &DBPublicTxn{PublicTxnID: 12, From: o.signingAddress.ChainAddress()}
+	txn2 := &DBPublicTxn{PublicTxnID: 12, From: o.signingAddress}
 	m.db.ExpectBegin()
 	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 1))
 	m.db.ExpectCommit()
@@ -380,8 +389,8 @@ func TestPollAndProcessAllocateNoncesError(t *testing.T) {
 	m.db.ExpectQuery("SELECT.*public_submissions").WillReturnRows(sqlmock.NewRows([]string{}))
 
 	// allocateNonces fails: GetTransactionCount returns error
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, o.signingAddress).
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(nil, fmt.Errorf("nonce rpc error")).Once()
 
 	polled, _ := o.pollAndProcess(ctx)
@@ -428,7 +437,7 @@ func TestProcessInFlightTransactionsBalanceUnavailableWait(t *testing.T) {
 
 	mockIT, _ := newInflightTransaction(o, 1)
 	// GetBalance returns error so GetAddressBalance fails
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(nil, fmt.Errorf("balance error")).Once()
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(nil, fmt.Errorf("balance error")).Once()
 
 	waitingForBalance, err := o.ProcessInFlightTransactions(ctx, []*inFlightTransactionStageController{mockIT})
 	require.NoError(t, err)
@@ -450,7 +459,7 @@ func TestProcessInFlightTransactionsBalanceUnavailableStop(t *testing.T) {
 	defer done()
 
 	mockIT, _ := newInflightTransaction(o, 1)
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(nil, fmt.Errorf("balance error")).Once()
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(nil, fmt.Errorf("balance error")).Once()
 
 	waitingForBalance, err := o.ProcessInFlightTransactions(ctx, []*inFlightTransactionStageController{mockIT})
 	require.NoError(t, err)
@@ -476,7 +485,7 @@ func TestProcessInFlightTransactionsBalanceUnavailableContinue(t *testing.T) {
 	// Suppress async stage actions: with "continue" the function falls through to ProduceLatestInFlightStageContext,
 	// which would spawn a goroutine via executeAsync without this flag.
 	mockIT.testOnlyNoActionMode = true
-	m.ethClient.On("GetBalance", mock.Anything, o.signingAddress, "latest").Return(nil, fmt.Errorf("balance error")).Once()
+	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(nil, fmt.Errorf("balance error")).Once()
 
 	waitingForBalance, err := o.ProcessInFlightTransactions(ctx, []*inFlightTransactionStageController{mockIT})
 	require.NoError(t, err)

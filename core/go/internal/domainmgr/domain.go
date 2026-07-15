@@ -827,6 +827,10 @@ func (d *domain) PrepareDeploy(ctx context.Context, tx *components.PrivateContra
 			Inputs:         inputs,
 		}
 		tx.InvokeTransaction = nil
+	} else if res.ChainTransaction != nil && res.Transaction == nil && res.Deploy == nil {
+		tx.ChainInvokeTransaction = res.ChainTransaction
+		tx.InvokeTransaction = nil
+		tx.DeployTransaction = nil
 	} else {
 		// Must specify exactly one of the two types of transaction
 		return i18n.NewError(ctx, msgs.MsgDomainInvalidPrepareDeployResult)

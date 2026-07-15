@@ -246,6 +246,7 @@ func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	// Mock gas price and estimation - we need to set the result of three calls where the values relate to each other
 	const transactionCount = 10
@@ -282,7 +283,7 @@ func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {
 				{TransactionID: txIDs[i], TransactionType: pldapi.TransactionTypePrivate.Enum()},
 			},
 			PublicTxInput: pldapi.PublicTxInput{
-				From: resolvedKey,
+				From: &resolvedChainAddr,
 				Data: []byte(fmt.Sprintf("data %d", i)),
 			},
 		}
@@ -332,7 +333,7 @@ func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {
 	assert.Len(t, queryTxs, len(txs))
 	for i, qTX := range queryTxs {
 		// We don't include the bindings on these queries
-		assert.Equal(t, *resolvedKey, qTX.From)
+		assert.Equal(t, resolvedChainAddr, qTX.From)
 		assert.Equal(t, txs[i].Data, qTX.Data)
 		require.Greater(t, len(qTX.Activity), 0)
 	}
@@ -375,6 +376,7 @@ func TestTransactionLifecycleRealKeyMgrAndDB(t *testing.T) {
 				BlockNumber:      11223344,
 				TransactionIndex: 10,
 				From:             resolvedKey,
+				FromChain:        confutil.P(resolvedKey.ChainAddress()),
 				To:               (*pldtypes.EthAddress)(ethTx.To),
 				Nonce:            ethTx.Nonce.Uint64(),
 				Result:           pldapi.TXResult_SUCCESS.Enum(),
@@ -474,7 +476,7 @@ func TestSubmitFailures(t *testing.T) {
 		Return(ethclient.EstimateGasResult{}, fmt.Errorf("GasEstimate error")).Once()
 	_, err := ptm.SingleTransactionSubmit(ctx, &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.RandAddress(),
+			From: confutil.P(pldtypes.RandAddress().ChainAddress()),
 		},
 	})
 	assert.Regexp(t, "GasEstimate error", err)
@@ -489,7 +491,7 @@ func TestSubmitFailures(t *testing.T) {
 		}, fmt.Errorf("execution reverted")).Once()
 	_, err = ptm.SingleTransactionSubmit(ctx, &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.RandAddress(),
+			From: confutil.P(pldtypes.RandAddress().ChainAddress()),
 		},
 	})
 	assert.Regexp(t, "mapped revert error", err)
@@ -536,8 +538,8 @@ func TestHandleNewTransactionTransferOnlyWithProvideGas(t *testing.T) {
 	// create transaction succeeded
 	tx, err := ptm.SingleTransactionSubmit(ctx, &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.RandAddress(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			From: confutil.P(pldtypes.RandAddress().ChainAddress()),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas:   confutil.P(pldtypes.HexUint64(1223451)),
 				Value: pldtypes.Uint64ToUint256(100),
@@ -565,13 +567,14 @@ func TestEngineSuspendResumeRealDB(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := *pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
 
 	pubTx := &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: &resolvedKey,
+			From: &resolvedChainAddr,
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(1223451)),
 			},
@@ -610,7 +613,7 @@ func TestEngineSuspendResumeRealDB(t *testing.T) {
 			if t.Failed() {
 				panic("test failed")
 			}
-			o = ptm.getOrchestratorForAddress(resolvedKey)
+			o = ptm.getOrchestratorForAddress(resolvedChainAddr)
 			if o != nil {
 				ift = o.getFirstInFlight()
 			}
@@ -620,7 +623,7 @@ func TestEngineSuspendResumeRealDB(t *testing.T) {
 	txNonce := getIFT().stateManager.GetNonce()
 
 	// suspend the TX
-	err = ptm.SuspendTransaction(ctx, resolvedKey, txNonce)
+	err = ptm.SuspendTransaction(ctx, resolvedChainAddr, txNonce)
 	require.NoError(t, err)
 
 	// wait to flush out the whole orchestrator as this is the only thing in flight
@@ -632,7 +635,7 @@ func TestEngineSuspendResumeRealDB(t *testing.T) {
 	}
 
 	// resume the txn
-	err = ptm.ResumeTransaction(ctx, resolvedKey, txNonce)
+	err = ptm.ResumeTransaction(ctx, resolvedChainAddr, txNonce)
 	require.NoError(t, err)
 
 	// check the orchestrator comes back
@@ -652,6 +655,7 @@ func TestUpdateTransactionRealDB_LocalIDNotFound(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
@@ -665,7 +669,7 @@ func TestUpdateTransactionRealDB_LocalIDNotFound(t *testing.T) {
 			{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()},
 		},
 		PublicTxInput: pldapi.PublicTxInput{
-			From: resolvedKey,
+			From: &resolvedChainAddr,
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(1223451)),
 			},
@@ -674,7 +678,7 @@ func TestUpdateTransactionRealDB_LocalIDNotFound(t *testing.T) {
 	_, err = ptm.SingleTransactionSubmit(ctx, pubTxSub)
 	require.NoError(t, err)
 
-	err = ptm.UpdateTransaction(ctx, txID, uint64(2), resolvedKey, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return nil })
+	err = ptm.UpdateTransaction(ctx, txID, uint64(2), &resolvedChainAddr, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return nil })
 	require.Error(t, err)
 }
 
@@ -689,6 +693,7 @@ func TestUpdateTransactionRealDB_GasEstimateErrors(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
@@ -702,7 +707,7 @@ func TestUpdateTransactionRealDB_GasEstimateErrors(t *testing.T) {
 			{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()},
 		},
 		PublicTxInput: pldapi.PublicTxInput{
-			From: resolvedKey,
+			From: &resolvedChainAddr,
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(1223451)),
 			},
@@ -719,13 +724,13 @@ func TestUpdateTransactionRealDB_GasEstimateErrors(t *testing.T) {
 			RevertData: sampleRevertData,
 		}, fmt.Errorf("execution reverted")).Once()
 
-	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, resolvedKey, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return errors.New("db write failed") })
+	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, &resolvedChainAddr, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return errors.New("db write failed") })
 	require.EqualError(t, err, "mapped revert error")
 
 	// gas estimate failure without revert data
 	m.ethClient.On("EstimateGasNoResolve", mock.Anything, mock.Anything, mock.Anything).
 		Return(ethclient.EstimateGasResult{}, fmt.Errorf("GasEstimate error")).Once()
-	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, resolvedKey, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return errors.New("db write failed") })
+	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, &resolvedChainAddr, &pldapi.TransactionInput{}, nil, func(dbTX persistence.DBTX) error { return errors.New("db write failed") })
 	require.EqualError(t, err, "GasEstimate error")
 }
 
@@ -740,6 +745,7 @@ func TestUpdateTransactionRealDB_DBWriteFails(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
@@ -753,7 +759,7 @@ func TestUpdateTransactionRealDB_DBWriteFails(t *testing.T) {
 			{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()},
 		},
 		PublicTxInput: pldapi.PublicTxInput{
-			From: resolvedKey,
+			From: &resolvedChainAddr,
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(1223451)),
 			},
@@ -762,7 +768,7 @@ func TestUpdateTransactionRealDB_DBWriteFails(t *testing.T) {
 	pubTx, err := ptm.SingleTransactionSubmit(ctx, pubTxSub)
 	require.NoError(t, err)
 
-	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, resolvedKey, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, &resolvedChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(2223451)),
@@ -783,6 +789,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
@@ -807,6 +814,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 					BlockNumber:      11223344,
 					TransactionIndex: 10,
 					From:             resolvedKey,
+					FromChain:        confutil.P(resolvedKey.ChainAddress()),
 					To:               (*pldtypes.EthAddress)(ethTx.To),
 					Nonce:            ethTx.Nonce.Uint64(),
 					Result:           pldapi.TXResult_SUCCESS.Enum(),
@@ -829,7 +837,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 			{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()},
 		},
 		PublicTxInput: pldapi.PublicTxInput{
-			From: resolvedKey,
+			From: &resolvedChainAddr,
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(1223451)),
 			},
@@ -844,7 +852,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 		Return(ethclient.EstimateGasResult{
 			GasLimit: pldtypes.HexUint64(2223451),
 		}, nil).Once()
-	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, resolvedKey, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, &resolvedChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			From:     resolvedKey.String(),
 			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
@@ -900,7 +908,7 @@ func TestGasEstimateFactor(t *testing.T) {
 
 	tx := &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.MustEthAddress("0x14655a513c68280d16f72304ebfd1ae1a2262d2d"),
+			From: confutil.P(pldtypes.MustEthAddress("0x14655a513c68280d16f72304ebfd1ae1a2262d2d").ChainAddress()),
 			Data: []byte("[2]"),
 		},
 	}
@@ -941,7 +949,7 @@ func TestSuspendTransactionNoOrchestrator(t *testing.T) {
 	require.NoError(t, err)
 
 	// Call SuspendTransaction - this should trigger persistSuspendedFlag since no orchestrator is in flight
-	err = ptm.SuspendTransaction(ctx, *testAddress, testNonce)
+	err = ptm.SuspendTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	assert.NoError(t, err)
 
 	// Verify the transaction was actually suspended in the database
@@ -983,7 +991,7 @@ func TestResumeTransactionNoOrchestrator(t *testing.T) {
 	require.NoError(t, err)
 
 	// Call ResumeTransaction - this should trigger persistSuspendedFlag since no orchestrator is in flight
-	err = ptm.ResumeTransaction(ctx, *testAddress, testNonce)
+	err = ptm.ResumeTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	assert.NoError(t, err)
 
 	// Verify the transaction was actually resumed in the database
@@ -1005,7 +1013,7 @@ func TestDispatchActionInvalidAction(t *testing.T) {
 
 	// Call dispatchAction with an invalid action type (beyond the defined constants)
 	invalidAction := AsyncRequestType(999) // Invalid action type
-	err := ptm.dispatchAction(ctx, *testAddress, testNonce, invalidAction)
+	err := ptm.dispatchAction(ctx, testAddress.ChainAddress(), testNonce, invalidAction)
 
 	// The default case should return nil (no error)
 	assert.NoError(t, err)
@@ -1185,7 +1193,7 @@ func TestWriteNewTransactionsTraceLogging(t *testing.T) {
 			{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()},
 		},
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.RandAddress(),
+			From: confutil.P(pldtypes.RandAddress().ChainAddress()),
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(21000)),
 			},
@@ -1213,7 +1221,7 @@ func TestWriteNewTransactionsDBError(t *testing.T) {
 
 	tx := &components.PublicTxSubmission{
 		PublicTxInput: pldapi.PublicTxInput{
-			From: pldtypes.RandAddress(),
+			From: confutil.P(pldtypes.RandAddress().ChainAddress()),
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(100000)),
 			},
@@ -1238,7 +1246,7 @@ func TestWriteReceivedPublicTransactionSubmissions(t *testing.T) {
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddress,
+				From:    testAddress.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(testNonce)),
 				Data:    []byte("test data"),
 				Created: pldtypes.TimestampNow(),
@@ -1314,7 +1322,7 @@ func TestWriteReceivedPublicTransactionSubmissionsMultipleTransactionsNoCrossCon
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddressA,
+				From:    testAddressA.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(testNonceA)),
 				Data:    []byte("test data A"),
 				Created: pldtypes.TimestampNow(),
@@ -1344,7 +1352,7 @@ func TestWriteReceivedPublicTransactionSubmissionsMultipleTransactionsNoCrossCon
 		},
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddressB,
+				From:    testAddressB.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(testNonceB)),
 				Data:    []byte("test data B"),
 				Created: pldtypes.TimestampNow(),
@@ -1395,12 +1403,12 @@ func TestWriteReceivedPublicTransactionSubmissionsMultipleTransactionsNoCrossCon
 
 	txA, ok := byHash[testTxHashA]
 	require.True(t, ok)
-	assert.Equal(t, *testAddressA, txA.From)
+	assert.Equal(t, testAddressA.ChainAddress(), txA.From)
 	assert.Equal(t, testTxIDA, txA.Transaction)
 
 	txB, ok := byHash[testTxHashB]
 	require.True(t, ok)
-	assert.Equal(t, *testAddressB, txB.From)
+	assert.Equal(t, testAddressB.ChainAddress(), txB.From)
 	assert.Equal(t, testTxIDB, txB.Transaction)
 }
 
@@ -1418,7 +1426,7 @@ func TestWriteReceivedPublicTransactionSubmissionsDBError(t *testing.T) {
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddress,
+				From:    testAddress.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(42)),
 				Data:    []byte("test"),
 				Created: pldtypes.TimestampNow(),
@@ -1463,7 +1471,7 @@ func TestWriteReceivedPublicTransactionSubmissionsBindingDBError(t *testing.T) {
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddress,
+				From:    testAddress.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(42)),
 				Data:    []byte("test"),
 				Created: pldtypes.TimestampNow(),
@@ -1508,7 +1516,7 @@ func TestWriteReceivedPublicTransactionSubmissionsSubmissionDBError(t *testing.T
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddress,
+				From:    testAddress.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(42)),
 				Data:    []byte("test"),
 				Created: pldtypes.TimestampNow(),
@@ -1612,6 +1620,7 @@ func TestUpdateTransactionAlreadyCompleted(t *testing.T) {
 	keyMapping, err := m.keyManager.ResolveKeyNewDatabaseTX(ctx, "signer1", algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 	require.NoError(t, err)
 	resolvedKey := pldtypes.MustEthAddress(keyMapping.Verifier.Verifier)
+	resolvedChainAddr := resolvedKey.ChainAddress()
 
 	txID := uuid.New()
 	testTxHash := pldtypes.MustParseBytes32("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
@@ -1643,7 +1652,7 @@ func TestUpdateTransactionAlreadyCompleted(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to update the completed transaction
-	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, resolvedKey, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, &resolvedChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(30000)),
@@ -1660,11 +1669,12 @@ func TestUpdateTransactionDBError(t *testing.T) {
 	defer done()
 
 	testAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	testChainAddr := testAddress.ChainAddress()
 	txID := uuid.New()
 
 	m.db.ExpectQuery("SELECT.*public_txns").WillReturnError(fmt.Errorf("database error"))
 
-	err := ptm.UpdateTransaction(ctx, txID, 12345, testAddress, &pldapi.TransactionInput{
+	err := ptm.UpdateTransaction(ctx, txID, 12345, &testChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(30000)),
@@ -1679,6 +1689,7 @@ func TestUpdateTransactionCheckCompletedError(t *testing.T) {
 	defer done()
 
 	testAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	testChainAddr := testAddress.ChainAddress()
 	txID := uuid.New()
 
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
@@ -1712,7 +1723,7 @@ func TestUpdateTransactionCheckCompletedError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, testAddress, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, &testChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{},
 		},
@@ -1810,7 +1821,7 @@ func TestSuspendTransactionDispatchActionError(t *testing.T) {
 
 	// SuspendTransaction should handle the case where dispatchAction is called
 	// but there's no orchestrator and no transaction in DB
-	err := ptm.SuspendTransaction(ctx, *testAddress, testNonce)
+	err := ptm.SuspendTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	// This should succeed because persistSuspendedFlag will just update 0 rows
 	assert.NoError(t, err)
 }
@@ -1824,7 +1835,7 @@ func TestResumeTransactionDispatchActionError(t *testing.T) {
 
 	// ResumeTransaction should handle the case where dispatchAction is called
 	// but there's no orchestrator and no transaction in DB
-	err := ptm.ResumeTransaction(ctx, *testAddress, testNonce)
+	err := ptm.ResumeTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	// This should succeed because persistSuspendedFlag will just update 0 rows
 	assert.NoError(t, err)
 }
@@ -1875,6 +1886,7 @@ func TestUpdateTransactionGasEstimateNonRejectedError(t *testing.T) {
 	defer done()
 
 	testAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	testChainAddr := testAddress.ChainAddress()
 	txID := uuid.New()
 
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
@@ -1905,7 +1917,7 @@ func TestUpdateTransactionGasEstimateNonRejectedError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, testAddress, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, &testChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{},
 		},
@@ -1919,6 +1931,7 @@ func TestUpdateTransactionGasEstimateRejectedNoRevertData(t *testing.T) {
 	defer done()
 
 	testAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	testChainAddr := testAddress.ChainAddress()
 	txID := uuid.New()
 
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
@@ -1950,7 +1963,7 @@ func TestUpdateTransactionGasEstimateRejectedNoRevertData(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, testAddress, &pldapi.TransactionInput{
+	err = ptm.UpdateTransaction(ctx, txID, pubTxnID, &testChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{},
 		},
@@ -1971,7 +1984,7 @@ func TestWriteReceivedPublicTransactionSubmissionsLookupExistingDBError(t *testi
 	txns := []*pldapi.PublicTxWithBinding{
 		{
 			PublicTx: &pldapi.PublicTx{
-				From:    *testAddress,
+				From:    testAddress.ChainAddress(),
 				Nonce:   confutil.P(pldtypes.HexUint64(42)),
 				Data:    []byte("test"),
 				Created: pldtypes.TimestampNow(),
@@ -2022,7 +2035,7 @@ func TestSuspendTransactionPersistFlagDBError(t *testing.T) {
 	// No orchestrator in flight, so dispatchAction calls persistSuspendedFlag which does an UPDATE
 	m.db.ExpectExec("UPDATE.*public_txns").WillReturnError(fmt.Errorf("db update error"))
 
-	err := ptm.SuspendTransaction(ctx, *testAddress, testNonce)
+	err := ptm.SuspendTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "db update error")
 }
@@ -2040,7 +2053,7 @@ func TestResumeTransactionPersistFlagDBError(t *testing.T) {
 	// No orchestrator in flight, so dispatchAction calls persistSuspendedFlag which does an UPDATE
 	m.db.ExpectExec("UPDATE.*public_txns").WillReturnError(fmt.Errorf("db update error"))
 
-	err := ptm.ResumeTransaction(ctx, *testAddress, testNonce)
+	err := ptm.ResumeTransaction(ctx, testAddress.ChainAddress(), testNonce)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "db update error")
 }
@@ -2053,6 +2066,7 @@ func TestUpdateTransactionCheckCompletionQueryError(t *testing.T) {
 	defer done()
 
 	testAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	testChainAddr := testAddress.ChainAddress()
 	txID := uuid.New()
 	testPubTxnID := uint64(99)
 
@@ -2063,7 +2077,7 @@ func TestUpdateTransactionCheckCompletionQueryError(t *testing.T) {
 	// Second query: CheckTransactionCompleted - fails
 	m.db.ExpectQuery("SELECT.*public_txns").WillReturnError(fmt.Errorf("check completed db error"))
 
-	err := ptm.UpdateTransaction(ctx, txID, testPubTxnID, testAddress, &pldapi.TransactionInput{
+	err := ptm.UpdateTransaction(ctx, txID, testPubTxnID, &testChainAddr, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(30000)),

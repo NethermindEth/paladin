@@ -321,22 +321,10 @@ func (v *inFlightTransactionStateGeneration) PersistTxState(ctx context.Context)
 				log.L(ctx).Debugf("PersistTxState TXID %s: Building binding", newSubmission.SequencerTXReference.PrivateTXID)
 				nonce := pldtypes.HexUint64(rsc.InMemoryTx.GetNonce())
 				gasLimit := pldtypes.HexUint64(rsc.InMemoryTx.GetGasLimit())
-				// SequencerTXReference.Binding is pldapi.PublicTx, which remains EVM-shaped (see
-				// mapPersistedTransaction's doc comment) - this errors for a non-EVM ChainAddress.
-				fromEth, err := rsc.InMemoryTx.GetFrom().EthAddress()
-				if err != nil {
-					return rsc.Stage, time.Now(), err
-				}
-				var toEth *pldtypes.EthAddress
-				if to := rsc.InMemoryTx.GetTo(); to != nil {
-					if toEth, err = to.EthAddress(); err != nil {
-						return rsc.Stage, time.Now(), err
-					}
-				}
 				newSubmission.SequencerTXReference.Binding = &pldapi.PublicTx{
 					TransactionHash: rsc.InMemoryTx.GetTransactionHash(),
-					From:            *fromEth,
-					To:              toEth,
+					From:            rsc.InMemoryTx.GetFrom(),
+					To:              rsc.InMemoryTx.GetTo(),
 					Data:            rsc.InMemoryTx.GetData(),
 					Nonce:           &nonce,
 					Created:         *rsc.InMemoryTx.GetCreatedTime(),

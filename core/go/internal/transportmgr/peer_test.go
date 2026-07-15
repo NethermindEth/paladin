@@ -983,10 +983,11 @@ func TestProcessReliableMsgPagePublicTransactionSubmission(t *testing.T) {
 		transport: tp.t,
 	}
 
+	publicTxTo := pldtypes.RandAddress().ChainAddress()
 	publicTxSubmission := &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			From:  *pldtypes.RandAddress(),
-			To:    pldtypes.RandAddress(),
+			From:  pldtypes.RandAddress().ChainAddress(),
+			To:    &publicTxTo,
 			Data:  pldtypes.HexBytes(pldtypes.RandBytes(100)),
 			Nonce: confutil.P(pldtypes.HexUint64(2)),
 		},

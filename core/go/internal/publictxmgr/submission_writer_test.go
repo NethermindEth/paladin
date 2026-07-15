@@ -113,7 +113,7 @@ func createTestDBPubTxnSubmission(t *testing.T, withOriginator bool, withBinding
 
 	if withBinding {
 		nonce := pldtypes.HexUint64(42)
-		to := pldtypes.MustEthAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd")
+		to := pldtypes.MustEthAddress("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd").ChainAddress()
 		gas := pldtypes.HexUint64(21000)
 		value := pldtypes.MustParseHexUint256("0x1000")
 		maxPriorityFeePerGas := pldtypes.MustParseHexUint256("0x10")
@@ -121,7 +121,7 @@ func createTestDBPubTxnSubmission(t *testing.T, withOriginator bool, withBinding
 
 		submission.SequencerTXReference.Binding = &pldapi.PublicTx{
 			Nonce:   &nonce,
-			To:      to,
+			To:      &to,
 			Created: pldtypes.Timestamp(time.Now().UnixNano()),
 			Data:    pldtypes.HexBytes("0x1234"),
 			PublicTxOptions: pldapi.PublicTxOptions{
@@ -185,7 +185,7 @@ func TestRunBatch_WithOriginatorAndBinding(t *testing.T) {
 
 		// Verify From address
 		expectedFrom := pldtypes.MustEthAddress(submission.from)
-		require.Equal(t, *expectedFrom, publicTX.From)
+		require.Equal(t, expectedFrom.ChainAddress(), publicTX.From)
 
 		// Verify Submissions array
 		require.Len(t, publicTX.Submissions, 1)
@@ -438,7 +438,7 @@ func TestRunBatch_FromAddressConversion(t *testing.T) {
 	// Mock HandlePublicTXSubmission and verify from address conversion
 	sequencerManager.On("HandlePublicTXSubmission", mock.Anything, mock.Anything, submission.SequencerTXReference.PrivateTXID, mock.MatchedBy(func(txSubmission *pldapi.PublicTxWithBinding) bool {
 		expectedFrom := pldtypes.MustEthAddress(testFromAddress)
-		require.Equal(t, *expectedFrom, txSubmission.PublicTx.From)
+		require.Equal(t, expectedFrom.ChainAddress(), txSubmission.PublicTx.From)
 		return true
 	})).Return(nil).Once()
 

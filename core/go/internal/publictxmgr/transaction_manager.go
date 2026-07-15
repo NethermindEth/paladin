@@ -63,7 +63,7 @@ const (
 type transactionUpdate struct {
 	newPtx  *DBPublicTxn
 	pubTXID uint64
-	from    *pldtypes.EthAddress
+	from    *pldtypes.ChainAddress
 }
 
 // Public Tx Engine:
@@ -97,8 +97,8 @@ type pubTxManager struct {
 	submissionWriter *submissionWriter
 
 	// a map of signing addresses and transaction engines
-	inFlightOrchestrators       map[pldtypes.EthAddress]*orchestrator
-	signingAddressesPausedUntil map[pldtypes.EthAddress]time.Time
+	inFlightOrchestrators       map[pldtypes.ChainAddress]*orchestrator
+	signingAddressesPausedUntil map[pldtypes.ChainAddress]time.Time
 	inFlightOrchestratorMux     sync.Mutex
 	inFlightOrchestratorStale   chan bool
 
@@ -146,7 +146,7 @@ func NewPublicTransactionManager(ctx context.Context, conf *pldconf.PublicTxMana
 		conf:                        conf,
 		gasPriceClient:              gasPriceClient,
 		inFlightOrchestratorStale:   make(chan bool, 1),
-		signingAddressesPausedUntil: make(map[pldtypes.EthAddress]time.Time),
+		signingAddressesPausedUntil: make(map[pldtypes.ChainAddress]time.Time),
 		maxInflight:                 confutil.IntMin(conf.Manager.MaxInFlightOrchestrators, 1, *pldconf.PublicTxManagerDefaults.Manager.MaxInFlightOrchestrators),
 		orchestratorSwapTimeout:     confutil.DurationMin(conf.Manager.OrchestratorSwapTimeout, 0, *pldconf.PublicTxManagerDefaults.Manager.OrchestratorSwapTimeout),
 		orchestratorStaleTimeout:    confutil.DurationMin(conf.Manager.OrchestratorStaleTimeout, 0, *pldconf.PublicTxManagerDefaults.Manager.OrchestratorStaleTimeout),
@@ -250,24 +250,22 @@ func buildEthTX(
 	return ethTx
 }
 
-func publicTxToUnsignedChainTx(from pldtypes.EthAddress, to *pldtypes.EthAddress, data pldtypes.HexBytes) *baseledger.UnsignedChainTx {
+func publicTxToUnsignedChainTx(from pldtypes.ChainAddress, to *pldtypes.ChainAddress, data pldtypes.HexBytes, payloadKind pldtypes.Enum[pldapi.PublicTxPayloadKind]) *baseledger.UnsignedChainTx {
+	// pldapi.PublicTxPayloadKind's string values are defined to match baseledger.PayloadEncoding's
+	// exactly (see PublicTxPayloadKind's doc comment), so a direct string conversion is intentional.
+	// Empty defaults to FUNCTION_CALL_DATA here specifically (not XDR_INVOKE_CONTRACT_ARGS, Stellar's
+	// own implicit default elsewhere) because every existing EVM caller leaves PayloadKind unset and
+	// relied on this function's old hardcoded value - Stellar callers must set PayloadKind explicitly.
+	kind := payloadKind.V()
+	if kind == "" {
+		kind = pldapi.PublicTxPayloadKindFunctionCallData
+	}
 	return &baseledger.UnsignedChainTx{
-		From:        from.ChainAddress(),
-		To:          ethAddressChainAddress(to),
-		PayloadKind: baseledger.PayloadEncodingFunctionCallData,
+		From:        from,
+		To:          to,
+		PayloadKind: baseledger.PayloadEncoding(kind),
 		Payload:     data,
 	}
-}
-
-// ethAddressChainAddress nil-safely converts an EVM-sourced *pldtypes.EthAddress (the type used by
-// pldapi/components request structs, unmigrated) into the chain-neutral *pldtypes.ChainAddress
-// DBPublicTxn.To now uses.
-func ethAddressChainAddress(addr *pldtypes.EthAddress) *pldtypes.ChainAddress {
-	if addr == nil {
-		return nil
-	}
-	chainAddr := addr.ChainAddress()
-	return &chainAddr
 }
 
 func (ptm *pubTxManager) SingleTransactionSubmit(ctx context.Context, txi *components.PublicTxSubmission) (tx *pldapi.PublicTx, err error) {
@@ -300,7 +298,7 @@ func (ptm *pubTxManager) ValidateTransaction(ctx context.Context, dbTX persisten
 	var txType InFlightTxOperation
 
 	if txi.Gas == nil || *txi.Gas == 0 {
-		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*txi.From, txi.To, txi.Data))
+		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*txi.From, txi.To, txi.Data, txi.PayloadKind))
 		if err != nil {
 			log.L(ctx).Errorf("HandleNewTx <%s> error estimating gas for transaction: %+v, request: (%+v)", txType, err, txi)
 			ptm.thMetrics.RecordOperationMetrics(ctx, string(txType), string(GenericStatusFail), time.Since(prepareStart).Seconds())
@@ -344,8 +342,8 @@ func (ptm *pubTxManager) WriteNewTransactions(ctx context.Context, dbTX persiste
 	persistedTransactions := make([]*DBPublicTxn, len(transactions))
 	for i, txi := range transactions {
 		persistedTransactions[i] = &DBPublicTxn{
-			From:            txi.From.ChainAddress(), // safe because validated in ValidateTransaction
-			To:              ethAddressChainAddress(txi.To),
+			From:            *txi.From, // safe because validated in ValidateTransaction
+			To:              txi.To,
 			Gas:             txi.Gas.Uint64(),
 			Value:           txi.Value,
 			Data:            txi.Data,
@@ -388,17 +386,10 @@ func (ptm *pubTxManager) WriteNewTransactions(ctx context.Context, dbTX persiste
 	}
 	if err == nil {
 		pubTxns = make([]*pldapi.PublicTx, len(persistedTransactions))
-		toNotify := make(map[pldtypes.EthAddress]bool)
+		toNotify := make(map[pldtypes.ChainAddress]bool)
 		for i, ptx := range persistedTransactions {
-			pubTxns[i], err = mapPersistedTransaction(ptx)
-			if err != nil {
-				return nil, err
-			}
-			fromEth, err := ptx.From.EthAddress()
-			if err != nil {
-				return nil, err
-			}
-			toNotify[*fromEth] = true
+			pubTxns[i] = mapPersistedTransaction(ptx)
+			toNotify[ptx.From] = true
 		}
 		dbTX.AddPostCommit(ptm.postCommitNewTransactions(toNotify))
 	}
@@ -416,8 +407,8 @@ func (ptm *pubTxManager) WriteReceivedPublicTransactionSubmissions(ctx context.C
 	persistedTransactions := make([]*DBPublicTxn, 0, len(txns))
 	for _, tx := range txns {
 		persistedTransactions = append(persistedTransactions, &DBPublicTxn{
-			From:            tx.From.ChainAddress(),
-			To:              ethAddressChainAddress(tx.To),
+			From:            tx.From,
+			To:              tx.To,
 			Nonce:           (*uint64)(tx.Nonce),
 			Gas:             tx.Gas.Uint64(),
 			Value:           tx.Value,
@@ -526,7 +517,7 @@ func (ptm *pubTxManager) WriteReceivedPublicTransactionSubmissions(ctx context.C
 	return err
 }
 
-func (ptm *pubTxManager) writeUpdatedTransaction(ctx context.Context, dbTX persistence.DBTX, pubTXID uint64, from pldtypes.EthAddress, newPtx *DBPublicTxn) error {
+func (ptm *pubTxManager) writeUpdatedTransaction(ctx context.Context, dbTX persistence.DBTX, pubTXID uint64, from pldtypes.ChainAddress, newPtx *DBPublicTxn) error {
 	err := dbTX.DB().
 		WithContext(ctx).
 		Table("public_txns").
@@ -535,7 +526,7 @@ func (ptm *pubTxManager) writeUpdatedTransaction(ctx context.Context, dbTX persi
 		Error
 
 	if err == nil {
-		toNotify := map[pldtypes.EthAddress]bool{
+		toNotify := map[pldtypes.ChainAddress]bool{
 			from: true,
 		}
 		dbTX.AddPostCommit(ptm.postCommitNewTransactions(toNotify))
@@ -569,7 +560,7 @@ func (ptm *pubTxManager) UpdateRestoreState(ctx context.Context, pubTxnID uint64
 		Error
 }
 
-func (ptm *pubTxManager) postCommitNewTransactions(toNotify map[pldtypes.EthAddress]bool) func(ctx context.Context) {
+func (ptm *pubTxManager) postCommitNewTransactions(toNotify map[pldtypes.ChainAddress]bool) func(ctx context.Context) {
 	return func(ctx context.Context) {
 		// Mark any active orchestrators stale
 		inactive := false
@@ -641,10 +632,7 @@ func (ptm *pubTxManager) queryPublicTxWithBinding(ctx context.Context, dbTX pers
 	}
 	results := make([]*pldapi.PublicTxWithBinding, len(ptxs))
 	for iTx, ptx := range ptxs {
-		tx, err := mapPersistedTransaction(ptx)
-		if err != nil {
-			return nil, err
-		}
+		tx := mapPersistedTransaction(ptx)
 		tx.Submissions = make([]*pldapi.PublicTxSubmissionData, len(ptx.Submissions))
 		for iSub, pSub := range ptx.Submissions {
 			tx.Submissions[iSub] = mapPersistedSubmissionData(pSub)
@@ -720,26 +708,14 @@ func (ptm *pubTxManager) runTransactionQuery(ctx context.Context, dbTX persisten
 	return ptxs, nil
 }
 
-// mapPersistedTransaction converts the chain-neutral persisted record to the public,
-// EVM-shaped pldapi.PublicTx API type. This errors for a non-EVM (e.g. Stellar) ChainAddress:
-// pldapi.PublicTx.From/To remain EthAddress-typed, since the public query/notification API is not
-// yet chain-neutral (out of scope for the chapter 12 foundational slice).
-func mapPersistedTransaction(ptx *DBPublicTxn) (*pldapi.PublicTx, error) {
-	from, err := ptx.From.EthAddress()
-	if err != nil {
-		return nil, err
-	}
-	var to *pldtypes.EthAddress
-	if ptx.To != nil {
-		if to, err = ptx.To.EthAddress(); err != nil {
-			return nil, err
-		}
-	}
+// mapPersistedTransaction converts the chain-neutral persisted record to the public
+// pldapi.PublicTx API type - both are ChainAddress-typed, so this is a direct passthrough.
+func mapPersistedTransaction(ptx *DBPublicTxn) *pldapi.PublicTx {
 	tx := &pldapi.PublicTx{
 		LocalID:     &ptx.PublicTxnID,
-		From:        *from,
+		From:        ptx.From,
 		Created:     ptx.Created,
-		To:          to,
+		To:          ptx.To,
 		Nonce:       (*pldtypes.HexUint64)(ptx.Nonce),
 		Data:        ptx.Data,
 		PayloadKind: ptx.PayloadKind,
@@ -761,7 +737,7 @@ func mapPersistedTransaction(ptx *DBPublicTxn) (*pldapi.PublicTx, error) {
 	}
 	// Note: Submissions (sent to the mempool of the chain, but not yet complete) are separate.
 	// See mapPersistedSubmissionData()
-	return tx, nil
+	return tx
 }
 
 func mapPersistedSubmissionData(pSub *DBPubTxnSubmission) *pldapi.PublicTxSubmissionData {
@@ -784,7 +760,7 @@ func (ptm *pubTxManager) getTransactionSubmissions(ctx context.Context, dbTX per
 	return ptxs, err
 }
 
-func (ptm *pubTxManager) SuspendTransaction(ctx context.Context, from pldtypes.EthAddress, nonce uint64) error {
+func (ptm *pubTxManager) SuspendTransaction(ctx context.Context, from pldtypes.ChainAddress, nonce uint64) error {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	if err := ptm.dispatchAction(ctx, from, nonce, ActionSuspend); err != nil {
 		return err
@@ -792,7 +768,7 @@ func (ptm *pubTxManager) SuspendTransaction(ctx context.Context, from pldtypes.E
 	return nil
 }
 
-func (ptm *pubTxManager) ResumeTransaction(ctx context.Context, from pldtypes.EthAddress, nonce uint64) error {
+func (ptm *pubTxManager) ResumeTransaction(ctx context.Context, from pldtypes.ChainAddress, nonce uint64) error {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	if err := ptm.dispatchAction(ctx, from, nonce, ActionResume); err != nil {
 		return err
@@ -800,7 +776,7 @@ func (ptm *pubTxManager) ResumeTransaction(ctx context.Context, from pldtypes.Et
 	return nil
 }
 
-func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pubTXID uint64, from *pldtypes.EthAddress, tx *pldapi.TransactionInput, publicTxData []byte, txmgrDBUpdate func(dbTX persistence.DBTX) error) error {
+func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pubTXID uint64, from *pldtypes.ChainAddress, tx *pldapi.TransactionInput, publicTxData []byte, txmgrDBUpdate func(dbTX persistence.DBTX) error) error {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	ptxs := []*DBPublicTxn{}
 	err := ptm.p.DB().
@@ -829,18 +805,10 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 		return i18n.NewError(ctx, msgs.MsgTransactionAlreadyComplete, id)
 	}
 
-	// tx.To (pldapi.TransactionInput, now chain-neutral) is unwrapped here since this whole
-	// function is public-tx-specific (EVM-only today, same as the rest of publicTxMgr).
-	var toEthAddr *pldtypes.EthAddress
-	if tx.To != nil {
-		toEthAddr, err = tx.To.EthAddress()
-		if err != nil {
-			return err
-		}
-	}
-
 	if tx.Gas == nil || *tx.Gas == 0 {
-		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*from, toEthAddr, publicTxData))
+		// UpdateTransaction only changes gas/data of an already-existing pending tx, not its
+		// fundamental payload kind - re-estimate using whatever the existing record already had.
+		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*from, tx.To, publicTxData, ptxs[0].PayloadKind))
 		if err != nil {
 			log.L(ctx).Errorf("EstimateGas error estimating gas for transaction: %+v, request: (%+v)", err, tx)
 			if ethclient.MapSubmissionRejected(err) {
@@ -857,7 +825,7 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 	}
 
 	newPtx := &DBPublicTxn{
-		From:  from.ChainAddress(),
+		From:  *from,
 		To:    tx.To,
 		Gas:   tx.Gas.Uint64(),
 		Value: tx.Value,
@@ -1059,6 +1027,6 @@ func (ptm *pubTxManager) MatchUpdateConfirmedTransactions(ctx context.Context, d
 func (ptm *pubTxManager) NotifyConfirmPersisted(ctx context.Context, confirms []*components.PublicTxMatch) {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	for _, conf := range confirms {
-		_ = ptm.dispatchAction(ctx, *conf.From, conf.Nonce, ActionCompleted)
+		_ = ptm.dispatchAction(ctx, *conf.FromChain, conf.Nonce, ActionCompleted)
 	}
 }

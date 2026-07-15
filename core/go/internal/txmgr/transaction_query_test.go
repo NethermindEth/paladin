@@ -100,6 +100,7 @@ func TestGetTransactionByIDFullPublicHistory(t *testing.T) {
 	txID := uuid.New()
 	to1 := pldtypes.RandAddress()
 	to2 := pldtypes.RandAddress()
+	to2Chain := to2.ChainAddress()
 	ctx, txm, done := newTestTransactionManager(t, false,
 		mockEmptyReceiptListeners,
 		func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
@@ -113,7 +114,7 @@ func TestGetTransactionByIDFullPublicHistory(t *testing.T) {
 		}, mockQueryPublicTxForTransactions(func(ids []uuid.UUID, jq *query.QueryJSON) (map[uuid.UUID][]*pldapi.PublicTx, error) {
 			pubTX := map[uuid.UUID][]*pldapi.PublicTx{
 				txID: {{
-					To: to2,
+					To: &to2Chain,
 				}},
 			}
 			return pubTX, nil

@@ -25,10 +25,13 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/common"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/syncpoints"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
 )
 
@@ -93,6 +96,7 @@ func (t *coordinatorTransaction) dispatch(ctx context.Context) error {
 func (t *coordinatorTransaction) buildDispatchBatch(ctx context.Context) (*syncpoints.DispatchBatch, error) {
 	hasPublicTransaction := t.pt.PreparedPublicTransaction != nil
 	hasPrivateTransaction := t.pt.PreparedPrivateTransaction != nil
+	hasChainTransaction := t.pt.PreparedChainTransaction != nil
 	intent := t.pt.PreAssembly.TransactionSpecification.Intent
 
 	if intent == prototk.TransactionSpecification_SEND_TRANSACTION && hasPublicTransaction && !hasPrivateTransaction {
@@ -107,6 +111,22 @@ func (t *coordinatorTransaction) buildDispatchBatch(ctx context.Context) (*syncp
 					{TransactionID: t.pt.ID.String()},
 				},
 				PublicTxs: []*components.PublicTxSubmission{publicTxSubmission},
+			}},
+		}, nil
+	}
+
+	if intent == prototk.TransactionSpecification_SEND_TRANSACTION && hasChainTransaction && !hasPublicTransaction && !hasPrivateTransaction {
+		log.L(ctx).Debugf("Result of transaction %s is a chain-neutral transaction", t.pt.ID)
+		chainTxSubmission, err := t.buildChainTxSubmission(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &syncpoints.DispatchBatch{
+			PublicDispatches: []*syncpoints.PublicDispatch{{
+				PrivateTransactionDispatches: []*syncpoints.DispatchPersisted{
+					{TransactionID: t.pt.ID.String()},
+				},
+				PublicTxs: []*components.PublicTxSubmission{chainTxSubmission},
 			}},
 		}, nil
 	}
@@ -191,13 +211,7 @@ func (t *coordinatorTransaction) buildPublicTxSubmission(ctx context.Context) (*
 	}
 	log.L(ctx).Debugf("DispatchTransactions: creating PublicTxSubmission from %s", t.pt.Signer)
 	publicTx := t.pt.PreparedPublicTransaction
-	// pldapi.PublicTxInput.To stays EVM-only (unmigrated, same as the rest of the public tx API);
-	// public transactions are EVM-only in Paladin today, so unwrap here.
-	toEthAddr, err := t.pt.Address.EthAddress()
-	if err != nil {
-		log.L(ctx).Errorf("failed to resolve public transaction target address %s: %s", t.pt.Address.String(), err)
-		return nil, err
-	}
+	resolvedChainAddr := resolvedAddr.ChainAddress()
 	publicTxSubmission := &components.PublicTxSubmission{
 		Bindings: []*components.PaladinTXReference{{
 			TransactionID:              t.pt.ID,
@@ -206,8 +220,8 @@ func (t *coordinatorTransaction) buildPublicTxSubmission(ctx context.Context) (*
 			TransactionContractAddress: t.pt.Address.String(),
 		}},
 		PublicTxInput: pldapi.PublicTxInput{
-			From:            resolvedAddr,
-			To:              toEthAddr,
+			From:            &resolvedChainAddr,
+			To:              &t.pt.Address,
 			PublicTxOptions: publicTx.PublicTxOptions,
 		},
 	}
@@ -223,6 +237,56 @@ func (t *coordinatorTransaction) buildPublicTxSubmission(ctx context.Context) (*
 		return nil, err
 	}
 	return publicTxSubmission, nil
+}
+
+// buildChainTxSubmission is the chain-neutral counterpart to buildPublicTxSubmission, for domains
+// (e.g. Stellar/Soroban) whose PrepareTransaction returns a PreparedChainTransaction instead of the
+// legacy EVM-only PreparedPublicTransaction shape.
+func (t *coordinatorTransaction) buildChainTxSubmission(ctx context.Context) (*components.PublicTxSubmission, error) {
+	unqualifiedSigner, err := pldtypes.PrivateIdentityLocator(t.pt.Signer).Identity(ctx)
+	if err != nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgSequencerInternalError, err)
+	}
+	soroban := t.pt.PreparedChainTransaction.GetSoroban()
+	if soroban == nil {
+		return nil, i18n.NewError(ctx, msgs.MsgSequencerInternalError, "only Soroban chain-neutral transactions are supported")
+	}
+
+	resolvedKey, err := t.components.KeyManager().ResolveKeyNewDatabaseTX(ctx, unqualifiedSigner, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	if err != nil {
+		log.L(ctx).Errorf("failed to resolve signers for chain transactions: %s", err)
+		return nil, err
+	}
+	resolvedChainAddr, err := pldtypes.NewStellarAccountAddress(resolvedKey.Verifier.Verifier)
+	if err != nil {
+		return nil, err
+	}
+	log.L(ctx).Debugf("DispatchTransactions: creating chain-neutral PublicTxSubmission from %s", t.pt.Signer)
+
+	data, err := baseledgerstellar.BuildInvokeHostFunctionXDR(soroban.ContractId, soroban.FunctionName, soroban.ArgsXdr)
+	if err != nil {
+		log.L(ctx).Errorf("failed to encode host function for chain transaction %s: %s", t.pt.ID, err)
+		return nil, err
+	}
+	chainTxSubmission := &components.PublicTxSubmission{
+		Bindings: []*components.PaladinTXReference{{
+			TransactionID:              t.pt.ID,
+			TransactionType:            pldapi.TransactionTypePrivate.Enum(),
+			TransactionSender:          t.pt.PreAssembly.TransactionSpecification.From,
+			TransactionContractAddress: t.pt.Address.String(),
+		}},
+		PublicTxInput: pldapi.PublicTxInput{
+			From:        &resolvedChainAddr,
+			Data:        pldtypes.HexBytes(data),
+			PayloadKind: pldapi.PublicTxPayloadKindXDRInvokeContractArgs.Enum(),
+		},
+	}
+	log.L(ctx).Tracef("Validating chain transaction %s", t.pt.ID.String())
+	if err := t.components.PublicTxManager().ValidateTransaction(ctx, t.components.Persistence().NOTX(), chainTxSubmission); err != nil {
+		log.L(ctx).Errorf("failed to validate chain transaction %s: %s", t.pt.ID, err)
+		return nil, err
+	}
+	return chainTxSubmission, nil
 }
 
 // mapPreparedTransaction returns prepared transaction refs for distribution

@@ -509,21 +509,11 @@ func (tm *txManager) processNewTransactions(ctx context.Context, dbTX persistenc
 		txis[i] = txi
 		txIDs[i] = txID
 		if tx.Type.V() == pldapi.TransactionTypePublic {
-			// pldapi.PublicTxInput.To is EVM-only (unmigrated, same as the rest of the public tx
-			// API - see publictxmgr's existing DBPublicTxn.To/PublicTx(Input).To split); public
-			// transactions are EVM-only in Paladin today, so unwrap here rather than migrate it.
-			var publicTo *pldtypes.EthAddress
-			if tx.To != nil {
-				publicTo, err = tx.To.EthAddress()
-				if err != nil {
-					return nil, err
-				}
-			}
 			publicTxs = append(publicTxs, &components.PublicTxSubmission{
 				// Public transaction bound 1:1 with our parent transaction
 				Bindings: []*components.PaladinTXReference{{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()}},
 				PublicTxInput: pldapi.PublicTxInput{
-					To:              publicTo,
+					To:              tx.To,
 					Data:            txi.PublicTxData,
 					PublicTxOptions: tx.PublicTxOptions,
 				},
@@ -538,7 +528,7 @@ func (tm *txManager) processNewTransactions(ctx context.Context, dbTX persistenc
 		for i, ptx := range publicTxs {
 			resolvedKey, err := kr.ResolveKey(ctx, publicTxSenders[i], algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 			if err == nil {
-				ptx.From, err = pldtypes.ParseEthAddress(resolvedKey.Verifier.Verifier)
+				ptx.From, err = pldtypes.ParseChainAddress(resolvedKey.Verifier.Verifier)
 			}
 			if err == nil {
 				err = tm.publicTxMgr.ValidateTransaction(ctx, dbTX, ptx)
@@ -868,7 +858,7 @@ func (tm *txManager) UpdateTransaction(ctx context.Context, id uuid.UUID, tx *pl
 	var pubTXID uint64
 	var publicTxData []byte
 	var validatedTransaction *components.ValidatedTransaction
-	var from *pldtypes.EthAddress
+	var from *pldtypes.ChainAddress
 
 	err = tm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
 		pubTXs, err := tm.publicTxMgr.QueryPublicTxForTransactions(ctx, dbTX, []uuid.UUID{id}, nil)
@@ -891,7 +881,7 @@ func (tm *txManager) UpdateTransaction(ctx context.Context, id uuid.UUID, tx *pl
 			publicTxData = validatedTransaction.PublicTxData
 		}
 
-		from, err = pldtypes.ParseEthAddress(oldTX.From)
+		from, err = pldtypes.ParseChainAddress(oldTX.From)
 		if err != nil {
 			identifier := strings.Split(oldTX.From, "@")[0]
 			kr := tm.keyManager.KeyResolverForDBTX(dbTX)
@@ -899,7 +889,7 @@ func (tm *txManager) UpdateTransaction(ctx context.Context, id uuid.UUID, tx *pl
 			resolvedKey, err = kr.ResolveKey(ctx, identifier, algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
 			if err == nil {
 				// this failure should be impossible if key manager is working correctly
-				from, err = pldtypes.ParseEthAddress(resolvedKey.Verifier.Verifier)
+				from, err = pldtypes.ParseChainAddress(resolvedKey.Verifier.Verifier)
 			}
 		}
 		return err

@@ -27,7 +27,10 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/metrics"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/originator"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/syncpoints"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 
@@ -285,35 +288,58 @@ func (sMgr *sequencerManager) evaluateDeployment(ctx context.Context, domain com
 		return i18n.NewError(ctx, msgs.MsgSequencerNonLocalSigningAddr, tx.Signer)
 	}
 
-	keyMgr := sMgr.components.KeyManager()
-	resolvedAddrs, err := keyMgr.ResolveEthAddressBatchNewDatabaseTX(ctx, []string{identifier})
-	if err != nil {
-		return sMgr.revertDeploy(ctx, tx, err)
-	}
-
 	publicTXs := []*components.PublicTxSubmission{
 		{
 			Bindings: []*components.PaladinTXReference{{TransactionID: tx.ID, TransactionType: pldapi.TransactionTypePrivate.Enum()}},
 			PublicTxInput: pldapi.PublicTxInput{
-				From:            resolvedAddrs[0],
 				PublicTxOptions: pldapi.PublicTxOptions{}, // TODO: Consider propagation from paladin transaction input
 			},
 		},
 	}
 
+	keyMgr := sMgr.components.KeyManager()
+
 	if tx.InvokeTransaction != nil {
 		log.L(ctx).Debug("deploying by invoking a base ledger contract")
+
+		resolvedAddrs, err := keyMgr.ResolveEthAddressBatchNewDatabaseTX(ctx, []string{identifier})
+		if err != nil {
+			return sMgr.revertDeploy(ctx, tx, err)
+		}
+		resolvedChainAddr := resolvedAddrs[0].ChainAddress()
+		publicTXs[0].From = &resolvedChainAddr
 
 		data, err := tx.InvokeTransaction.FunctionABI.EncodeCallDataCtx(ctx, tx.InvokeTransaction.Inputs)
 		if err != nil {
 			return sMgr.revertDeploy(ctx, tx, i18n.WrapError(ctx, err, msgs.MsgSequencerEncodeCallDataFailed))
 		}
 		publicTXs[0].Data = pldtypes.HexBytes(data)
-		publicTXs[0].To = &tx.InvokeTransaction.To
+		invokeToChainAddr := tx.InvokeTransaction.To.ChainAddress()
+		publicTXs[0].To = &invokeToChainAddr
 
 	} else if tx.DeployTransaction != nil {
 		// TODO
 		return sMgr.revertDeploy(ctx, tx, i18n.NewError(ctx, msgs.MsgSequencerInternalError, "deployTransaction not implemented"))
+	} else if tx.ChainInvokeTransaction != nil && tx.ChainInvokeTransaction.GetSoroban() != nil {
+		log.L(ctx).Debug("deploying by invoking a Soroban host function")
+		soroban := tx.ChainInvokeTransaction.GetSoroban()
+
+		resolvedKey, err := keyMgr.ResolveKeyNewDatabaseTX(ctx, identifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+		if err != nil {
+			return sMgr.revertDeploy(ctx, tx, err)
+		}
+		resolvedChainAddr, err := pldtypes.NewStellarAccountAddress(resolvedKey.Verifier.Verifier)
+		if err != nil {
+			return sMgr.revertDeploy(ctx, tx, err)
+		}
+		publicTXs[0].From = &resolvedChainAddr
+
+		data, err := baseledgerstellar.BuildInvokeHostFunctionXDR(soroban.ContractId, soroban.FunctionName, soroban.ArgsXdr)
+		if err != nil {
+			return sMgr.revertDeploy(ctx, tx, i18n.WrapError(ctx, err, msgs.MsgSequencerEncodeCallDataFailed))
+		}
+		publicTXs[0].Data = pldtypes.HexBytes(data)
+		publicTXs[0].PayloadKind = pldapi.PublicTxPayloadKindXDRInvokeContractArgs.Enum()
 	} else {
 		return sMgr.revertDeploy(ctx, tx, i18n.NewError(ctx, msgs.MsgSequencerInternalError, "neither InvokeTransaction nor DeployTransaction set"))
 	}

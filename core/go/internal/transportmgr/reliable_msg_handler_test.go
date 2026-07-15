@@ -1210,7 +1210,7 @@ func TestHandlePublicTransactionSubmissionOk(t *testing.T) {
 
 	publicTxSubmission := &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			From:       *pldtypes.RandAddress(),
+			From:       pldtypes.RandAddress().ChainAddress(),
 			Nonce:      confutil.P(pldtypes.HexUint64(1)),
 			Created:    pldtypes.TimestampNow(),
 			Dispatcher: "test-dispatcher",
@@ -1280,7 +1280,7 @@ func TestHandlePublicTransactionSubmissionFail(t *testing.T) {
 
 	publicTxSubmission := &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			From:       *pldtypes.RandAddress(),
+			From:       pldtypes.RandAddress().ChainAddress(),
 			Nonce:      confutil.P(pldtypes.HexUint64(1)),
 			Created:    pldtypes.TimestampNow(),
 			Dispatcher: "test-dispatcher",

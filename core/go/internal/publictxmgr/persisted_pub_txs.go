@@ -125,5 +125,5 @@ type bindingsMatchingSubmission struct {
 }
 
 type txFromOnly struct {
-	From pldtypes.EthAddress
+	From pldtypes.ChainAddress
 }

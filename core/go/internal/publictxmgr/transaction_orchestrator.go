@@ -114,8 +114,8 @@ type orchestrator struct {
 
 	// each transaction orchestrator has its own go routine
 	orchestratorBirthTime       time.Time           // when transaction orchestrator is created
-	orchestratorPollingInterval time.Duration       // between how long the transaction orchestrator will do a poll and trigger none-event driven transaction process actions
-	signingAddress              pldtypes.EthAddress // the signing address of the transaction managed by the current transaction orchestrator
+	orchestratorPollingInterval time.Duration          // between how long the transaction orchestrator will do a poll and trigger none-event driven transaction process actions
+	signingAddress              pldtypes.ChainAddress // the signing address of the transaction managed by the current transaction orchestrator
 
 	// balance check settings
 	hasZeroGasPrice                    bool
@@ -166,7 +166,7 @@ const veryShortMinimum = 50 * time.Millisecond
 
 func NewOrchestrator(
 	ptm *pubTxManager,
-	signingAddress pldtypes.EthAddress,
+	signingAddress pldtypes.ChainAddress,
 	conf *pldconf.PublicTxManagerConfig,
 ) *orchestrator {
 	ctx := ptm.ctx
@@ -321,7 +321,7 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 	// We need to ensure we have the next ordering key(s) to allocate
 	if oc.channelOrderingKeys == nil || time.Since(oc.lastNonceAlloc) > oc.nonceCacheTimeout {
 		log.L(ctx).Debugf("no cached ordering keys, or expired for %s (cached=%v)", oc.signingAddress, oc.lastNonceAlloc)
-		keys, err := oc.chainSubmitter.AssignOrderingKeys(ctx, oc.signingAddress.ChainAddress())
+		keys, err := oc.chainSubmitter.AssignOrderingKeys(ctx, oc.signingAddress)
 		if err != nil {
 			return err
 		}

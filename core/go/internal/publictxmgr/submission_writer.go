@@ -71,10 +71,7 @@ func (sw *submissionWriter) runBatch(ctx context.Context, tx persistence.DBTX, v
 
 			publicTXSubmission := &pldapi.PublicTxWithBinding{}
 			nonce := pldtypes.HexUint64(*value.SequencerTXReference.Binding.Nonce)
-			// pldapi.PublicTx.From is EVM-only - the sequencer wire format this feeds into
-			// (HandlePublicTXSubmission) is not yet chain-neutral, so this parse is expected to
-			// succeed only for EVM public transactions (the only kind reaching this path today).
-			from, err := pldtypes.ParseEthAddress(value.from)
+			from, err := pldtypes.ParseChainAddress(value.from)
 			if err != nil {
 				return nil, err
 			}

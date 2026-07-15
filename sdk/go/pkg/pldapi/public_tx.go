@@ -76,16 +76,16 @@ func (k PublicTxPayloadKind) Default() string {
 }
 
 type PublicTxInput struct {
-	From        *pldtypes.EthAddress               `docstruct:"PublicTxInput" json:"from"`                  // resolved signing account
-	To          *pldtypes.EthAddress               `docstruct:"PublicTxInput" json:"to,omitempty"`          // target contract address, or nil for deploy
+	From        *pldtypes.ChainAddress              `docstruct:"PublicTxInput" json:"from"`                  // resolved signing account
+	To          *pldtypes.ChainAddress              `docstruct:"PublicTxInput" json:"to,omitempty"`          // target contract address, or nil for deploy
 	Data        pldtypes.HexBytes                  `docstruct:"PublicTxInput" json:"data,omitempty"`        // the pre-encoded calldata
 	PayloadKind pldtypes.Enum[PublicTxPayloadKind] `docstruct:"PublicTxInput" json:"payloadKind,omitempty"` // empty means the base ledger's implicit default kind
 	PublicTxOptions
 }
 
 type PublicTxSubmission struct {
-	From  pldtypes.EthAddress `docstruct:"PublicTxSubmission" json:"from"`
-	Nonce pldtypes.HexUint64  `docstruct:"PublicTxSubmission" json:"nonce"`
+	From  pldtypes.ChainAddress `docstruct:"PublicTxSubmission" json:"from"`
+	Nonce pldtypes.HexUint64    `docstruct:"PublicTxSubmission" json:"nonce"`
 	PublicTxSubmissionData
 }
 
@@ -97,10 +97,10 @@ type PublicTxSubmissionData struct {
 
 type PublicTx struct {
 	LocalID         *uint64                            `docstruct:"PublicTx" json:"localId,omitempty"` // only a local DB identifier for the public transaction. Not directly related to nonce order
-	To              *pldtypes.EthAddress               `docstruct:"PublicTx" json:"to,omitempty"`
+	To              *pldtypes.ChainAddress             `docstruct:"PublicTx" json:"to,omitempty"`
 	Data            pldtypes.HexBytes                  `docstruct:"PublicTx" json:"data,omitempty"`
 	PayloadKind     pldtypes.Enum[PublicTxPayloadKind] `docstruct:"PublicTx" json:"payloadKind,omitempty"` // empty means the base ledger's implicit default kind
-	From            pldtypes.EthAddress                `docstruct:"PublicTx" json:"from"`
+	From            pldtypes.ChainAddress              `docstruct:"PublicTx" json:"from"`
 	Nonce           *pldtypes.HexUint64                `docstruct:"PublicTx" json:"nonce"`
 	Created         pldtypes.Timestamp                 `docstruct:"PublicTx" json:"created"`
 	Dispatcher      string                             `docstruct:"PublicTx" json:"dispatcher"`

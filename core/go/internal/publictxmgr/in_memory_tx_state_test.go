@@ -34,6 +34,7 @@ func NewTestInMemoryTxState(t *testing.T) InMemoryTxStateManager {
 	oldFrom := pldtypes.MustEthAddress("0x4e598f6e918321dd47c86e7a077b4ab0e7414846")
 	oldTxHash := pldtypes.RandBytes32()
 	oldTo := pldtypes.MustEthAddress("0x6cee73cf4d5b0ac66ce2d1c0617bec4bedd09f39")
+	oldToChain := oldTo.ChainAddress()
 	oldNonce := pldtypes.HexUint64(1)
 	oldGasLimit := pldtypes.HexUint64(2000)
 	oldValue := pldtypes.Uint64ToUint256(200)
@@ -43,7 +44,7 @@ func NewTestInMemoryTxState(t *testing.T) InMemoryTxStateManager {
 	testManagedTx := &DBPublicTxn{
 		Created: oldTime,
 		From:    oldFrom.ChainAddress(),
-		To:      ethAddressChainAddress(oldTo),
+		To:      &oldToChain,
 		Nonce:   (*uint64)(&oldNonce),
 		Gas:     oldGasLimit.Uint64(),
 		Value:   oldValue,
@@ -72,6 +73,7 @@ func TestSettersAndGetters(t *testing.T) {
 	oldFrom := pldtypes.MustEthAddress("0xb3d9cf8e163bbc840195a97e81f8a34e295b8f39")
 	oldTxHash := pldtypes.Bytes32Keccak([]byte("0x00000"))
 	oldTo := pldtypes.MustEthAddress("0x1f9090aae28b8a3dceadf281b0f12828e676c326")
+	oldToChain := oldTo.ChainAddress()
 	oldNonce := pldtypes.HexUint64(1)
 	oldGasLimit := pldtypes.HexUint64(2000)
 	oldValue := pldtypes.Uint64ToUint256(200)
@@ -82,7 +84,7 @@ func TestSettersAndGetters(t *testing.T) {
 	testManagedTx := &DBPublicTxn{
 		Created: oldTime,
 		From:    oldFrom.ChainAddress(),
-		To:      ethAddressChainAddress(oldTo),
+		To:      &oldToChain,
 		Nonce:   (*uint64)(&oldNonce),
 		Gas:     uint64(oldGasLimit),
 		Value:   oldValue,

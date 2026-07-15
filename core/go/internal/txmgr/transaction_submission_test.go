@@ -1519,7 +1519,7 @@ func TestUpdateTransactionKeyParseError(t *testing.T) {
 		},
 		ABI: abi.ABI{{Type: abi.Function, Name: "set", Inputs: abi.ParameterArray{{Type: "uint256", Name: "value"}}}},
 	})
-	assert.ErrorContains(t, err, "bad address")
+	assert.ErrorContains(t, err, "unsupported chain address format")
 }
 
 func TestUpdateTransactionCallPublicTXUpdate(t *testing.T) {
@@ -1575,11 +1575,12 @@ func TestUpdateTransactionCallPublicTXUpdate(t *testing.T) {
 					}},
 				}, nil)
 			pubTxData, _ := hex.DecodeString("60fe47b1000000000000000000000000000000000000000000000000000000000000002e")
+			fromChainAddr := from.ChainAddress()
 			mockUpdateTX := mc.publicTxMgr.On("UpdateTransaction",
 				mock.Anything,
 				id,
 				uint64(1),
-				from,
+				&fromChainAddr,
 				tx,
 				pubTxData,
 				mock.Anything,

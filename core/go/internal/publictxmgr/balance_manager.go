@@ -35,21 +35,21 @@ type BalanceManagerWithInMemoryTracking struct {
 	pubTxMgr *pubTxManager
 
 	// balance cache is used to store cached balances of any address
-	balanceCache cache.Cache[pldtypes.EthAddress, *big.Int]
+	balanceCache cache.Cache[pldtypes.ChainAddress, *big.Int]
 
 	// a map of signing addresses and a boolean to indicate whether balance manager should fetch
 	// the balance of the signing address from the chain
-	retrieveAddressBalanceMap    map[pldtypes.EthAddress]bool
+	retrieveAddressBalanceMap    map[pldtypes.ChainAddress]bool
 	retrieveAddressBalanceMapMux sync.Mutex
 }
 
-func (af *BalanceManagerWithInMemoryTracking) NotifyRetrieveAddressBalance(ctx context.Context, address pldtypes.EthAddress) {
+func (af *BalanceManagerWithInMemoryTracking) NotifyRetrieveAddressBalance(ctx context.Context, address pldtypes.ChainAddress) {
 	af.retrieveAddressBalanceMapMux.Lock()
 	defer af.retrieveAddressBalanceMapMux.Unlock()
 	af.retrieveAddressBalanceMap[address] = true
 }
 
-func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Context, address pldtypes.EthAddress) (*AddressAccount, error) {
+func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Context, address pldtypes.ChainAddress) (*AddressAccount, error) {
 	af.retrieveAddressBalanceMapMux.Lock()
 	defer af.retrieveAddressBalanceMapMux.Unlock()
 	log.L(ctx).Debugf("Retrieving balance for address %s ", address)
@@ -60,7 +60,7 @@ func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Cont
 	if balanceChangedOnChain || cachedAddressBalance == nil {
 		log.L(ctx).Debugf("Retrieving balance for address %s from connector", address)
 		// fetch the latest account info from the base ledger
-		accountInfo, err := af.pubTxMgr.baseLedger.GetAccountInfo(ctx, address.ChainAddress())
+		accountInfo, err := af.pubTxMgr.baseLedger.GetAccountInfo(ctx, address)
 		if err != nil {
 			log.L(ctx).Errorf("Failed retrieving balance for address %s from connector due to: %+v", address, err)
 			return nil, err
@@ -88,7 +88,7 @@ func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Cont
 func NewBalanceManagerWithInMemoryTracking(ctx context.Context, conf *pldconf.PublicTxManagerConfig, publicTxMgr *pubTxManager) BalanceManager {
 	return &BalanceManagerWithInMemoryTracking{
 		pubTxMgr:                  publicTxMgr,
-		balanceCache:              cache.NewCache[pldtypes.EthAddress, *big.Int](&conf.BalanceManager.Cache, &pldconf.PublicTxManagerDefaults.BalanceManager.Cache),
-		retrieveAddressBalanceMap: make(map[pldtypes.EthAddress]bool),
+		balanceCache:              cache.NewCache[pldtypes.ChainAddress, *big.Int](&conf.BalanceManager.Cache, &pldconf.PublicTxManagerDefaults.BalanceManager.Cache),
+		retrieveAddressBalanceMap: make(map[pldtypes.ChainAddress]bool),
 	}
 }

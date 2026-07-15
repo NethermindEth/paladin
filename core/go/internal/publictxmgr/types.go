@@ -121,8 +121,8 @@ const (
 )
 
 type BalanceManager interface {
-	GetAddressBalance(ctx context.Context, address pldtypes.EthAddress) (*AddressAccount, error)
-	NotifyRetrieveAddressBalance(ctx context.Context, address pldtypes.EthAddress)
+	GetAddressBalance(ctx context.Context, address pldtypes.ChainAddress) (*AddressAccount, error)
+	NotifyRetrieveAddressBalance(ctx context.Context, address pldtypes.ChainAddress)
 }
 
 // AddressAccount provides the following feature:
@@ -130,7 +130,7 @@ type BalanceManager interface {
 // - record the total spent of a series of transaction emitted by this signing address
 // - provide an interface to top up the signing address when spent is higher than the balance
 type AddressAccount struct {
-	Address               pldtypes.EthAddress
+	Address               pldtypes.ChainAddress
 	Balance               *big.Int
 	SpentTransactionCount int
 	MinCost               *big.Int

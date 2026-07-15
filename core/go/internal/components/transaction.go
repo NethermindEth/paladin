@@ -103,7 +103,11 @@ type PrivateTransaction struct {
 	Signer                     string                   `json:"signer"`
 	PreparedPublicTransaction  *pldapi.TransactionInput `json:"-"`
 	PreparedPrivateTransaction *pldapi.TransactionInput `json:"-"`
-	PreparedMetadata           pldtypes.RawJSON         `json:"-"`
+	// PreparedChainTransaction is the chain-neutral counterpart to PreparedPublicTransaction, for v2
+	// domains (e.g. Stellar/Soroban) that return PrepareTransactionResponse.ChainTransaction instead
+	// of the legacy EVM-only Transaction shape.
+	PreparedChainTransaction *prototk.PreparedChainTransaction `json:"-"`
+	PreparedMetadata         pldtypes.RawJSON                  `json:"-"`
 }
 
 // CleanUpPostAssemblyData releases the heavy post-assembly and prepared-dispatch
@@ -135,6 +139,10 @@ type PrivateContractDeploy struct {
 	Signer            string
 	InvokeTransaction *EthTransaction
 	DeployTransaction *EthDeployTransaction
+	// ChainInvokeTransaction is the chain-neutral counterpart to InvokeTransaction/DeployTransaction,
+	// for v2 domains (e.g. Stellar/Soroban) that return PrepareDeployResponse.ChainTransaction instead
+	// of the legacy EVM-only Transaction/Deploy shapes.
+	ChainInvokeTransaction *prototk.PreparedChainTransaction
 }
 
 type PrivateTransactionEndorseRequest struct {

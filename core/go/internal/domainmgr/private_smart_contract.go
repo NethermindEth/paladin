@@ -514,6 +514,17 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 		return err
 	}
 
+	if res.ChainTransaction != nil {
+		tx.PreparedChainTransaction = res.ChainTransaction
+		if signer := res.ChainTransaction.GetRequiredSigner(); signer != "" {
+			tx.Signer = signer
+		}
+		if res.Metadata != nil {
+			tx.PreparedMetadata = pldtypes.RawJSON(*res.Metadata)
+		}
+		return nil
+	}
+
 	var functionABI abi.Entry
 	if err := json.Unmarshal(([]byte)(res.Transaction.FunctionAbiJson), &functionABI); err != nil {
 		return i18n.WrapError(dCtx.Ctx(), err, msgs.MsgDomainPrivateAbiJsonInvalid)

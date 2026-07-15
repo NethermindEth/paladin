@@ -30,7 +30,7 @@ const (
 	ActionCompleted
 )
 
-func (ptm *pubTxManager) persistSuspendedFlag(ctx context.Context, from pldtypes.EthAddress, nonce uint64, suspended bool) error {
+func (ptm *pubTxManager) persistSuspendedFlag(ctx context.Context, from pldtypes.ChainAddress, nonce uint64, suspended bool) error {
 	log.L(ctx).Infof("Setting suspend status to '%t' for transaction %s:%d", suspended, from, nonce)
 	return ptm.p.DB().
 		WithContext(ctx).
@@ -47,7 +47,7 @@ func (ptm *pubTxManager) persistSuspendedFlag(ctx context.Context, from pldtypes
 // of from and nonce as a composite primary key. This isn't a problem for dispatching a confirm action because a
 // confirmed transaction must have a nonce, but it isn't guaranteed to work for suspend and resume. Those actions
 // have been copied across but aren't wired up above this level so they aren't obviously broken yet.
-func (ptm *pubTxManager) dispatchAction(ctx context.Context, from pldtypes.EthAddress, nonce uint64, action AsyncRequestType) error {
+func (ptm *pubTxManager) dispatchAction(ctx context.Context, from pldtypes.ChainAddress, nonce uint64, action AsyncRequestType) error {
 	ptm.inFlightOrchestratorMux.Lock()
 	defer ptm.inFlightOrchestratorMux.Unlock()
 	inFlightOrchestrator, orchestratorInFlight := ptm.inFlightOrchestrators[from]

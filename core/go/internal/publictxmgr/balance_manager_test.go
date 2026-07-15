@@ -39,7 +39,7 @@ func TestNotifyRetrieveAddressBalance(t *testing.T) {
 	ctx, bm, _, _, done := newTestBalanceManager(t)
 	defer done()
 
-	exampleAddr := *pldtypes.RandAddress()
+	exampleAddr := pldtypes.RandAddress().ChainAddress()
 	assert.Equal(t, false, bm.retrieveAddressBalanceMap[exampleAddr])
 	bm.NotifyRetrieveAddressBalance(ctx, exampleAddr)
 	assert.Equal(t, true, bm.retrieveAddressBalanceMap[exampleAddr])
@@ -52,15 +52,16 @@ func TestGetAddressBalance(t *testing.T) {
 	const balanceOld = uint64(400)
 	const balanceNew = uint64(500)
 
-	exampleAddr := *pldtypes.RandAddress()
+	exampleEthAddr := *pldtypes.RandAddress()
+	exampleAddr := exampleEthAddr.ChainAddress()
 
-	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
+	m.ethClient.On("GetBalance", mock.Anything, exampleEthAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleEthAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 
-	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceNew), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
+	m.ethClient.On("GetBalance", mock.Anything, exampleEthAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceNew), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleEthAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 
-	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(nil, errors.New("pop")).Once()
+	m.ethClient.On("GetBalance", mock.Anything, exampleEthAddr, "latest").Return(nil, errors.New("pop")).Once()
 
 	addressAccount, err := bm.GetAddressBalance(ctx, exampleAddr)
 	require.NoError(t, err)
@@ -88,12 +89,13 @@ func TestAddressAccountSpend(t *testing.T) {
 	ctx, bm, _, m, done := newTestBalanceManager(t)
 	defer done()
 
-	exampleAddr := *pldtypes.RandAddress()
+	exampleEthAddr := *pldtypes.RandAddress()
+	exampleAddr := exampleEthAddr.ChainAddress()
 
 	const balanceOld = uint64(400)
 
-	m.ethClient.On("GetBalance", mock.Anything, exampleAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
-	m.ethClient.On("GetTransactionCount", mock.Anything, exampleAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
+	m.ethClient.On("GetBalance", mock.Anything, exampleEthAddr, "latest").Return(pldtypes.Uint64ToUint256(balanceOld), nil).Once()
+	m.ethClient.On("GetTransactionCount", mock.Anything, exampleEthAddr).Return(confutil.P(pldtypes.HexUint64(0)), nil).Once()
 	addressAccount, err := bm.GetAddressBalance(ctx, exampleAddr)
 	require.NoError(t, err)
 	assert.NotNil(t, addressAccount)

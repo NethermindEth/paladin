@@ -188,7 +188,7 @@ func TestPublicTransactionLifecycle(t *testing.T) {
 	publicTxns = map[uuid.UUID][]*pldapi.PublicTx{
 		tx1ID: {
 			{
-				From:  *senderAddr,
+				From:  senderAddr.ChainAddress(),
 				Nonce: confutil.P(pldtypes.HexUint64(111222333)),
 			},
 		},
@@ -212,7 +212,7 @@ func TestPublicTransactionLifecycle(t *testing.T) {
 	assert.Equal(t, tx0ID, txns[0].DependsOn[0])
 	assert.Equal(t, `{"0":"12345"}`, txns[0].Data.String())
 	assert.Equal(t, "(uint256)", txns[0].Function)
-	assert.Equal(t, *senderAddr, txns[0].Public[0].From)
+	assert.Equal(t, senderAddr.ChainAddress(), txns[0].Public[0].From)
 	assert.Equal(t, uint64(111222333), txns[0].Public[0].Nonce.Uint64())
 
 	// Check full=false
@@ -265,6 +265,7 @@ func TestPublicTransactionLifecycle(t *testing.T) {
 	tx2ID := txIDs[0]
 	publicTxns[tx2ID] = []*pldapi.PublicTx{{
 		LocalID: confutil.P(uint64(1)),
+		From:    senderAddr.ChainAddress(),
 	}}
 	var tx2 *pldapi.TransactionFull
 	err = rpcClient.CallRPC(ctx, &tx2, "ptx_getTransactionFull", tx2ID)
@@ -423,7 +424,7 @@ func TestPublicTransactionPassthroughQueries(t *testing.T) {
 	nonce, _ := rand.Int(rand.Reader, big.NewInt(10000000))
 	tx := &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			From:  pldtypes.EthAddress(pldtypes.RandBytes(20)),
+			From:  pldtypes.EthAddress(pldtypes.RandBytes(20)).ChainAddress(),
 			Nonce: confutil.P(pldtypes.HexUint64(nonce.Uint64())),
 		},
 		PublicTxBinding: pldapi.PublicTxBinding{Transaction: uuid.New(), TransactionType: pldapi.TransactionTypePublic.Enum()},

@@ -70,19 +70,19 @@ func (ptm *pubTxManager) getOrchestratorCount() int {
 	return len(ptm.inFlightOrchestrators)
 }
 
-func (ptm *pubTxManager) getOrchestratorForAddress(signer pldtypes.EthAddress) *orchestrator {
+func (ptm *pubTxManager) getOrchestratorForAddress(signer pldtypes.ChainAddress) *orchestrator {
 	ptm.inFlightOrchestratorMux.Lock()
 	defer ptm.inFlightOrchestratorMux.Unlock()
 	return ptm.inFlightOrchestrators[signer]
 }
 
-func (ptm *pubTxManager) flushStaleOrchestratorsGetCount(ctx context.Context) (inFlightSigningAddresses []pldtypes.EthAddress, stateCounts map[string]int, totalAfterFlush int) {
+func (ptm *pubTxManager) flushStaleOrchestratorsGetCount(ctx context.Context) (inFlightSigningAddresses []pldtypes.ChainAddress, stateCounts map[string]int, totalAfterFlush int) {
 	ptm.inFlightOrchestratorMux.Lock()
 	defer ptm.inFlightOrchestratorMux.Unlock()
 
 	oldInFlight := ptm.inFlightOrchestrators
-	ptm.inFlightOrchestrators = make(map[pldtypes.EthAddress]*orchestrator)
-	inFlightSigningAddresses = make([]pldtypes.EthAddress, 0, len(oldInFlight))
+	ptm.inFlightOrchestrators = make(map[pldtypes.ChainAddress]*orchestrator)
+	inFlightSigningAddresses = make([]pldtypes.ChainAddress, 0, len(oldInFlight))
 
 	stateCounts = make(map[string]int)
 	for _, sName := range AllOrchestratorStates {

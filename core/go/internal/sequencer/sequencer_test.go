@@ -275,8 +275,9 @@ func TestSequencerManager_evaluateDeployment_DeployTransactionNotImplemented(t *
 		},
 	}
 	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil).Once()
-	from := pldtypes.RandAddress()
-	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return([]*pldtypes.EthAddress{from}, nil).Once()
+	// No ResolveEthAddressBatchNewDatabaseTX expectation: evaluateDeployment now resolves the
+	// signer per-branch (InvokeTransaction/ChainInvokeTransaction), and DeployTransaction errors
+	// out ("not implemented") before ever needing a resolved address.
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
 	err := sm.evaluateDeployment(ctx, mockDomain, tx)
@@ -291,8 +292,9 @@ func TestSequencerManager_evaluateDeployment_NeitherInvokeNorDeploy(t *testing.T
 	mockDomain := componentsmocks.NewDomain(t)
 	tx := &components.PrivateContractDeploy{ID: uuid.New(), Signer: "signer@test-node"}
 	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil).Once()
-	from := pldtypes.RandAddress()
-	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return([]*pldtypes.EthAddress{from}, nil).Once()
+	// No ResolveEthAddressBatchNewDatabaseTX expectation: evaluateDeployment now resolves the
+	// signer per-branch, and this case (neither Invoke/Deploy/ChainInvoke set) errors out before
+	// ever needing a resolved address.
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
 	err := sm.evaluateDeployment(ctx, mockDomain, tx)
@@ -684,6 +686,7 @@ func TestSequencerManager_HandlePublicTXSubmission_Deploy(t *testing.T) {
 func TestSequencerManager_HandlePublicTXSubmission_LocalSender(t *testing.T) {
 	ctx := context.Background()
 	contractAddr := pldtypes.RandAddress()
+	contractChainAddr := contractAddr.ChainAddress()
 	txHash := pldtypes.RandBytes32()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
@@ -697,7 +700,7 @@ func TestSequencerManager_HandlePublicTXSubmission_LocalSender(t *testing.T) {
 
 	err := sm.HandlePublicTXSubmission(ctx, dbTX, txID, &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			To:              contractAddr,
+			To:              &contractChainAddr,
 			TransactionHash: &txHash,
 		},
 		PublicTxBinding: pldapi.PublicTxBinding{
@@ -711,6 +714,7 @@ func TestSequencerManager_HandlePublicTXSubmission_LocalSender(t *testing.T) {
 func TestSequencerManager_HandlePublicTXSubmission_RemoteSender(t *testing.T) {
 	ctx := context.Background()
 	contractAddr := pldtypes.RandAddress()
+	contractChainAddr := contractAddr.ChainAddress()
 	txHash := pldtypes.RandBytes32()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
@@ -725,7 +729,7 @@ func TestSequencerManager_HandlePublicTXSubmission_RemoteSender(t *testing.T) {
 
 	err := sm.HandlePublicTXSubmission(ctx, dbTX, txID, &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			To:              contractAddr,
+			To:              &contractChainAddr,
 			TransactionHash: &txHash,
 		},
 		PublicTxBinding: pldapi.PublicTxBinding{
@@ -739,6 +743,7 @@ func TestSequencerManager_HandlePublicTXSubmission_RemoteSender(t *testing.T) {
 func TestSequencerManager_HandlePublicTXSubmission_RemoteSenderError(t *testing.T) {
 	ctx := context.Background()
 	contractAddr := pldtypes.RandAddress()
+	contractChainAddr := contractAddr.ChainAddress()
 	txHash := pldtypes.RandBytes32()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
@@ -753,7 +758,7 @@ func TestSequencerManager_HandlePublicTXSubmission_RemoteSenderError(t *testing.
 
 	err := sm.HandlePublicTXSubmission(ctx, dbTX, txID, &pldapi.PublicTxWithBinding{
 		PublicTx: &pldapi.PublicTx{
-			To:              contractAddr,
+			To:              &contractChainAddr,
 			TransactionHash: &txHash,
 		},
 		PublicTxBinding: pldapi.PublicTxBinding{
@@ -1548,6 +1553,7 @@ func TestSequencerManager_handleTx_LoadSequencerError(t *testing.T) {
 func TestSequencerManager_HandlePublicTXSubmission_InvalidSender(t *testing.T) {
 	ctx := context.Background()
 	contractAddr := pldtypes.RandAddress()
+	contractChainAddr := contractAddr.ChainAddress()
 	txHash := pldtypes.RandBytes32()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
@@ -1556,7 +1562,7 @@ func TestSequencerManager_HandlePublicTXSubmission_InvalidSender(t *testing.T) {
 	sm.sequencers[contractAddr.String()] = seq
 	mocks.coordinator.EXPECT().TryQueueEvent(ctx, mock.Anything).Return(true).Once()
 	err := sm.HandlePublicTXSubmission(ctx, dbTX, uuid.New(), &pldapi.PublicTxWithBinding{
-		PublicTx: &pldapi.PublicTx{To: contractAddr, TransactionHash: &txHash},
+		PublicTx: &pldapi.PublicTx{To: &contractChainAddr, TransactionHash: &txHash},
 		PublicTxBinding: pldapi.PublicTxBinding{
 			TransactionContractAddress: contractAddr.String(),
 			TransactionSender:          "not-a-valid-locator",
