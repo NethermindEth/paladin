@@ -52,6 +52,8 @@ func (e *evmChainIO) ChainKind() string { return "evm" }
 func (e *evmChainIO) SigningAlgorithm() string { return algorithms.ECDSA_SECP256K1 }
 func (e *evmChainIO) VerifierType() string     { return verifiers.ETH_ADDRESS }
 
+func (e *evmChainIO) NetworkPassphrase() string { return "" }
+
 func (e *evmChainIO) ResolveIdentity(ctx context.Context, errorDescription, lookup string, verifierList []*prototk.ResolvedVerifier) (*identityPair, error) {
 	verifier := domain.FindVerifier(lookup, algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS, verifierList)
 	if verifier == nil {

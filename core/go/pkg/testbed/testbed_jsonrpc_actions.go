@@ -106,7 +106,12 @@ func (tb *testbed) rpcDeployBytecode() rpcserver.RPCHandler {
 		if err != nil {
 			return nil, err
 		}
-		return receipt.ContractAddress.Address0xHex(), nil
+		// testbed is documented EVM-only tooling - unwrap explicitly rather than assume.
+		ethAddr, err := receipt.ContractAddress.EthAddress()
+		if err != nil {
+			return nil, err
+		}
+		return ethAddr.Address0xHex(), nil
 	})
 }
 
@@ -177,7 +182,13 @@ func (tb *testbed) rpcTestbedDeploy() rpcserver.RPCHandler {
 			return nil, err
 		}
 		addr := psc.Address()
-		return &addr, nil
+		// rpcTestbedDeploy's return type stays *pldtypes.EthAddress (this RPC method's own public
+		// signature, unchanged) - testbed is documented EVM-only tooling, so unwrap explicitly.
+		ethAddr, err := addr.EthAddress()
+		if err != nil {
+			return nil, err
+		}
+		return ethAddr, nil
 	})
 }
 

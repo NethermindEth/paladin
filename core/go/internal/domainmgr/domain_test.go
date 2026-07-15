@@ -31,6 +31,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/mocks/blockindexermocks"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
+	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
@@ -176,7 +177,7 @@ type testDomainContext struct {
 	d               *domain
 	tp              *testPlugin
 	c               *inFlightDomainRequest
-	contractAddress pldtypes.EthAddress
+	contractAddress pldtypes.ChainAddress
 }
 
 func (tp *testPlugin) Initialized() {
@@ -229,7 +230,7 @@ func newTestDomain(t *testing.T, realDB bool, domainConfig *prototk.DomainConfig
 
 	var c *inFlightDomainRequest
 	var mdc *componentsmocks.DomainContext
-	addr := *pldtypes.RandAddress()
+	addr := pldtypes.RandAddress().ChainAddress()
 	if realDB {
 		dCtx := dm.stateStore.NewDomainContext(ctx, tp.d, addr)
 		c = tp.d.newInFlightDomainRequest(dm.persistence.NOTX(), dCtx, true /* readonly unless modified by test */)
@@ -1217,7 +1218,7 @@ func TestSendTransactionFailCases(t *testing.T) {
 			ParamsJson:      `{}`,
 		},
 	})
-	require.ErrorContains(t, err, "bad address")
+	require.ErrorContains(t, err, "unsupported chain address format")
 
 	_, err = td.d.SendTransaction(td.ctx, &prototk.SendTransactionRequest{
 		StateQueryContext: td.c.id,
@@ -1586,7 +1587,7 @@ func TestDomainInitPrivacyGroupOk(t *testing.T) {
 	require.Equal(t, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			From:   "some.signer",
-			To:     addr,
+			To:     confutil.P(addr.ChainAddress()),
 			Type:   pldapi.TransactionTypePublic.Enum(),
 			Data:   pldtypes.RawJSON(`{"tx": "input"}`),
 			Domain: "test1",
@@ -1643,7 +1644,7 @@ func TestDomainInitPrivacyGroupBadResFromAddr(t *testing.T) {
 
 	domain := td.d
 	_, err := domain.InitPrivacyGroup(td.ctx, pldtypes.RandBytes(32), &pldapi.PrivacyGroupGenesisState{})
-	assert.Regexp(t, "bad address", err)
+	assert.Regexp(t, "unsupported chain address format", err)
 
 }
 
@@ -2059,7 +2060,12 @@ func TestDomainInitAcceptsStellarChainKind(t *testing.T) {
 	})
 	defer dmDone()
 
-	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	var capturedStream *blockindexer.InternalEventStream
+	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			capturedStream = args.Get(2).(*blockindexer.InternalEventStream)
+		}).
+		Return(nil, nil).Maybe()
 
 	tp := newTestPlugin(nil)
 	tp.Functions = &plugintk.DomainAPIFunctions{
@@ -2083,6 +2089,15 @@ func TestDomainInitAcceptsStellarChainKind(t *testing.T) {
 
 	require.Nil(t, tp.d.initError.Load())
 	require.True(t, tp.d.Initialized())
+
+	// The chain-kind branch in processDomainConfig (chapter 14 step 5) must describe the
+	// registry event source by selector, not ABI, on a Stellar-configured node - or the Stellar
+	// ledger indexer's event stream engine will never match any SaladinFactory.register event.
+	require.NotNil(t, capturedStream)
+	require.Len(t, capturedStream.Definition.Sources, 1)
+	source := capturedStream.Definition.Sources[0]
+	assert.Empty(t, source.ABI)
+	assert.Equal(t, []pldtypes.Bytes32{stellarRegisterSelector}, source.Selectors)
 }
 
 func TestEnqueueCompletionsContextDone(t *testing.T) {

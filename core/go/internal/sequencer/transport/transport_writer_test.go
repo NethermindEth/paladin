@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/common"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator/grapher"
@@ -42,7 +43,7 @@ import (
 
 func TestNewTransportWriter(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 
 	tw := NewTransportWriter(ctx, contractAddress, "local-node", mockTM, func(_ context.Context, _ *components.ReceivedMessage) {})
@@ -51,7 +52,7 @@ func TestNewTransportWriter(t *testing.T) {
 
 func TestStartLoopbackWriter_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 
@@ -65,7 +66,7 @@ func TestStartLoopbackWriter_ContextCancelled(t *testing.T) {
 
 func TestStartLoopbackWriter_QueueClosed(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -90,7 +91,7 @@ func TestStartLoopbackWriter_QueueClosed(t *testing.T) {
 
 func TestLoopbackSender_SendError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -127,7 +128,7 @@ func TestLoopbackSender_SendError(t *testing.T) {
 func TestWaitForDone_ContextExpired(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -159,7 +160,7 @@ func TestWaitForDone_ContextExpired(t *testing.T) {
 
 func TestSend_EmptyNode(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
 
@@ -183,7 +184,7 @@ func TestSend_ContextCancelled_LoopbackQueueFull(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -213,7 +214,7 @@ func TestSend_WriterContextCancelled_LoopbackQueueFull(t *testing.T) {
 	twCtx, twCancel := context.WithCancel(context.Background())
 	twCancel() // cancel tw context immediately
 
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockTM.On("LocalNodeName").Return("local-node").Maybe()
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -243,7 +244,7 @@ func TestSendTransactionSubmitted_Success(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txHashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 	txHash := &txHashVal
 
@@ -274,7 +275,7 @@ func TestSendTransactionSubmitted_Success(t *testing.T) {
 			return false
 		}
 		// Verify contract address
-		if txSubmitted.ContractAddress != contractAddress.HexString() {
+		if txSubmitted.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		// Verify hash
@@ -304,7 +305,7 @@ func TestSendTransactionSubmitted_Loopback(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "local-node" // Same as local node name
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txHashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 	txHash := &txHashVal
 
@@ -335,7 +336,7 @@ func TestSendTransactionSubmitted_Loopback(t *testing.T) {
 		err := proto.Unmarshal(msg.Payload, &txSubmitted)
 		require.NoError(t, err)
 		assert.Equal(t, txID.String(), txSubmitted.TransactionId)
-		assert.Equal(t, contractAddress.HexString(), txSubmitted.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), txSubmitted.ContractAddress)
 		assert.Equal(t, txHash.Bytes(), txSubmitted.Hash)
 	default:
 		t.Fatal("Expected message in loopback queue")
@@ -372,7 +373,7 @@ func TestSendTransactionSubmitted_SendError(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txHashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 	txHash := &txHashVal
 
@@ -397,7 +398,7 @@ func TestSendTransactionSubmitted_VerifyProtoFields(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txHashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 	txHash := &txHashVal
 
@@ -428,7 +429,7 @@ func TestSendTransactionSubmitted_VerifyProtoFields(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, txID.String(), txSubmitted.TransactionId)
-	assert.Equal(t, contractAddress.HexString(), txSubmitted.ContractAddress)
+	assert.Equal(t, contractAddress.StorageString(), txSubmitted.ContractAddress)
 	assert.Equal(t, txHash.Bytes(), txSubmitted.Hash)
 	assert.NotEmpty(t, txSubmitted.Id) // Should have a generated UUID
 
@@ -440,7 +441,7 @@ func TestSendTransactionSubmitted_VerifyProtoFields(t *testing.T) {
 
 func TestSendTransactionSubmitted_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txHashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 
 	orig := protoMarshalFn
@@ -471,7 +472,7 @@ func TestSendTransactionSubmitted_ProtoMarshalError(t *testing.T) {
 func TestSendDelegationRequest_Success(t *testing.T) {
 	ctx := context.Background()
 	coordinatorNode := "coordinator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	blockHeight := uint64(100)
 
 	tx1ID := uuid.New()
@@ -534,7 +535,7 @@ func TestSendDelegationRequest_Success(t *testing.T) {
 func TestSendDelegationRequest_SendError(t *testing.T) {
 	ctx := context.Background()
 	coordinatorNode := "coordinator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -556,7 +557,7 @@ func TestSendDelegationRequest_SendError(t *testing.T) {
 func TestSendDelegationRequest_EmptyTransactions(t *testing.T) {
 	ctx := context.Background()
 	coordinatorNode := "coordinator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	blockHeight := uint64(100)
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -584,7 +585,7 @@ func TestSendDelegationRequest_EmptyTransactions(t *testing.T) {
 
 func TestSendDelegationRequest_JSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := jsonMarshalFn
 	jsonMarshalFn = func(_ any) ([]byte, error) { return nil, errors.New("forced JSON error") }
@@ -610,7 +611,7 @@ func TestSendDelegationRequest_JSONMarshalError(t *testing.T) {
 
 func TestSendDelegationRequest_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -641,7 +642,7 @@ func TestSendDelegationResponse_Success(t *testing.T) {
 	delegationId := "delegation-123"
 	transactionIDs := make([]string, 0)
 	transactionIDs = append(transactionIDs, uuid.New().String())
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -695,7 +696,7 @@ func TestSendDelegationResponse_SendError(t *testing.T) {
 	delegatingNodeName := "delegating-node"
 	delegationId := "delegation-123"
 	transactionID := uuid.New().String()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -716,7 +717,7 @@ func TestSendDelegationResponse_SendError(t *testing.T) {
 
 func TestSendDelegationResponse_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -746,7 +747,7 @@ func TestSendDelegationRejection_Success(t *testing.T) {
 	delegatingNodeName := "delegating-node"
 	delegationId := "delegation-123"
 	blockHeight := uint64(100)
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -783,7 +784,7 @@ func TestSendDelegationRejection_SendError(t *testing.T) {
 	ctx := context.Background()
 	delegatingNodeName := "delegating-node"
 	delegationId := "delegation-123"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -804,7 +805,7 @@ func TestSendDelegationRejection_SendError(t *testing.T) {
 
 func TestSendDelegationRejection_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -832,7 +833,7 @@ func TestSendDelegationRejection_ProtoMarshalError(t *testing.T) {
 func TestSendHandoverRequest_Success(t *testing.T) {
 	ctx := context.Background()
 	targetNode := "target-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -863,7 +864,7 @@ func TestSendHandoverRequest_Success(t *testing.T) {
 func TestSendHandoverRequest_SendError(t *testing.T) {
 	ctx := context.Background()
 	targetNode := "target-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTM := componentsmocks.NewTransportManager(t)
 	mockLT := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -884,7 +885,7 @@ func TestSendHandoverRequest_SendError(t *testing.T) {
 
 func TestSendHandoverRequest_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -913,7 +914,7 @@ func TestSendEndorsementRequest_Success(t *testing.T) {
 	txID := uuid.New()
 	idempotencyKey := uuid.New()
 	party := "party1@node1"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	attRequest := &prototk.AttestationRequest{
 		Name: "test-attestation",
@@ -922,7 +923,7 @@ func TestSendEndorsementRequest_Success(t *testing.T) {
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
 		ContractInfo: &prototk.ContractInfo{
-			ContractAddress: contractAddress.HexString(),
+			ContractAddress: contractAddress.StorageString(),
 		},
 	}
 
@@ -977,7 +978,7 @@ func TestSendEndorsementRequest_Success(t *testing.T) {
 		if endorsementRequest.Party != party {
 			return false
 		}
-		if endorsementRequest.ContractAddress != contractAddress.HexString() {
+		if endorsementRequest.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		return true
@@ -1000,10 +1001,10 @@ func TestSendEndorsementRequest_SerialisesExpiryTimeIntoProto(t *testing.T) {
 	txID := uuid.New()
 	idempotencyKey := uuid.New()
 	party := "party1@node1"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
-		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.HexString()},
+		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.StorageString()},
 	}
 	expiry := time.Now().Truncate(time.Millisecond) // truncate to ms precision to match UnixMilli roundtrip
 
@@ -1037,11 +1038,11 @@ func TestSendEndorsementRequest_SendError(t *testing.T) {
 	txID := uuid.New()
 	idempotencyKey := uuid.New()
 	party := "party1@node1"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
-		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.HexString()},
+		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.StorageString()},
 	}
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -1066,7 +1067,7 @@ func TestSendEndorsementRequest_NodeLookupError(t *testing.T) {
 	txID := uuid.New()
 	idempotencyKey := uuid.New()
 	party := "invalid-party" // No @node, will fail Node lookup
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	attRequest := &prototk.AttestationRequest{
 		Name: "test-attestation",
@@ -1075,7 +1076,7 @@ func TestSendEndorsementRequest_NodeLookupError(t *testing.T) {
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
 		ContractInfo: &prototk.ContractInfo{
-			ContractAddress: contractAddress.HexString(),
+			ContractAddress: contractAddress.StorageString(),
 		},
 	}
 
@@ -1097,7 +1098,7 @@ func TestSendEndorsementRequest_NodeLookupError(t *testing.T) {
 
 func TestSendEndorsementRequest_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := protoMarshalFn
@@ -1117,7 +1118,7 @@ func TestSendEndorsementRequest_ProtoMarshalError(t *testing.T) {
 
 	txSpec := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
-		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.HexString()},
+		ContractInfo:  &prototk.ContractInfo{ContractAddress: contractAddress.StorageString()},
 	}
 	err := tw.SendEndorsementRequest(ctx, txID, uuid.New(), "party@node1", nil, txSpec, nil, nil, nil, nil, nil, nil, time.Time{}, 0, 0)
 	require.Error(t, err)
@@ -1188,7 +1189,7 @@ func TestSendEndorsementResponse_Success(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementResponse(ctx, transactionId, idempotencyKey, contractAddress, attResult, endorsementResult, revertReason, endorsementName, party, node)
@@ -1232,7 +1233,7 @@ func TestSendEndorsementResponse_WithRevertReason(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementResponse(ctx, transactionId, idempotencyKey, contractAddress, attResult, endorsementResult, revertReason, endorsementName, party, node)
@@ -1263,7 +1264,7 @@ func TestSendEndorsementResponse_SendError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementResponse(ctx, transactionId, idempotencyKey, contractAddress, attResult, endorsementResult, "", endorsementName, party, node)
@@ -1288,7 +1289,7 @@ func TestSendEndorsementResponse_ProtoMarshalError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTM,
 		loopbackTransport: mockLT,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	// SendEndorsementResponse does NOT return the proto.Marshal error - it logs it and continues.
@@ -1340,7 +1341,7 @@ func TestSendEndorsementRejection_Success(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementRejection(ctx, transactionId, idempotencyKey, contractAddress, endorsementName, party, node, engineProto.RejectionReason_BLOCK_HEIGHT_TOLERANCE, coordinatorBlockHeight, endorserBlockHeight, blockHeightTolerance)
@@ -1360,7 +1361,7 @@ func TestSendEndorsementRejection_SendError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementRejection(ctx, uuid.New().String(), uuid.New().String(), contractAddress, "att1", "party1@node2", "node2", engineProto.RejectionReason_BLOCK_HEIGHT_TOLERANCE, 100, 95, 10)
@@ -1383,7 +1384,7 @@ func TestSendEndorsementRejection_ProtoMarshalError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTM,
 		loopbackTransport: mockLT,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementRejection(ctx, uuid.New().String(), uuid.New().String(), contractAddress, "att", "party@node", "node", engineProto.RejectionReason_BLOCK_HEIGHT_TOLERANCE, 100, 90, 10)
@@ -1430,7 +1431,7 @@ func TestSendEndorsementError_Success(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementError(ctx, transactionId, idempotencyKey, contractAddress, errorMessage, party, attestationRequestName, node)
@@ -1450,7 +1451,7 @@ func TestSendEndorsementError_SendError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTransportManager,
 		loopbackTransport: mockLoopbackTransport,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementError(ctx, uuid.New().String(), uuid.New().String(), contractAddress, "some error", "party1@node2", "att1", "node2")
@@ -1473,7 +1474,7 @@ func TestSendEndorsementError_ProtoMarshalError(t *testing.T) {
 		nodeID:            "local-node",
 		transportManager:  mockTM,
 		loopbackTransport: mockLT,
-		contractAddress:   pldtypes.MustEthAddress(contractAddress),
+		contractAddress:   confutil.P(pldtypes.MustEthAddress(contractAddress).ChainAddress()),
 	}
 
 	err := tw.SendEndorsementError(ctx, uuid.New().String(), uuid.New().String(), contractAddress, "err", "party@node", "att", "node")
@@ -1489,7 +1490,7 @@ func TestSendAssembleRequest_Success(t *testing.T) {
 	assemblingNode := "assembling-node"
 	txID := uuid.New()
 	idempotencyId := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	blockHeight := int64(100)
 
 	preAssembly := &components.TransactionPreAssembly{
@@ -1524,7 +1525,7 @@ func TestSendAssembleRequest_Success(t *testing.T) {
 		if assembleRequest.AssembleRequestId != idempotencyId.String() {
 			return false
 		}
-		if assembleRequest.ContractAddress != contractAddress.HexString() {
+		if assembleRequest.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		if assembleRequest.CoordinatorBlockHeight != blockHeight {
@@ -1550,7 +1551,7 @@ func TestSendAssembleRequest_SerialisesExpiryTimeIntoProto(t *testing.T) {
 	assemblingNode := "assembling-node"
 	txID := uuid.New()
 	idempotencyId := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	blockHeight := int64(100)
 	preAssembly := &components.TransactionPreAssembly{
 		TransactionSpecification: &prototk.TransactionSpecification{TransactionId: txID.String()},
@@ -1588,7 +1589,7 @@ func TestSendAssembleRequest_SendError(t *testing.T) {
 	assemblingNode := "assembling-node"
 	txID := uuid.New()
 	idempotencyId := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	blockHeight := int64(100)
 
 	preAssembly := &components.TransactionPreAssembly{
@@ -1618,7 +1619,7 @@ func TestSendAssembleRequest_SendError(t *testing.T) {
 
 func TestSendAssembleRequest_PreAssemblyJSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := jsonMarshalFn
@@ -1646,7 +1647,7 @@ func TestSendAssembleRequest_PreAssemblyJSONMarshalError(t *testing.T) {
 
 func TestSendAssembleRequest_StateLocksJSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	callCount := 0
@@ -1681,7 +1682,7 @@ func TestSendAssembleRequest_StateLocksJSONMarshalError(t *testing.T) {
 
 func TestSendAssembleRequest_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := protoMarshalFn
@@ -1715,7 +1716,7 @@ func TestSendAssembleResponse_Success(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	preAssembly := &components.TransactionPreAssembly{
 		TransactionSpecification: &prototk.TransactionSpecification{
@@ -1751,7 +1752,7 @@ func TestSendAssembleResponse_Success(t *testing.T) {
 		if assembleResponse.AssembleRequestId != assembleRequestId.String() {
 			return false
 		}
-		if assembleResponse.ContractAddress != contractAddress.HexString() {
+		if assembleResponse.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		return true
@@ -1774,7 +1775,7 @@ func TestSendAssembleResponse_SendError(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	preAssembly := &components.TransactionPreAssembly{
 		TransactionSpecification: &prototk.TransactionSpecification{
@@ -1804,7 +1805,7 @@ func TestSendAssembleResponse_SendError(t *testing.T) {
 
 func TestSendAssembleResponse_PostAssemblyJSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := jsonMarshalFn
@@ -1829,7 +1830,7 @@ func TestSendAssembleResponse_PostAssemblyJSONMarshalError(t *testing.T) {
 
 func TestSendAssembleResponse_PreAssemblyJSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	callCount := 0
@@ -1861,7 +1862,7 @@ func TestSendAssembleResponse_PreAssemblyJSONMarshalError(t *testing.T) {
 
 func TestSendAssembleResponse_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := protoMarshalFn
@@ -1892,7 +1893,7 @@ func TestSendAssembleError_Success(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -1918,7 +1919,7 @@ func TestSendAssembleError_Success(t *testing.T) {
 		if assembleError.AssembleRequestId != assembleRequestId.String() {
 			return false
 		}
-		if assembleError.ContractAddress != contractAddress.HexString() {
+		if assembleError.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		return true
@@ -1941,7 +1942,7 @@ func TestSendAssembleError_SendError(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -1965,7 +1966,7 @@ func TestSendAssembleError_Loopback(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "local-node" // Same as local node name
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -1993,7 +1994,7 @@ func TestSendAssembleError_Loopback(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, txID.String(), assembleError.TransactionId)
 		assert.Equal(t, assembleRequestId.String(), assembleError.AssembleRequestId)
-		assert.Equal(t, contractAddress.HexString(), assembleError.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), assembleError.ContractAddress)
 	default:
 		t.Fatal("Expected message in loopback queue")
 	}
@@ -2002,7 +2003,7 @@ func TestSendAssembleError_Loopback(t *testing.T) {
 
 func TestSendAssembleError_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -2032,7 +2033,7 @@ func TestSendAssembleRejection_Success(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	coordinatorBlockHeight := int64(100)
 	assemblerBlockHeight := int64(95)
 
@@ -2052,7 +2053,7 @@ func TestSendAssembleRejection_Success(t *testing.T) {
 		}
 		return r.TransactionId == txID.String() &&
 			r.AssembleRequestId == assembleRequestId.String() &&
-			r.ContractAddress == contractAddress.HexString() &&
+			r.ContractAddress == contractAddress.StorageString() &&
 			r.RejectionReason == engineProto.RejectionReason_BLOCK_HEIGHT_TOLERANCE &&
 			r.CoordinatorBlockHeight == coordinatorBlockHeight &&
 			r.AssemblerBlockHeight == assemblerBlockHeight
@@ -2075,7 +2076,7 @@ func TestSendAssembleRejection_SendError(t *testing.T) {
 	txID := uuid.New()
 	assembleRequestId := uuid.New()
 	recipient := "recipient-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -2096,7 +2097,7 @@ func TestSendAssembleRejection_SendError(t *testing.T) {
 
 func TestSendAssembleRejection_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -2125,7 +2126,7 @@ func TestSendNonceAssigned_Success(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonce := uint64(42)
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -2149,7 +2150,7 @@ func TestSendNonceAssigned_Success(t *testing.T) {
 		if nonceAssigned.TransactionId != txID.String() {
 			return false
 		}
-		if nonceAssigned.ContractAddress != contractAddress.HexString() {
+		if nonceAssigned.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		if nonceAssigned.Nonce != int64(nonce) {
@@ -2198,7 +2199,7 @@ func TestSendNonceAssigned_SendError(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonce := uint64(42)
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -2221,7 +2222,7 @@ func TestSendNonceAssigned_VerifyGeneratedId(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonce := uint64(42)
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -2256,7 +2257,7 @@ func TestSendNonceAssigned_VerifyGeneratedId(t *testing.T) {
 
 func TestSendNonceAssigned_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -2287,7 +2288,7 @@ func TestSendTransactionConfirmed_Success(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2313,7 +2314,7 @@ func TestSendTransactionConfirmed_Success(t *testing.T) {
 		if txConfirmed.TransactionId != txID.String() {
 			return false
 		}
-		if txConfirmed.ContractAddress != contractAddress.HexString() {
+		if txConfirmed.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		if txConfirmed.Nonce != int64(*nonce) {
@@ -2343,7 +2344,7 @@ func TestSendTransactionConfirmed_WithoutNonce(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
@@ -2401,7 +2402,7 @@ func TestSendTransactionConfirmed_SendError(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2426,7 +2427,7 @@ func TestSendTransactionConfirmed_Loopback(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "local-node" // Same as local node name
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2458,7 +2459,7 @@ func TestSendTransactionConfirmed_Loopback(t *testing.T) {
 		err := proto.Unmarshal(msg.Payload, &txConfirmed)
 		require.NoError(t, err)
 		assert.Equal(t, txID.String(), txConfirmed.TransactionId)
-		assert.Equal(t, contractAddress.HexString(), txConfirmed.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), txConfirmed.ContractAddress)
 		assert.Equal(t, int64(*nonce), txConfirmed.Nonce)
 		assert.Equal(t, revertReason, pldtypes.HexBytes(txConfirmed.RevertReason))
 		assert.True(t, txConfirmed.WillRetry)
@@ -2472,7 +2473,7 @@ func TestSendTransactionConfirmed_WillRetryTrue(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2513,7 +2514,7 @@ func TestSendTransactionConfirmed_WillRetryFalse(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2548,7 +2549,7 @@ func TestSendTransactionConfirmed_NilRevertReason(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "originator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 
@@ -2588,7 +2589,7 @@ func TestSendTransactionConfirmed_Loopback_WillRetryFalse(t *testing.T) {
 	ctx := context.Background()
 	txID := uuid.New()
 	originatorNode := "local-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 	nonce := &nonceVal
 	revertReason := pldtypes.HexBytes([]byte("revert reason"))
@@ -2625,7 +2626,7 @@ func TestSendTransactionConfirmed_Loopback_WillRetryFalse(t *testing.T) {
 
 func TestSendTransactionConfirmed_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	nonceVal := pldtypes.HexUint64(42)
 
 	orig := protoMarshalFn
@@ -2656,7 +2657,7 @@ func TestSendTransactionConfirmed_ProtoMarshalError(t *testing.T) {
 func TestSendHeartbeat_Success(t *testing.T) {
 	ctx := context.Background()
 	targetNode := "target-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	coordinatorSnapshot := &common.CoordinatorSnapshot{
 		CoordinatorState:       common.CoordinatorState_Idle,
 		BlockHeight:            100,
@@ -2686,7 +2687,7 @@ func TestSendHeartbeat_Success(t *testing.T) {
 		if heartbeat.From != "local-node" {
 			return false
 		}
-		if heartbeat.ContractAddress != contractAddress.HexString() {
+		if heartbeat.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		// Verify coordinator snapshot can be unmarshalled
@@ -2718,7 +2719,7 @@ func TestSendHeartbeat_Success(t *testing.T) {
 func TestSendHeartbeat_SendError(t *testing.T) {
 	ctx := context.Background()
 	targetNode := "target-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	coordinatorSnapshot := &common.CoordinatorSnapshot{
 		CoordinatorState: common.CoordinatorState_Idle,
 		BlockHeight:      100,
@@ -2743,7 +2744,7 @@ func TestSendHeartbeat_SendError(t *testing.T) {
 func TestSendHeartbeat_Loopback(t *testing.T) {
 	ctx := context.Background()
 	targetNode := "local-node" // Same as local node name
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	coordinatorSnapshot := &common.CoordinatorSnapshot{
 		CoordinatorState: common.CoordinatorState_Idle,
 		BlockHeight:      100,
@@ -2776,7 +2777,7 @@ func TestSendHeartbeat_Loopback(t *testing.T) {
 		err := proto.Unmarshal(msg.Payload, &heartbeat)
 		require.NoError(t, err)
 		assert.Equal(t, "local-node", heartbeat.From)
-		assert.Equal(t, contractAddress.HexString(), heartbeat.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), heartbeat.ContractAddress)
 	default:
 		t.Fatal("Expected message in loopback queue")
 	}
@@ -2785,7 +2786,7 @@ func TestSendHeartbeat_Loopback(t *testing.T) {
 
 func TestSendHeartbeat_JSONMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := jsonMarshalFn
 	jsonMarshalFn = func(_ any) ([]byte, error) { return nil, errors.New("forced JSON error") }
@@ -2809,7 +2810,7 @@ func TestSendHeartbeat_JSONMarshalError(t *testing.T) {
 
 func TestSendHeartbeat_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	origProto := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }
@@ -2839,7 +2840,7 @@ func TestSendPreDispatchRequest_Success(t *testing.T) {
 	ctx := context.Background()
 	originatorNode := "originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -2871,7 +2872,7 @@ func TestSendPreDispatchRequest_Success(t *testing.T) {
 		if dispatchRequest.TransactionId != transactionSpecification.TransactionId {
 			return false
 		}
-		if dispatchRequest.ContractAddress != contractAddress.HexString() {
+		if dispatchRequest.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		if len(dispatchRequest.PostAssembleHash) != 32 {
@@ -2895,7 +2896,7 @@ func TestSendPreDispatchRequest_SendError(t *testing.T) {
 	ctx := context.Background()
 	originatorNode := "originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -2923,7 +2924,7 @@ func TestSendPreDispatchRequest_Loopback(t *testing.T) {
 	ctx := context.Background()
 	originatorNode := "local-node" // Same as local node name
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -2959,7 +2960,7 @@ func TestSendPreDispatchRequest_Loopback(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, idempotencyKey.String(), dispatchRequest.Id)
 		assert.Equal(t, transactionSpecification.TransactionId, dispatchRequest.TransactionId)
-		assert.Equal(t, contractAddress.HexString(), dispatchRequest.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), dispatchRequest.ContractAddress)
 		assert.Equal(t, hash.Bytes(), dispatchRequest.PostAssembleHash)
 	default:
 		t.Fatal("Expected message in loopback queue")
@@ -2969,7 +2970,7 @@ func TestSendPreDispatchRequest_Loopback(t *testing.T) {
 
 func TestSendPreDispatchRequest_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	hashVal := pldtypes.MustParseBytes32("0x00000000000000000000000000000000000000000000000000000000000000ab")
 
@@ -3003,7 +3004,7 @@ func TestSendPreDispatchResponse_Success(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginatorNode := "originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3033,7 +3034,7 @@ func TestSendPreDispatchResponse_Success(t *testing.T) {
 		if dispatchResponse.TransactionId != transactionSpecification.TransactionId {
 			return false
 		}
-		if dispatchResponse.ContractAddress != contractAddress.HexString() {
+		if dispatchResponse.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		return true
@@ -3054,7 +3055,7 @@ func TestSendPreDispatchResponse_SendError(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginatorNode := "originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3080,7 +3081,7 @@ func TestSendPreDispatchResponse_Loopback(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginatorNode := "local-node" // Same as local node name
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3114,7 +3115,7 @@ func TestSendPreDispatchResponse_Loopback(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, idempotencyKey.String(), dispatchResponse.Id)
 		assert.Equal(t, transactionSpecification.TransactionId, dispatchResponse.TransactionId)
-		assert.Equal(t, contractAddress.HexString(), dispatchResponse.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), dispatchResponse.ContractAddress)
 	default:
 		t.Fatal("Expected message in loopback queue")
 	}
@@ -3123,7 +3124,7 @@ func TestSendPreDispatchResponse_Loopback(t *testing.T) {
 
 func TestSendPreDispatchResponse_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := protoMarshalFn
@@ -3156,7 +3157,7 @@ func TestSendDispatched_Success(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginator := "originator@originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3186,7 +3187,7 @@ func TestSendDispatched_Success(t *testing.T) {
 		if dispatched.TransactionId != transactionSpecification.TransactionId {
 			return false
 		}
-		if dispatched.ContractAddress != contractAddress.HexString() {
+		if dispatched.ContractAddress != contractAddress.StorageString() {
 			return false
 		}
 		if dispatched.Signer != transactionOriginator {
@@ -3210,7 +3211,7 @@ func TestSendDispatched_NodeLookupError(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginator := "invalid-originator" // No @node, will fail Node lookup
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3235,7 +3236,7 @@ func TestSendDispatched_SendError(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginator := "originator@originator-node"
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3261,7 +3262,7 @@ func TestSendDispatched_Loopback(t *testing.T) {
 	ctx := context.Background()
 	transactionOriginator := "originator@local-node" // Node is same as local node name
 	idempotencyKey := uuid.New()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 	transactionSpecification := &prototk.TransactionSpecification{
 		TransactionId: txID.String(),
@@ -3295,7 +3296,7 @@ func TestSendDispatched_Loopback(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, idempotencyKey.String(), dispatched.Id)
 		assert.Equal(t, transactionSpecification.TransactionId, dispatched.TransactionId)
-		assert.Equal(t, contractAddress.HexString(), dispatched.ContractAddress)
+		assert.Equal(t, contractAddress.StorageString(), dispatched.ContractAddress)
 		assert.Equal(t, transactionOriginator, dispatched.Signer)
 	default:
 		t.Fatal("Expected message in loopback queue")
@@ -3305,7 +3306,7 @@ func TestSendDispatched_Loopback(t *testing.T) {
 
 func TestSendDispatched_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 	txID := uuid.New()
 
 	orig := protoMarshalFn
@@ -3339,7 +3340,7 @@ func TestSendPreDispatchRejection_Success(t *testing.T) {
 	txID := uuid.New()
 	requestID := uuid.New()
 	coordinatorNode := "coordinator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -3357,7 +3358,7 @@ func TestSendPreDispatchRejection_Success(t *testing.T) {
 		}
 		return r.TransactionId == txID.String() &&
 			r.RequestId == requestID.String() &&
-			r.ContractAddress == contractAddress.HexString() &&
+			r.ContractAddress == contractAddress.StorageString() &&
 			r.RejectionReason == engineProto.RejectionReason_NOT_CURRENT_DELEGATE
 	})).Return(nil)
 
@@ -3400,7 +3401,7 @@ func TestSendPreDispatchRejection_SendError(t *testing.T) {
 	txID := uuid.New()
 	requestID := uuid.New()
 	coordinatorNode := "coordinator-node"
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	mockTransportManager := componentsmocks.NewTransportManager(t)
 	mockLoopbackTransport := sequencertransportmocks.NewLoopbackTransportManager(t)
@@ -3420,7 +3421,7 @@ func TestSendPreDispatchRejection_SendError(t *testing.T) {
 
 func TestSendPreDispatchRejection_ProtoMarshalError(t *testing.T) {
 	ctx := context.Background()
-	contractAddress := pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890")
+	contractAddress := confutil.P(pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress())
 
 	orig := protoMarshalFn
 	protoMarshalFn = func(_ proto.Message) ([]byte, error) { return nil, errors.New("forced proto error") }

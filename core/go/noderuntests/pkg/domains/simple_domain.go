@@ -168,7 +168,10 @@ func DeploySmartContract(t *testing.T, p persistence.Persistence, txm components
 
 	require.True(t, receipt.Success)
 	require.NotNil(t, receipt.ContractAddress)
-	return receipt.ContractAddress
+	// This test always deploys via a public (EVM) transaction, so unwrap here.
+	ethAddr, err := receipt.ContractAddress.EthAddress()
+	require.NoError(t, err)
+	return ethAddr
 }
 
 // Note, here we're simulating a domain that choose to support versions of a "Transfer" function
@@ -386,6 +389,23 @@ type SimpleDomainConfig struct{}
 type SimpleDomainPairConfig struct {
 	Domain1RegistryAddress string
 	Domain2RegistryAddress string
+}
+
+// NotoStellarDomainConfig configures the real domains/noto plugin against a Stellar/Soroban
+// network (chapter 14 step 6) - unlike the fake domains above, this isn't a config marker for a
+// throwaway test domain implemented in this package; the actual plugin object is wired in
+// core/go/noderuntests/pkg/testutils.go (which imports domains/noto/pkg/noto directly), this
+// struct only carries the per-node config values that differ from the fake-domain cases.
+type NotoStellarDomainConfig struct {
+	// RegistryAddress is the domain's own registry (SaladinFactory instance, chapter 14 step 5's
+	// trust boundary) - a Stellar strkey, not the EVM-shaped domainRegistryAddress parameter
+	// NewInstanceForTesting's other cases use.
+	RegistryAddress string
+	// SnotoFactoryAddress/SnotoWasmHash are domains/noto/pkg/types.DomainConfig's
+	// StellarSnotoFactoryAddress/StellarSnotoWasmHash - see that type's doc comment for why these
+	// are deliberately not the same address as RegistryAddress above.
+	SnotoFactoryAddress string
+	SnotoWasmHash       string
 }
 
 // ABI for the config field in the PaladinRegisterSmartContract_V0 event

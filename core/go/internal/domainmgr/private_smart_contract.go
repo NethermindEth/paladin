@@ -36,11 +36,11 @@ import (
 )
 
 type PrivateSmartContract struct {
-	DeployTX        uuid.UUID           `json:"deployTransaction"   gorm:"column:deploy_tx"`
-	RegistryAddress pldtypes.EthAddress `json:"domainAddress"       gorm:"column:domain_address"`
-	Address         pldtypes.EthAddress `json:"address"             gorm:"column:address"`
-	ConfigBytes     pldtypes.HexBytes   `json:"configBytes"         gorm:"column:config_bytes"`
-	Created         pldtypes.Timestamp  `json:"created"             gorm:"column:created;autoCreateTime:nano"`
+	DeployTX        uuid.UUID             `json:"deployTransaction"   gorm:"column:deploy_tx"`
+	RegistryAddress pldtypes.ChainAddress `json:"domainAddress"       gorm:"column:domain_address"`
+	Address         pldtypes.ChainAddress `json:"address"             gorm:"column:address"`
+	ConfigBytes     pldtypes.HexBytes     `json:"configBytes"         gorm:"column:config_bytes"`
+	Created         pldtypes.Timestamp    `json:"created"             gorm:"column:created;autoCreateTime:nano"`
 }
 
 type domainContract struct {
@@ -101,7 +101,7 @@ func (d *domain) initSmartContract(ctx context.Context, dbTX persistence.DBTX, d
 func (dc *domainContract) buildTransactionSpecification(ctx context.Context, localTx *components.ResolvedTransaction, intent prototk.TransactionSpecification_Intent) (*prototk.TransactionSpecification, error) {
 
 	if localTx.Transaction == nil || localTx.Transaction.Data == nil || localTx.Function == nil ||
-		localTx.Transaction.Domain != dc.Domain().Name() || *localTx.Transaction.To != dc.info.Address {
+		localTx.Transaction.Domain != dc.Domain().Name() || !localTx.Transaction.To.Equals(&dc.info.Address) {
 		log.L(ctx).Errorf("Invalid tx for domain %s/%s: %+v", dc.Domain().Name(), dc.info.Address, localTx.Transaction)
 		return nil, i18n.NewError(ctx, msgs.MsgDomainTxnInputDefinitionInvalid)
 	}
@@ -521,7 +521,10 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 
 	contractAddress := &dc.info.Address
 	if res.Transaction.ContractAddress != nil {
-		contractAddress, err = pldtypes.ParseEthAddress(*res.Transaction.ContractAddress)
+		// Chain-kind-aware: this redirect is a general PrepareTransaction mechanism (any domain,
+		// any chain kind), not Pente/hooks-specific - unlike WrapPrivacyGroupEVMTX below, which is
+		// genuinely EVM-only.
+		contractAddress, err = pldtypes.ParseChainAddress(*res.Transaction.ContractAddress)
 		if err != nil {
 			return err
 		}
@@ -634,7 +637,7 @@ func (dc *domainContract) Domain() components.Domain {
 	return dc.d
 }
 
-func (dc *domainContract) Address() pldtypes.EthAddress {
+func (dc *domainContract) Address() pldtypes.ChainAddress {
 	return dc.info.Address
 }
 
@@ -772,13 +775,17 @@ func (dc *domainContract) WrapPrivacyGroupEVMTX(ctx context.Context, pg *pldapi.
 		},
 	}
 
+	// This function is genuinely EVM-only (PrivacyGroupEVMTX models Pente's inner EVM
+	// transaction), unlike PrepareTransaction's own redirect above - so ParseEthAddress here is
+	// correct, not a gap; wrap the result to compare against/assign into the now chain-neutral
+	// dc.Address()/ptx.To.
 	pscAddr := dc.Address()
 	if res.Transaction.ContractAddress != nil {
 		addr, err := pldtypes.ParseEthAddress(*res.Transaction.ContractAddress)
 		if err != nil {
 			return nil, err
 		}
-		if *addr != pscAddr {
+		if addrChain := addr.ChainAddress(); addrChain != pscAddr {
 			return nil, i18n.NewError(ctx, msgs.MsgDomainInvalidPGroupTxCannotRedirect, pscAddr, addr)
 		}
 	}

@@ -46,7 +46,7 @@ var testStateSchema = &abi.Parameter{
 	},
 }
 
-func writeStates(t *testing.T, txm *txManager, dbTX persistence.DBTX, testSchemaID pldtypes.Bytes32, fakeContractAddr pldtypes.EthAddress, count int) ([]*pldapi.StateBase, []pldtypes.HexBytes) {
+func writeStates(t *testing.T, txm *txManager, dbTX persistence.DBTX, testSchemaID pldtypes.Bytes32, fakeContractAddr pldtypes.ChainAddress, count int) ([]*pldapi.StateBase, []pldtypes.HexBytes) {
 	stateInputs := make([]*components.StateUpsertOutsideContext, count)
 	for i := range stateInputs {
 		stateInputs[i] = &components.StateUpsertOutsideContext{
@@ -84,8 +84,8 @@ func newRealStateManager(t *testing.T, mc *mockComponents) components.StateManag
 
 func TestPreparedTransactionRealDB(t *testing.T) {
 
-	contractAddressDomain1 := *pldtypes.RandAddress()
-	contractAddressDomain2 := *pldtypes.RandAddress()
+	contractAddressDomain1 := pldtypes.RandAddress().ChainAddress()
+	contractAddressDomain2 := pldtypes.RandAddress().ChainAddress()
 
 	var stateMgr components.StateManager
 	ctx, txm, done := newTestTransactionManager(t, true,

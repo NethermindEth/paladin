@@ -100,8 +100,8 @@ func (sMgr *sequencerManager) logPaladinMessageJsonUnmarshalError(ctx context.Co
 	log.L(ctx).Errorf("<< ERROR unmarshalling JSON object %s from proto message %s (received from %s): %s", jsonObject, message.MessageType, message.FromNode, err)
 }
 
-func (sMgr *sequencerManager) parseContractAddressString(ctx context.Context, contractAddressString string, message *components.ReceivedMessage) *pldtypes.EthAddress {
-	contractAddress, err := pldtypes.ParseEthAddress(contractAddressString)
+func (sMgr *sequencerManager) parseContractAddressString(ctx context.Context, contractAddressString string, message *components.ReceivedMessage) *pldtypes.ChainAddress {
+	contractAddress, err := pldtypes.ParseChainAddress(contractAddressString)
 	if err != nil {
 		log.L(ctx).Errorf("<< ERROR unmarshalling contract address from proto message %s (received from %s): %s", message.MessageType, message.FromNode, err)
 		return nil
@@ -428,7 +428,7 @@ func (sMgr *sequencerManager) handleDelegationRequest(ctx context.Context, messa
 	transactionDelegatedEvent.DelegationID = delegationRequest.DelegationId
 	transactionDelegatedEvent.EventTime = time.Now()
 
-	var contractAddress *pldtypes.EthAddress
+	var contractAddress *pldtypes.ChainAddress
 	for _, txBytes := range delegationRequest.PrivateTransactions {
 		privateTransaction := &components.PrivateTransaction{}
 		if err = json.Unmarshal(txBytes, privateTransaction); err != nil {

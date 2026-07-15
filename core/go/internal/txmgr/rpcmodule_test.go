@@ -256,7 +256,7 @@ func TestPublicTransactionLifecycle(t *testing.T) {
 			Data:           pldtypes.RawJSON(`{"0": 123456789012345678901234567890}`), // nice big JSON number to deal with
 			Function:       "set(uint256)",
 			From:           "sender1",
-			To:             pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:             confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 	}
 	var txIDs []uuid.UUID
@@ -390,7 +390,7 @@ func TestPublicTransactionLifecycle(t *testing.T) {
 				Data:           pldtypes.RawJSON(`{"0": 123456789012345678901234567890}`),
 				Function:       "get()",
 				From:           "sender1",
-				To:             pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				To:             confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			},
 			ABI: sampleABI,
 		},
@@ -639,7 +639,7 @@ func TestPrepareTransactions(t *testing.T) {
 			Type:           pldapi.TransactionTypePublic.Enum(),
 			IdempotencyKey: "tx1",
 			From:           "sender1",
-			To:             pldtypes.RandAddress(),
+			To:             confutil.P(pldtypes.RandAddress().ChainAddress()),
 			Data:           pldtypes.RawJSON(`[]`),
 		},
 	}
@@ -659,7 +659,7 @@ func TestPrepareTransactions(t *testing.T) {
 			Domain:         "domain1",
 			IdempotencyKey: "tx1",
 			From:           "sender1",
-			To:             pldtypes.RandAddress(),
+			To:             confutil.P(pldtypes.RandAddress().ChainAddress()),
 			Data:           pldtypes.RawJSON(`[]`),
 		},
 	}
@@ -923,7 +923,7 @@ func TestSendTransactionIdempotencyConflict(t *testing.T) {
 	rpcClient, err := rpcclient.NewHTTPClient(ctx, &pldconf.HTTPClientConfig{URL: url})
 	require.NoError(t, err)
 
-	toAddr := pldtypes.MustEthAddress(pldtypes.RandHex(20))
+	toAddr := confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress())
 	txInput := &pldapi.TransactionInput{
 		ABI: abi.ABI{{Type: abi.Function, Name: "set", Inputs: abi.ParameterArray{{Type: "uint256"}}}},
 		TransactionBase: pldapi.TransactionBase{

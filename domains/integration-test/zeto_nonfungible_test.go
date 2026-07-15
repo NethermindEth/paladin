@@ -130,7 +130,7 @@ func (s *nonFungibleTestSuiteHelper) testZeto(t *testing.T, tokenName string, is
 	require.Len(t, recipient1NFTs, 0)
 }
 
-func findAvailableNFTs(t *testing.T, ctx context.Context, rpc rpcclient.Client, domainName, domainSchemaId string, address *pldtypes.EthAddress, jq *query.QueryJSON, useNullifiers bool, owner *pldtypes.Bytes32) []*types.ZetoNFTState {
+func findAvailableNFTs(t *testing.T, ctx context.Context, rpc rpcclient.Client, domainName, domainSchemaId string, address *pldtypes.ChainAddress, jq *query.QueryJSON, useNullifiers bool, owner *pldtypes.Bytes32) []*types.ZetoNFTState {
 	methodName := "pstate_queryContractStates"
 	if useNullifiers {
 		methodName = "pstate_queryContractNullifiers"

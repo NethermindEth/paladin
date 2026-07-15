@@ -57,7 +57,7 @@ var NotoFactoryABI = solutils.MustParseBuildABI(NotoFactoryJSON)
 type NotoHelper struct {
 	t       *testing.T
 	rpc     rpcclient.Client
-	Address *pldtypes.EthAddress
+	Address *pldtypes.ChainAddress
 	ABI     abi.ABI
 }
 
@@ -90,10 +90,11 @@ func DeployNotoImplementation(ctx context.Context, t *testing.T, rpc rpcclient.C
 	if rpcerr != nil {
 		require.NoError(t, rpcerr)
 	}
+	addrChain := addr.ChainAddress()
 	return &NotoHelper{
 		t:       t,
 		rpc:     rpc,
-		Address: &addr,
+		Address: &addrChain,
 		ABI:     solutils.MustLoadBuild(NotoInterfaceJSON).ABI,
 	}
 }

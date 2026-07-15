@@ -67,7 +67,7 @@ type pendingEntry struct {
 type notoRevertableHooksSuite struct {
 	ctx                  context.Context
 	runner               Runner
-	notoContractAddress  *pldtypes.EthAddress
+	notoContractAddress  *pldtypes.ChainAddress
 	revertableAddress    *pldtypes.EthAddress
 	notary               string
 	sender               string
@@ -265,7 +265,11 @@ func (s *notoRevertableHooksSuite) Setup() error {
 	if revertableReceipt.ContractAddress == nil {
 		return fmt.Errorf("RevertableTarget contract address not found in deployment receipt")
 	}
-	s.revertableAddress = revertableReceipt.ContractAddress
+	// RevertableTarget is a raw EVM contract deployed via Pente - unwrap explicitly.
+	s.revertableAddress, err = revertableReceipt.ContractAddress.EthAddress()
+	if err != nil {
+		return fmt.Errorf("RevertableTarget contract address is not an EVM address: %w", err)
+	}
 	log.Infof("RevertableTarget deployed at address: %s", *s.revertableAddress)
 
 	// --- Step 2: Create Pente privacy group ---
@@ -716,7 +720,7 @@ func (s *notoRevertableHooksSuite) PostRun() error {
 type notoRevertableHooksWorker struct {
 	testBase
 	suite                *notoRevertableHooksSuite
-	notoContractAddress  *pldtypes.EthAddress
+	notoContractAddress  *pldtypes.ChainAddress
 	notary               string
 	sender               string
 	revertIdentity       string

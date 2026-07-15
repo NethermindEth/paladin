@@ -258,10 +258,11 @@ func TestGetDomainNotFound(t *testing.T) {
 	_, err := dm.GetDomainByName(ctx, "wrong")
 	assert.Regexp(t, "PD011600", err)
 
-	_, err = dm.getDomainByAddress(ctx, pldtypes.MustEthAddress(pldtypes.RandHex(20)))
+	randChainAddr := pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()
+	_, err = dm.getDomainByAddress(ctx, &randChainAddr)
 	assert.Regexp(t, "PD011600", err)
 
-	dc := dm.getDomainByAddressOrNil(pldtypes.MustEthAddress(pldtypes.RandHex(20)))
+	dc := dm.getDomainByAddressOrNil(&randChainAddr)
 	assert.Nil(t, dc)
 }
 
@@ -331,8 +332,9 @@ func TestWaitForDeployDomainNotFound(t *testing.T) {
 	for dm.privateTxWaiter.InFlightCount() == 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
+	contractAddrChain := contractAddr.ChainAddress()
 	dm.privateTxWaiter.GetInflight(reqID).Complete(&components.ReceiptInput{
-		ContractAddress: contractAddr,
+		ContractAddress: &contractAddrChain,
 	})
 
 	<-received
@@ -429,12 +431,13 @@ func TestGetSmartContractByAddressCached(t *testing.T) {
 	defer done()
 
 	contractAddr := pldtypes.RandAddress()
+	contractAddrChain := contractAddr.ChainAddress()
 
 	// Create a minimal mock domain
 	mockDomain := &domain{
 		dm:              dm,
 		name:            "test",
-		registryAddress: contractAddr,
+		registryAddress: &contractAddrChain,
 	}
 
 	// Create a mock domain contract and put it in the cache
@@ -442,19 +445,19 @@ func TestGetSmartContractByAddressCached(t *testing.T) {
 		dm: dm,
 		d:  mockDomain,
 		info: &PrivateSmartContract{
-			Address: *contractAddr,
+			Address: contractAddrChain,
 		},
 		config: &prototk.ContractConfig{
 			ContractConfigJson: `{"cached":"true"}`,
 		},
 	}
-	dm.contractCache.Set(*contractAddr, mockContract)
+	dm.contractCache.Set(contractAddrChain, mockContract)
 
 	// Get the contract - should return from cache
-	sc, err := dm.GetSmartContractByAddress(ctx, dm.persistence.NOTX(), *contractAddr)
+	sc, err := dm.GetSmartContractByAddress(ctx, dm.persistence.NOTX(), contractAddrChain)
 	require.NoError(t, err)
 	require.NotNil(t, sc)
-	assert.Equal(t, *contractAddr, sc.Address())
+	assert.Equal(t, contractAddrChain, sc.Address())
 	assert.Equal(t, `{"cached":"true"}`, sc.ContractConfig().ContractConfigJson)
 }
 
@@ -571,9 +574,9 @@ func TestQuerySmartContractsDomainNotFound(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, *contractAddr, results[0].Address)
+	assert.Equal(t, contractAddr.ChainAddress(), results[0].Address)
 	require.NotNil(t, results[0].DomainAddress, "DomainAddress should not be nil")
-	assert.Equal(t, *unknownDomainAddr, *results[0].DomainAddress)
+	assert.Equal(t, unknownDomainAddr.ChainAddress(), *results[0].DomainAddress)
 	assert.Empty(t, results[0].DomainName) // Domain not found, so DomainName should be empty
 }
 
@@ -639,7 +642,7 @@ func TestQuerySmartContractsDomainFound(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, *contractAddr, results[0].Address)
+	assert.Equal(t, contractAddr.ChainAddress(), results[0].Address)
 	assert.Equal(t, domainAddr, *results[0].DomainAddress)
 	assert.Equal(t, "test1", results[0].DomainName) // Domain found, so DomainName should be set
 }
@@ -711,13 +714,13 @@ func TestQuerySmartContractsMultipleResults(t *testing.T) {
 	require.Len(t, results, 2)
 
 	// First result: domain found
-	assert.Equal(t, *contractAddr1, results[0].Address)
+	assert.Equal(t, contractAddr1.ChainAddress(), results[0].Address)
 	assert.Equal(t, domainAddr, *results[0].DomainAddress)
 	assert.Equal(t, "test1", results[0].DomainName)
 
 	// Second result: domain not found
-	assert.Equal(t, *contractAddr2, results[1].Address)
-	assert.Equal(t, *unknownDomainAddr, *results[1].DomainAddress)
+	assert.Equal(t, contractAddr2.ChainAddress(), results[1].Address)
+	assert.Equal(t, unknownDomainAddr.ChainAddress(), *results[1].DomainAddress)
 	assert.Empty(t, results[1].DomainName)
 }
 

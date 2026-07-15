@@ -737,11 +737,12 @@ func TestDemoNotarizedCoinSelection(t *testing.T) {
 		"symbol": "FT1"
 	}`))
 	assert.NoError(t, rpcErr)
+	contractAddrChain := confutil.P(contractAddr.ChainAddress())
 
 	rpcErr = tbRPC.CallRPC(ctx, pldtypes.RawJSON{}, "testbed_invoke", &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			From:     "wallets.org1.aaaaaa",
-			To:       &contractAddr,
+			To:       contractAddrChain,
 			Function: "transfer",
 			Data: pldtypes.RawJSON(`{
 				"from": "",
@@ -756,7 +757,7 @@ func TestDemoNotarizedCoinSelection(t *testing.T) {
 	rpcErr = tbRPC.CallRPC(ctx, pldtypes.RawJSON{}, "testbed_invoke", &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			From:     "wallets.org1.aaaaaa",
-			To:       &contractAddr,
+			To:       contractAddrChain,
 			Function: "transfer",
 			Data: pldtypes.RawJSON(`{
 				"from": "wallets.org1.aaaaaa",
@@ -771,7 +772,7 @@ func TestDemoNotarizedCoinSelection(t *testing.T) {
 	var balance *getBalanceResult
 	rpcErr = tbRPC.CallRPC(ctx, &balance, "testbed_call", &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
-			To:       &contractAddr,
+			To:       contractAddrChain,
 			Function: "getBalance",
 			Data: pldtypes.RawJSON(`{
 				"account": "wallets.org1.aaaaaa"
@@ -833,5 +834,7 @@ func deploySmartContract(t *testing.T, confFile string) *pldtypes.EthAddress {
 
 	require.True(t, receipt.Success)
 	require.NotNil(t, receipt.ContractAddress)
-	return receipt.ContractAddress
+	ethAddr, err := receipt.ContractAddress.EthAddress()
+	require.NoError(t, err)
+	return ethAddr
 }

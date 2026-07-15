@@ -173,11 +173,11 @@ func (s *pvpTestSuite) pvpNotoNoto(withHooks bool) {
 	log.L(ctx).Infof("Propose a trade of 1 gold for 10 silver")
 	swap := helpers.DeploySwap(ctx, t, tb, pld, alice, &helpers.TradeRequestInput{
 		Holder1:       aliceKey.Verifier.Verifier,
-		TokenAddress1: notoGold.Address,
+		TokenAddress1: mustEthAddress(t, notoGold.Address),
 		TokenValue1:   pldtypes.Int64ToInt256(1),
 
 		Holder2:       bobKey.Verifier.Verifier,
-		TokenAddress2: notoSilver.Address,
+		TokenAddress2: mustEthAddress(t, notoSilver.Address),
 		TokenValue2:   pldtypes.Int64ToInt256(10),
 	})
 
@@ -258,11 +258,11 @@ func (s *pvpTestSuite) pvpNotoNoto(withHooks bool) {
 	log.L(ctx).Infof("Create Atom instance")
 	transferAtom := atomFactory.Create(ctx, alice, []*helpers.AtomOperation{
 		{
-			ContractAddress: notoGold.Address,
+			ContractAddress: mustEthAddress(t, notoGold.Address),
 			CallData:        goldUnlockReceipt.LockInfo.UnlockCall,
 		},
 		{
-			ContractAddress: notoSilver.Address,
+			ContractAddress: mustEthAddress(t, notoSilver.Address),
 			CallData:        silverUnlockReceipt.LockInfo.UnlockCall,
 		},
 		{
@@ -367,11 +367,11 @@ func (s *pvpTestSuite) TestNotoForZeto() {
 	log.L(ctx).Infof("Propose a trade of 1 Noto for 1 Zeto")
 	swap := helpers.DeploySwap(ctx, t, tb, pld, alice, &helpers.TradeRequestInput{
 		Holder1:       aliceKey.Verifier.Verifier,
-		TokenAddress1: noto.Address,
+		TokenAddress1: mustEthAddress(t, noto.Address),
 		TokenValue1:   pldtypes.Int64ToInt256(1),
 
 		Holder2:       bobKey.Verifier.Verifier,
-		TokenAddress2: zeto.Address,
+		TokenAddress2: mustEthAddress(t, zeto.Address),
 		TokenValue2:   pldtypes.Int64ToInt256(1),
 	})
 
@@ -454,11 +454,11 @@ func (s *pvpTestSuite) TestNotoForZeto() {
 	log.L(ctx).Infof("Create Atom instance")
 	transferAtom := atomFactory.Create(ctx, alice, []*helpers.AtomOperation{
 		{
-			ContractAddress: noto.Address,
+			ContractAddress: mustEthAddress(t, noto.Address),
 			CallData:        notoUnlockReceipt.LockInfo.UnlockCall,
 		},
 		{
-			ContractAddress: zeto.Address,
+			ContractAddress: mustEthAddress(t, zeto.Address),
 			CallData:        transferZeto.EncodedCall,
 		},
 		{

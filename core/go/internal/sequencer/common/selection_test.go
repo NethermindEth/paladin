@@ -19,6 +19,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/stretchr/testify/assert"
@@ -200,7 +201,7 @@ func Test_ComputeEffectiveBlockHeight_MidSecondEpoch(t *testing.T) {
 
 func TestResolveCoordinatorSelectionConfig_Static_ValidLocator(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_STATIC,
 		StaticCoordinator:    proto.String("identity@coordinatorNode"),
@@ -213,7 +214,7 @@ func TestResolveCoordinatorSelectionConfig_Static_ValidLocator(t *testing.T) {
 
 func TestResolveCoordinatorSelectionConfig_Static_EmptyLocator_ReturnsError(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	emptyLocator := ""
 	_, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_STATIC,
@@ -225,7 +226,7 @@ func TestResolveCoordinatorSelectionConfig_Static_EmptyLocator_ReturnsError(t *t
 
 func TestResolveCoordinatorSelectionConfig_Static_InvalidLocator_ReturnsError(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_STATIC,
 		StaticCoordinator:    proto.String("not-a-valid-locator"),
@@ -235,7 +236,7 @@ func TestResolveCoordinatorSelectionConfig_Static_InvalidLocator_ReturnsError(t 
 
 func TestResolveCoordinatorSelectionConfig_Sender(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_SENDER,
 	})
@@ -247,7 +248,7 @@ func TestResolveCoordinatorSelectionConfig_Sender(t *testing.T) {
 
 func TestResolveCoordinatorSelectionConfig_Endorser_NoCandidates_DefaultsToLocalNode(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection:          prototk.ContractConfig_COORDINATOR_ENDORSER,
 		CoordinatorEndorserCandidates: []string{},
@@ -259,7 +260,7 @@ func TestResolveCoordinatorSelectionConfig_Endorser_NoCandidates_DefaultsToLocal
 
 func TestResolveCoordinatorSelectionConfig_Endorser_InvalidCandidate_ReturnsError(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ResolveCoordinatorSelectionConfig(ctx, "localNode", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection:          prototk.ContractConfig_COORDINATOR_ENDORSER,
 		CoordinatorEndorserCandidates: []string{"not-a-valid-locator"},
@@ -269,7 +270,7 @@ func TestResolveCoordinatorSelectionConfig_Endorser_InvalidCandidate_ReturnsErro
 
 func TestResolveCoordinatorSelectionConfig_Endorser_ValidCandidates_DedupesSortsIncludesLocalNode(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "node1", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection:          prototk.ContractConfig_COORDINATOR_ENDORSER,
 		CoordinatorEndorserCandidates: []string{"id@node1", "id@node2"},
@@ -282,7 +283,7 @@ func TestResolveCoordinatorSelectionConfig_Endorser_ValidCandidates_DedupesSorts
 
 func TestResolveCoordinatorSelectionConfig_Endorser_LocalNodeAddedWhenNotInCandidates(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "node3", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection:          prototk.ContractConfig_COORDINATOR_ENDORSER,
 		CoordinatorEndorserCandidates: []string{"id@node1", "id@node2"},
@@ -294,7 +295,7 @@ func TestResolveCoordinatorSelectionConfig_Endorser_LocalNodeAddedWhenNotInCandi
 
 func TestResolveCoordinatorSelectionConfig_Endorser_DuplicateCandidateNodes_Deduped(t *testing.T) {
 	ctx := t.Context()
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	cfg, err := ResolveCoordinatorSelectionConfig(ctx, "node2", contractAddress, &prototk.ContractConfig{
 		CoordinatorSelection: prototk.ContractConfig_COORDINATOR_ENDORSER,
 		// Three locators mapping to two distinct nodes: nodeB appears twice.

@@ -48,7 +48,7 @@ type ReceiptInput struct {
 	ReceiptType     ReceiptType              // required
 	TransactionID   uuid.UUID                // required
 	OnChain         pldtypes.OnChainLocation // OnChain.Type must be set for an on-chain transaction/event
-	ContractAddress *pldtypes.EthAddress     // the contract address - deployments only
+	ContractAddress *pldtypes.ChainAddress   // the contract address - deployments only
 	FailureMessage  string                   // set for RT_FailedWithMessage
 	RevertData      pldtypes.HexBytes        // set for RT_FailedOnChainWithRevertData
 }

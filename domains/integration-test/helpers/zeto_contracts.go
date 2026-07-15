@@ -402,11 +402,12 @@ func registerImpl(ctx context.Context, name string, domainContracts *ZetoDomainC
 		params.Implementation.Verifiers.BatchBurnVerifier = batchBurnVerifierAddr.String()
 	}
 
+	addrChain := addr.ChainAddress()
 	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     deployer,
-			To:       addr,
+			To:       &addrChain,
 			Data:     pldtypes.JSONString(params),
 			Function: abiFunc.String(),
 		},

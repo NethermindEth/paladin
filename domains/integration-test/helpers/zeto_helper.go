@@ -45,7 +45,7 @@ var ZetoAnonNullifierKycABIJSON []byte
 type ZetoHelper struct {
 	t       *testing.T
 	rpc     rpcclient.Client
-	Address *pldtypes.EthAddress
+	Address *pldtypes.ChainAddress
 }
 
 // =============================================================================
@@ -67,11 +67,12 @@ func DeployZetoFungible(ctx context.Context, t *testing.T, rpc rpcclient.Client,
 	if rpcerr != nil {
 		assert.NoError(t, rpcerr)
 	}
+	addrChain := addr.ChainAddress()
 	return &ZetoHelperFungible{
 		ZetoHelper: ZetoHelper{
 			t:       t,
 			rpc:     rpc,
-			Address: &addr,
+			Address: &addrChain,
 		},
 	}
 }
@@ -195,11 +196,12 @@ func (z *ZetoHelper) DelegateLock(ctx context.Context, tb testbed.Testbed, locke
 
 func (z *ZetoHelper) MintERC20(ctx context.Context, tb testbed.Testbed, erc20Address pldtypes.EthAddress, amount int64, from, to string) {
 	paramsJson, _ := json.Marshal(&map[string]any{"amount": amount, "to": to})
+	erc20AddressChain := erc20Address.ChainAddress()
 	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     from,
-			To:       &erc20Address,
+			To:       &erc20AddressChain,
 			Function: "mint",
 			Data:     paramsJson,
 		},
@@ -210,11 +212,12 @@ func (z *ZetoHelper) MintERC20(ctx context.Context, tb testbed.Testbed, erc20Add
 
 func (z *ZetoHelper) ApproveERC20(ctx context.Context, tb testbed.Testbed, erc20Address pldtypes.EthAddress, amount int64, from string) {
 	paramsJson, _ := json.Marshal(&map[string]any{"spender": z.Address.String(), "value": amount})
+	erc20AddressChain := erc20Address.ChainAddress()
 	_, err := tb.ExecTransactionSync(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     from,
-			To:       &erc20Address,
+			To:       &erc20AddressChain,
 			Function: "approve",
 			Data:     paramsJson,
 		},
@@ -281,11 +284,12 @@ func DeployZetoNonFungible(ctx context.Context, t *testing.T, rpc rpcclient.Clie
 	if rpcerr != nil {
 		assert.NoError(t, rpcerr)
 	}
+	addrChain := addr.ChainAddress()
 	return &ZetoHelperNonFungible{
 		ZetoHelper: ZetoHelper{
 			t:       t,
 			rpc:     rpc,
-			Address: &addr,
+			Address: &addrChain,
 		},
 	}
 }

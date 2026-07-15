@@ -32,12 +32,12 @@ import (
 
 // DB persisted record for a prepared transaction
 type preparedTransaction struct {
-	ID          uuid.UUID            `gorm:"column:id"`
-	Domain      string               `gorm:"column:domain"`
-	To          *pldtypes.EthAddress `gorm:"column:to"`
-	Created     pldtypes.Timestamp   `gorm:"column:created"`
-	Transaction pldtypes.RawJSON     `gorm:"column:transaction"`
-	Metadata    pldtypes.RawJSON     `gorm:"column:metadata"`
+	ID          uuid.UUID              `gorm:"column:id"`
+	Domain      string                 `gorm:"column:domain"`
+	To          *pldtypes.ChainAddress `gorm:"column:to"`
+	Created     pldtypes.Timestamp     `gorm:"column:created"`
+	Transaction pldtypes.RawJSON       `gorm:"column:transaction"`
+	Metadata    pldtypes.RawJSON       `gorm:"column:metadata"`
 }
 
 func (preparedTransaction) TableName() string {

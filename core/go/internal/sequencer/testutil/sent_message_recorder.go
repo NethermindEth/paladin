@@ -229,7 +229,7 @@ func (r *SentMessageRecorder) SendPreDispatchRequest(
 	return nil
 }
 
-func (r *SentMessageRecorder) SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error {
+func (r *SentMessageRecorder) SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error {
 	r.sentHeartbeatCount++
 	return nil
 }
@@ -299,15 +299,15 @@ func (r *SentMessageRecorder) HasSentPreDispatchResponse() bool {
 	return r.hasSentConfirmationResponse
 }
 
-func (r *SentMessageRecorder) SendNonceAssigned(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.EthAddress, nonce uint64) error {
+func (r *SentMessageRecorder) SendNonceAssigned(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.ChainAddress, nonce uint64) error {
 	return nil
 }
 
-func (r *SentMessageRecorder) SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.EthAddress, txHash *pldtypes.Bytes32) error {
+func (r *SentMessageRecorder) SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.ChainAddress, txHash *pldtypes.Bytes32) error {
 	return nil
 }
 
-func (r *SentMessageRecorder) SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.EthAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error {
+func (r *SentMessageRecorder) SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, transactionOriginator string, contractAddress *pldtypes.ChainAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error {
 	return nil
 }
 
@@ -342,7 +342,7 @@ func (r *SentMessageRecorder) SendDelegationRejection(ctx context.Context, deleg
 	return nil
 }
 
-func (r *SentMessageRecorder) SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress) error {
+func (r *SentMessageRecorder) SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress) error {
 	r.hasSentHandoverRequest = true
 	return nil
 }

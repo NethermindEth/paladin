@@ -116,7 +116,7 @@ func TestPrivacyGroupRPCLifecycleRealDB(t *testing.T) {
 		})
 
 		psc := componentsmocks.NewDomainSmartContract(t)
-		mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, *contractAddr).Return(psc, nil)
+		mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, contractAddr.ChainAddress()).Return(psc, nil)
 
 		mwpgt1 := psc.On("WrapPrivacyGroupEVMTX", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Once()
 		mwpgt1.Run(func(args mock.Arguments) {
@@ -143,7 +143,7 @@ func TestPrivacyGroupRPCLifecycleRealDB(t *testing.T) {
 		mwpgt2.Run(func(args mock.Arguments) {
 			mwpgt2.Return(&pldapi.TransactionInput{
 				TransactionBase: pldapi.TransactionBase{
-					To:   pldtypes.RandAddress(),
+					To:   confutil.P(pldtypes.RandAddress().ChainAddress()),
 					Type: pldapi.TransactionTypePrivate.Enum(),
 					Data: pldtypes.RawJSON(`{"wrapped":"call"}`),
 				},

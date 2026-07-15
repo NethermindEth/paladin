@@ -35,7 +35,7 @@ type StateManager interface {
 	ListDomainContexts() []DomainContextInfo
 
 	// Create a new domain context - caller is responsible for closing it
-	NewDomainContext(ctx context.Context, domain Domain, contractAddress pldtypes.EthAddress) DomainContext
+	NewDomainContext(ctx context.Context, domain Domain, contractAddress pldtypes.ChainAddress) DomainContext
 
 	// Get a previously created domain context
 	GetDomainContext(ctx context.Context, id uuid.UUID) DomainContext
@@ -63,7 +63,7 @@ type StateManager interface {
 	FindStates(ctx context.Context, dbTX persistence.DBTX, domainName string, schemaID pldtypes.Bytes32, query *query.QueryJSON, extQueryOptions *StateQueryOptions) (s []*pldapi.State, err error)
 
 	// GetState returns state by ID, with optional labels
-	GetStatesByID(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.EthAddress, stateIDs []pldtypes.HexBytes, failNotFound, withLabels bool) ([]*pldapi.State, error)
+	GetStatesByID(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.ChainAddress, stateIDs []pldtypes.HexBytes, failNotFound, withLabels bool) ([]*pldapi.State, error)
 
 	// Get all states created, read or spent by a confirmed transaction
 	GetTransactionStates(ctx context.Context, dbTX persistence.DBTX, txID uuid.UUID) (*pldapi.TransactionStates, error)
@@ -77,7 +77,7 @@ type StateManager interface {
 
 type PendingPrivateStateDataEntry struct {
 	StateID     pldtypes.HexBytes
-	Contract    pldtypes.EthAddress
+	Contract    pldtypes.ChainAddress
 	BlockNumber int64
 }
 
@@ -88,9 +88,9 @@ type StateQueryOptions struct {
 }
 
 type DomainContextInfo struct {
-	ID              uuid.UUID           `json:"id"`
-	DomainName      string              `json:"domain"`
-	ContractAddress pldtypes.EthAddress `json:"contractAddress"`
+	ID              uuid.UUID             `json:"id"`
+	DomainName      string                `json:"domain"`
+	ContractAddress pldtypes.ChainAddress `json:"contractAddress"`
 }
 
 // The DSI is the state interface that is exposed outside of the statestore package, for the
@@ -219,7 +219,7 @@ type StateUpsert struct {
 type StateUpsertOutsideContext struct {
 	ID              pldtypes.HexBytes
 	SchemaID        pldtypes.Bytes32
-	ContractAddress *pldtypes.EthAddress
+	ContractAddress *pldtypes.ChainAddress
 	Data            pldtypes.RawJSON
 }
 
@@ -243,6 +243,6 @@ type Schema interface {
 	ID() pldtypes.Bytes32
 	Signature() string
 	Persisted() *pldapi.Schema
-	ProcessState(ctx context.Context, contractAddress *pldtypes.EthAddress, data pldtypes.RawJSON, id pldtypes.HexBytes, customHash bool) (*StateWithLabels, error)
+	ProcessState(ctx context.Context, contractAddress *pldtypes.ChainAddress, data pldtypes.RawJSON, id pldtypes.HexBytes, customHash bool) (*StateWithLabels, error)
 	RecoverLabels(ctx context.Context, s *pldapi.State) (*StateWithLabels, error)
 }

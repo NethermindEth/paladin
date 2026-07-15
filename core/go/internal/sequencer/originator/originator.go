@@ -75,7 +75,7 @@ type originator struct {
 	/* Config */
 	nodeName            string
 	blockRange          uint64
-	contractAddress     *pldtypes.EthAddress
+	contractAddress     *pldtypes.ChainAddress
 	inactiveGracePeriod int // expressed as a multiple of heartbeat intervals
 
 	/* Dependencies */
@@ -88,7 +88,7 @@ func NewOriginator(
 	nodeName string,
 	transportWriter transport.TransportWriter,
 	engineIntegration common.EngineIntegration,
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	configuration *pldconf.SequencerConfig,
 	metrics metrics.DistributedSequencerMetrics,
 	selectionConfig *common.CoordinatorSelectionConfig,

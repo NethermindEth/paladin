@@ -28,6 +28,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/saladintypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/scspec"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
@@ -58,6 +59,8 @@ func (s *stellarChainIO) ChainKind() string { return "stellar" }
 
 func (s *stellarChainIO) SigningAlgorithm() string { return algorithms.EDDSA_ED25519 }
 func (s *stellarChainIO) VerifierType() string     { return verifiers.STELLAR_ADDRESS }
+
+func (s *stellarChainIO) NetworkPassphrase() string { return s.networkPassphrase }
 
 func (s *stellarChainIO) ResolveIdentity(ctx context.Context, errorDescription, lookup string, verifierList []*prototk.ResolvedVerifier) (*identityPair, error) {
 	verifier := domain.FindVerifier(lookup, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, verifierList)
@@ -112,6 +115,16 @@ func scValString(str string) (xdr.ScVal, error) {
 func scValVec(items []xdr.ScVal) (xdr.ScVal, error) {
 	vec := xdr.ScVec(items)
 	return xdr.NewScVal(xdr.ScValTypeScvVec, &vec)
+}
+
+// scValAddress builds an Address SCVal from a strkey string (account "G..." or contract "C...").
+// Reuses scspec.AddressFromStrkey rather than re-deriving xdr.ScAddress from strkey bytes here.
+func scValAddress(strkeyAddr string) (xdr.ScVal, error) {
+	addr, err := scspec.AddressFromStrkey(strkeyAddr)
+	if err != nil {
+		return xdr.ScVal{}, err
+	}
+	return xdr.NewScVal(xdr.ScValTypeScvAddress, addr)
 }
 
 func marshalScVal(v xdr.ScVal) ([]byte, error) {

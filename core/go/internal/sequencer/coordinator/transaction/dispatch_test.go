@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator/dependencytracker"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/coordinator/grapher"
@@ -682,10 +683,10 @@ func Test_dispatch_Success_PrepareTransactionBranch(t *testing.T) {
 func Test_mapPreparedTransaction_PrivateTransaction(t *testing.T) {
 	addr := pldtypes.RandAddress()
 	txn, _ := NewTransactionBuilderForTesting(t, State_Ready_For_Dispatch).
-		Address(*addr).
+		Address(addr.ChainAddress()).
 		PreparedPrivateTransaction(&pldapi.TransactionInput{
 			TransactionBase: pldapi.TransactionBase{
-				To: addr,
+				To: confutil.P(addr.ChainAddress()),
 			},
 		}).
 		Build()
@@ -700,10 +701,10 @@ func Test_mapPreparedTransaction_PrivateTransaction(t *testing.T) {
 func Test_mapPreparedTransaction_PublicTransaction(t *testing.T) {
 	addr := pldtypes.RandAddress()
 	txn, _ := NewTransactionBuilderForTesting(t, State_Ready_For_Dispatch).
-		Address(*addr).
+		Address(addr.ChainAddress()).
 		PreparedPublicTransaction(&pldapi.TransactionInput{
 			TransactionBase: pldapi.TransactionBase{
-				To: addr,
+				To: confutil.P(addr.ChainAddress()),
 			},
 		}).
 		Build()
@@ -721,7 +722,7 @@ func Test_mapPreparedTransaction_StateRefs(t *testing.T) {
 	infoID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 
 	txn, _ := NewTransactionBuilderForTesting(t, State_Ready_For_Dispatch).
-		Address(*addr).
+		Address(addr.ChainAddress()).
 		PostAssembly(&components.TransactionPostAssembly{
 			InputStates:  []*components.FullState{{ID: inputID}},
 			ReadStates:   []*components.FullState{{ID: readID}},

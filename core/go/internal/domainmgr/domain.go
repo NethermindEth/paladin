@@ -103,7 +103,7 @@ type domain struct {
 	dm                   *domainManager
 	name                 string
 	api                  components.DomainManagerToDomain
-	registryAddress      *pldtypes.EthAddress
+	registryAddress      *pldtypes.ChainAddress
 	fixedSigningIdentity string
 
 	stateLock   sync.Mutex
@@ -142,7 +142,7 @@ func (dm *domainManager) newDomain(name string, conf *pldconf.DomainConfig, toDo
 		name:                 name,
 		api:                  toDomain,
 		initDone:             make(chan struct{}),
-		registryAddress:      pldtypes.MustEthAddress(conf.RegistryAddress), // check earlier in startup
+		registryAddress:      pldtypes.MustParseChainAddress(conf.RegistryAddress), // check earlier in startup
 		fixedSigningIdentity: conf.FixedSigningIdentity,
 		schemasByID:          make(map[string]components.Schema),
 		inFlight:             make(map[string]*inFlightDomainRequest),
@@ -156,7 +156,7 @@ func (dm *domainManager) newDomain(name string, conf *pldconf.DomainConfig, toDo
 	return d
 }
 
-func (d *domain) processDomainConfig(dbTX persistence.DBTX, confRes *prototk.ConfigureDomainResponse) (*prototk.InitDomainRequest, error) {
+func (d *domain) processDomainConfig(dbTX persistence.DBTX, confRes *prototk.ConfigureDomainResponse, chainKind baseledger.ChainKind) (*prototk.InitDomainRequest, error) {
 	d.stateLock.Lock()
 	defer d.stateLock.Unlock()
 
@@ -190,11 +190,21 @@ func (d *domain) processDomainConfig(dbTX persistence.DBTX, confRes *prototk.Con
 		}
 	}
 
-	registryAddressChain := d.registryAddress.ChainAddress()
+	registrySource := blockindexer.EventStreamSource{Address: d.registryAddress}
+	if chainKind == baseledger.ChainKindStellar {
+		// Non-ABI (Stellar) source: SaladinFactory.register has no Solidity-style ABI to match
+		// against, so describe the wanted event by selector instead (chapter 14 step 5) - mirrors
+		// registrymgr's own configureEventStream, and must use the exact same selector formula the
+		// Stellar ingestor computes when writing indexed_events, or the two will never match.
+		registrySource.Selectors = []pldtypes.Bytes32{stellarRegisterSelector}
+	} else {
+		registrySource.ABI = iPaladinContractRegistryABI
+	}
+
 	stream := &blockindexer.EventStreamDefinition{
 		Type: blockindexer.EventStreamTypeInternal.Enum(),
 		Sources: []blockindexer.EventStreamSource{
-			{ABI: iPaladinContractRegistryABI, Address: &registryAddressChain},
+			registrySource,
 		},
 	}
 
@@ -274,7 +284,7 @@ func (d *domain) init() {
 		// Process the configuration, so we can move onto init
 		var initReq *prototk.InitDomainRequest
 		err = d.dm.persistence.Transaction(d.ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
-			initReq, err = d.processDomainConfig(dbTX, confRes)
+			initReq, err = d.processDomainConfig(dbTX, confRes, chainInfo.Kind)
 			return err
 		})
 		if err != nil {
@@ -364,7 +374,7 @@ func (d *domain) Name() string {
 	return d.name
 }
 
-func (d *domain) RegistryAddress() *pldtypes.EthAddress {
+func (d *domain) RegistryAddress() *pldtypes.ChainAddress {
 	return d.registryAddress
 }
 
@@ -784,10 +794,16 @@ func (d *domain) PrepareDeploy(ctx context.Context, tx *components.PrivateContra
 		if err != nil {
 			return err
 		}
+		// EthTransaction is EVM-only (Pente hooks); this deploy-via-registry-invoke path assumes
+		// an EVM registry, so unwrap explicitly rather than assuming.
+		registryEthAddr, err := d.RegistryAddress().EthAddress()
+		if err != nil {
+			return err
+		}
 		tx.DeployTransaction = nil
 		tx.InvokeTransaction = &components.EthTransaction{
 			FunctionABI: &functionABI,
-			To:          *d.RegistryAddress(),
+			To:          *registryEthAddr,
 			Inputs:      inputs,
 		}
 	} else if res.Deploy != nil && res.Transaction == nil {
@@ -1007,7 +1023,7 @@ func (d *domain) SendTransaction(ctx context.Context, req *prototk.SendTransacti
 	if req.Transaction.Type == prototk.TransactionInput_PUBLIC {
 		txType = pldapi.TransactionTypePublic
 	}
-	contractAddress, err := pldtypes.ParseEthAddress(req.Transaction.ContractAddress)
+	contractAddress, err := pldtypes.ParseChainAddress(req.Transaction.ContractAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -1156,9 +1172,9 @@ func (d *domain) InitPrivacyGroup(ctx context.Context, id pldtypes.HexBytes, gen
 	if err := json.Unmarshal(([]byte)(res.Transaction.FunctionAbiJson), &functionABI); err != nil {
 		return nil, i18n.WrapError(ctx, err, msgs.MsgDomainPrivateAbiJsonInvalid)
 	}
-	var optionalContractAddr *pldtypes.EthAddress
+	var optionalContractAddr *pldtypes.ChainAddress
 	if res.Transaction.ContractAddress != nil {
-		optionalContractAddr, err = pldtypes.ParseEthAddress(*res.Transaction.ContractAddress)
+		optionalContractAddr, err = pldtypes.ParseChainAddress(*res.Transaction.ContractAddress)
 		if err != nil {
 			return nil, err
 		}

@@ -155,7 +155,7 @@ func TestBuildAndSubmitPublicTXHTTPOk(t *testing.T) {
 				}`, string(tx.Data))
 				require.Equal(t, pldapi.TransactionTypePublic, tx.Type.V())
 				require.Equal(t, "newWidget", tx.Function)
-				require.Equal(t, contractAddr, tx.To)
+				require.Equal(t, contractAddr.ChainAddress(), *tx.To)
 				require.Equal(t, "tx.sender", tx.From)
 				require.Equal(t, pldtypes.HexUint64(100000), *tx.PublicTxOptions.Gas)
 				return successResponse(rpcReq.ID, pldtypes.JSONString(txID.String()))
@@ -239,7 +239,7 @@ func TestBuildAndSubmitPrivateTXHTTPRevert(t *testing.T) {
 				require.Equal(t, pldapi.TransactionTypePrivate, tx.Type.V())
 				require.Equal(t, "neeto", tx.Domain)
 				require.Equal(t, "newWidget", tx.Function)
-				require.Equal(t, contractAddr, tx.To)
+				require.Equal(t, contractAddr.ChainAddress(), *tx.To)
 				require.Equal(t, "tx.sender", tx.From)
 				require.Equal(t, pldtypes.HexUint64(100000), *tx.PublicTxOptions.Gas)
 				return successResponse(rpcReq.ID, pldtypes.JSONString(txID.String()))
@@ -310,7 +310,7 @@ func TestBuildAndPreparePrivateTXHTTPOk(t *testing.T) {
 				require.Equal(t, pldapi.TransactionTypePrivate, tx.Type.V())
 				require.Equal(t, "neeto", tx.Domain)
 				require.Equal(t, "newWidget", tx.Function)
-				require.Equal(t, contractAddr, tx.To)
+				require.Equal(t, contractAddr.ChainAddress(), *tx.To)
 				require.Equal(t, "tx.sender", tx.From)
 				require.Equal(t, pldtypes.HexUint64(100000), *tx.PublicTxOptions.Gas)
 				return successResponse(rpcReq.ID, pldtypes.JSONString(txID.String()))
@@ -387,7 +387,7 @@ func TestBuildAndSubmitPublicCallHTTPOk(t *testing.T) {
 			require.JSONEq(t, `["12345"]`, string(tx.Data))
 			require.Equal(t, pldapi.TransactionTypePublic, tx.Type.V())
 			require.Equal(t, "getWidgets", tx.Function)
-			require.Equal(t, contractAddr, tx.To)
+			require.Equal(t, contractAddr.ChainAddress(), *tx.To)
 			require.Equal(t, "latest", tx.Block.String())
 			return successResponse(rpcReq.ID, pldtypes.RawJSON(`[[
 				"0x172ea50b3535721154ae5b368e850825615882bb",
@@ -805,7 +805,7 @@ func TestGetters(t *testing.T) {
 			Domain:         "domain1",
 			ABIReference:   confutil.P(pldtypes.RandBytes32()),
 			From:           "tx.sender",
-			To:             pldtypes.RandAddress(),
+			To:             confutil.P(pldtypes.RandAddress().ChainAddress()),
 			Function:       "function1",
 			PublicTxOptions: pldapi.PublicTxOptions{
 				Gas: confutil.P(pldtypes.HexUint64(100000)),
@@ -824,7 +824,7 @@ func TestGetters(t *testing.T) {
 	assert.Equal(t, "domain1", b.GetDomain())
 	assert.Same(t, tx.ABIReference, b.GetABIReference())
 	assert.Equal(t, "tx.sender", b.GetFrom())
-	assert.Equal(t, tx.To, b.GetTo())
+	assert.Equal(t, tx.To.String(), b.GetTo().String())
 	assert.Equal(t, tx.Data, b.GetInputs())
 	assert.Equal(t, "function1", b.GetFunction())
 	assert.Equal(t, tx.Bytecode, b.GetBytecode())

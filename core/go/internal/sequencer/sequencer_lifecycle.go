@@ -105,7 +105,7 @@ func (seq *sequencer) heartbeatLoop(ctx context.Context, heartbeatInterval time.
 }
 
 // Return the sequencer for the requested contract address, instantiating it first if this is its first use.
-func (sMgr *sequencerManager) LoadSequencer(ctx context.Context, dbTX persistence.DBTX, contractAddr pldtypes.EthAddress, domainAPI components.DomainSmartContract, tx *components.PrivateTransaction) (Sequencer, error) {
+func (sMgr *sequencerManager) LoadSequencer(ctx context.Context, dbTX persistence.DBTX, contractAddr pldtypes.ChainAddress, domainAPI components.DomainSmartContract, tx *components.PrivateTransaction) (Sequencer, error) {
 	var err error
 	if domainAPI == nil {
 		// Does a domain exist at this address?
@@ -238,7 +238,7 @@ func (sMgr *sequencerManager) LoadSequencer(ctx context.Context, dbTX persistenc
 }
 
 // Return the sequencer only if it is already in memory. This never instantiates a new sequencer.
-func (sMgr *sequencerManager) GetSequencer(ctx context.Context, contractAddr pldtypes.EthAddress) Sequencer {
+func (sMgr *sequencerManager) GetSequencer(ctx context.Context, contractAddr pldtypes.ChainAddress) Sequencer {
 	sMgr.sequencersLock.RLock()
 	defer sMgr.sequencersLock.RUnlock()
 	s := sMgr.sequencers[contractAddr.String()]

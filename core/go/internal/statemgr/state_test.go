@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
@@ -48,7 +49,7 @@ func TestPersistStateMissingSchema(t *testing.T) {
 
 	upserts := []*components.StateUpsertOutsideContext{
 		{
-			ContractAddress: pldtypes.RandAddress(),
+			ContractAddress: confutil.P(pldtypes.RandAddress().ChainAddress()),
 			SchemaID:        pldtypes.Bytes32Keccak(([]byte)("test")),
 		},
 	}
@@ -74,7 +75,7 @@ func TestPersistStateInvalidState(t *testing.T) {
 
 	upserts := []*components.StateUpsertOutsideContext{
 		{
-			ContractAddress: pldtypes.RandAddress(),
+			ContractAddress: confutil.P(pldtypes.RandAddress().ChainAddress()),
 			SchemaID:        schemaID,
 		},
 	}
@@ -103,7 +104,7 @@ func TestFindStatesMissingSchema(t *testing.T) {
 
 	db.ExpectQuery("SELECT").WillReturnRows(db.NewRows([]string{}))
 
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ss.FindContractStates(ctx, ss.p.NOTX(), "domain1", contractAddress, pldtypes.Bytes32Keccak(([]byte)("schema1")), &query.QueryJSON{}, "all")
 	assert.Regexp(t, "PD010106", err)
 }
@@ -118,7 +119,7 @@ func TestFindStatesBadQuery(t *testing.T) {
 		definition: &abi.Parameter{},
 	})
 
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ss.FindContractStates(ctx, ss.p.NOTX(), "domain1", contractAddress, schemaID, &query.QueryJSON{
 		Statements: query.Statements{
 			Ops: query.Ops{
@@ -145,7 +146,7 @@ func TestFindStatesFail(t *testing.T) {
 
 	db.ExpectQuery("SELECT.*created").WillReturnError(fmt.Errorf("pop"))
 
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ss.FindContractStates(ctx, ss.p.NOTX(), "domain1", contractAddress, schemaID, &query.QueryJSON{
 		Statements: query.Statements{
 			Ops: query.Ops{
@@ -166,7 +167,7 @@ func TestFindStatesUnknownContext(t *testing.T) {
 	defer done()
 
 	schemaID := pldtypes.Bytes32Keccak(([]byte)("schema1"))
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ss.FindContractStates(ctx, ss.p.NOTX(), "domain1", contractAddress, schemaID, &query.QueryJSON{
 		Statements: query.Statements{
 			Ops: query.Ops{
@@ -290,10 +291,10 @@ func TestFindNullifiersInContext(t *testing.T) {
 	td.On("Name").Return("domain1")
 	td.On("CustomHashFunction").Return(false)
 
-	dCtx := ss.NewDomainContext(ctx, td, *pldtypes.RandAddress())
+	dCtx := ss.NewDomainContext(ctx, td, pldtypes.RandAddress().ChainAddress())
 	defer dCtx.Close()
 
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	results, err := ss.FindContractNullifiers(ctx, ss.p.NOTX(), "domain1", *contractAddress, schemaID,
 		query.NewQueryBuilder().Limit(1).Query(), pldapi.StateStatusQualifier(dCtx.Info().ID.String()))
 	require.NoError(t, err)
@@ -306,7 +307,7 @@ func TestFindNullifiersUnknownContext(t *testing.T) {
 	defer done()
 
 	schemaID := pldtypes.Bytes32Keccak(([]byte)("schema1"))
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 	_, err := ss.FindContractNullifiers(ctx, ss.p.NOTX(), "domain1", *contractAddress, schemaID, &query.QueryJSON{
 		Statements: query.Statements{
 			Ops: query.Ops{
@@ -366,7 +367,7 @@ func TestWritePreVerifiedStates_ClearsCompletionRows(t *testing.T) {
 	_ = mockDomain(t, m, "domain1", false)
 	m.txManager.On("NotifyStatesDBChanged", mock.Anything).Return()
 
-	contractAddr := pldtypes.RandAddress()
+	contractAddr := confutil.P(pldtypes.RandAddress().ChainAddress())
 
 	// We need the real state IDs to pre-insert completion rows, so write the states first.
 	var states []*pldapi.State

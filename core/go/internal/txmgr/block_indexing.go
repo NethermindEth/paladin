@@ -111,6 +111,16 @@ func (tm *txManager) blockIndexerPreCommit(
 }
 
 func (tm *txManager) mapBlockchainReceipt(pubTx *components.PublicTxMatch) *components.ReceiptInput {
+	// Prefer the chain-neutral ContractAddressChain if the indexer populated it, otherwise derive
+	// from the EVM-only ContractAddress - mirrors the same dual-field pattern used elsewhere for
+	// indexed_transactions (e.g. blockchain event listener mapping).
+	var contractAddress *pldtypes.ChainAddress
+	if pubTx.ContractAddressChain != nil {
+		contractAddress = pubTx.ContractAddressChain
+	} else if pubTx.ContractAddress != nil {
+		chainAddr := pubTx.ContractAddress.ChainAddress()
+		contractAddress = &chainAddr
+	}
 	receipt := &components.ReceiptInput{
 		TransactionID: pubTx.TransactionID,
 		OnChain: pldtypes.OnChainLocation{
@@ -119,7 +129,7 @@ func (tm *txManager) mapBlockchainReceipt(pubTx *components.PublicTxMatch) *comp
 			BlockNumber:      pubTx.BlockNumber,
 			TransactionIndex: pubTx.TransactionIndex,
 		},
-		ContractAddress: pubTx.ContractAddress,
+		ContractAddress: contractAddress,
 		RevertData:      pubTx.RevertReason,
 	}
 	if pubTx.Result.V() == pldapi.TXResult_SUCCESS {

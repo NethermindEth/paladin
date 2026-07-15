@@ -76,9 +76,9 @@ func (*TransactionStateTransitionEvent[S]) TypeString() string {
 
 type HeartbeatReceivedEvent struct {
 	BaseEvent
-	FromNode            string               `json:"from"`
-	ContractAddress     *pldtypes.EthAddress `json:"contractAddress"`
-	CoordinatorSnapshot *CoordinatorSnapshot `json:"coordinatorSnapshot"`
+	FromNode            string                 `json:"from"`
+	ContractAddress     *pldtypes.ChainAddress `json:"contractAddress"`
+	CoordinatorSnapshot *CoordinatorSnapshot   `json:"coordinatorSnapshot"`
 }
 
 func (*HeartbeatReceivedEvent) Type() EventType {

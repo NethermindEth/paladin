@@ -50,7 +50,7 @@ var notoTransferConstructorABI = abi.ABI{
 
 // notoInstance holds the per-Noto-contract state established during Setup.
 type notoInstance struct {
-	contractAddress *pldtypes.EthAddress
+	contractAddress *pldtypes.ChainAddress
 	notary          string
 	sender          string
 	// signingKey is the short wallet key used in From fields (no @node suffix).

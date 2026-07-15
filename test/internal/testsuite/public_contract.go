@@ -34,7 +34,7 @@ import (
 type publicContractSuite struct {
 	ctx             context.Context
 	runner          Runner
-	contractAddress *pldtypes.EthAddress
+	contractAddress *pldtypes.ChainAddress
 	sub             rpcclient.Subscription
 	abiRef          *pldtypes.Bytes32
 }
@@ -182,7 +182,7 @@ func (s *publicContractSuite) PostRun() error {
 
 type publicContract struct {
 	testBase
-	contractAddress *pldtypes.EthAddress
+	contractAddress *pldtypes.ChainAddress
 	runner          Runner
 	abiRef          *pldtypes.Bytes32
 }

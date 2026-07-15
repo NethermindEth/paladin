@@ -160,7 +160,7 @@ func TestResolveFunctionNoABI(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 		ABI: abi.ABI{},
 	})
@@ -176,7 +176,7 @@ func TestResolveFunctionBadABI(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 		ABI: abi.ABI{{Type: abi.Function, Name: "doIt", Inputs: abi.ParameterArray{{Type: "wrong"}}}},
 	})
@@ -280,7 +280,7 @@ func TestSubmitBadFromAddr(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
 			From:     "sender1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -305,7 +305,7 @@ func TestResolveFunctionHexInputOK(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
 			From:     "sender1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -325,7 +325,7 @@ func TestResolveFunctionHexInputFail(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`"0x"`),
 		},
 		ABI: exampleABI,
@@ -345,7 +345,7 @@ func TestResolveFunctionUnsupportedInput(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`false`),
 		},
 		ABI: exampleABI,
@@ -368,7 +368,7 @@ func TestResolveFunctionPlainNameOK(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     "sender1",
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -404,7 +404,7 @@ func TestSubmitEthAddrOK(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     fmt.Sprintf("eth_address:%s", addr.String()),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -428,7 +428,7 @@ func TestSubmitVerifierNotEthAddr(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     "eth_address:banana",
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -456,7 +456,7 @@ func TestSubmitVerifierNotFound(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     fmt.Sprintf("eth_address:%s", addr.String()),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -508,7 +508,7 @@ func TestSendTransactionPrivateInvoke(t *testing.T) {
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Domain:   "domain1",
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -535,7 +535,7 @@ func TestSendTransactionPrivateInvokeFail(t *testing.T) {
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Domain:   "domain1",
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -557,7 +557,7 @@ func TestResolveFunctionOnlyOneToMatch(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
 			From: "sender1",
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -581,7 +581,7 @@ func TestResolveFunctionOnlyDuplicateMatch(t *testing.T) {
 	_, err = txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -605,7 +605,7 @@ func TestResolveFunctionNoMatch(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: "nope",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -627,7 +627,7 @@ func TestParseInputsBadTxType(t *testing.T) {
 
 	_, err = txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -646,7 +646,7 @@ func TestParseInputsPrivateLookupFail(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePrivate.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 	})
 	assert.Regexp(t, "pop", err)
@@ -662,7 +662,7 @@ func TestParseInputsPrivateDomainMismatch(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Domain: "domain2",
 			Type:   pldapi.TransactionTypePrivate.Enum(),
-			To:     pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:     confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 	})
 	assert.Regexp(t, "PD012231", err)
@@ -698,7 +698,7 @@ func TestParseInputsBadFromRemoteNode(t *testing.T) {
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
 			From: "me@node2",
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -721,7 +721,7 @@ func TestParseInputsBytecodeNonConstructor(t *testing.T) {
 	_, err = txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI:      exampleABI,
@@ -765,7 +765,7 @@ func TestParseInputsBadDataJSON(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.RawJSON(`{!!! bad json`),
 		},
 		ABI: exampleABI,
@@ -786,7 +786,7 @@ func TestParseInputsBadDataForFunction(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.RawJSON(`["not a number"]`),
 		},
 		ABI: exampleABI,
@@ -807,7 +807,7 @@ func TestParseInputsBadByteString(t *testing.T) {
 	_, err := txm.sendTransactionNewDBTX(ctx, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type: pldapi.TransactionTypePublic.Enum(),
-			To:   pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:   confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data: pldtypes.RawJSON(`"not hex"`),
 		},
 		ABI: exampleABI,
@@ -836,7 +836,7 @@ func TestInsertTransactionFail(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
 			From:     "sender1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`[]`),
 		},
 		ABI: exampleABI,
@@ -860,7 +860,7 @@ func TestInsertTransactionPublicTxPrepareFail(t *testing.T) {
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
 			From:     "sender1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`[]`),
 		},
 		ABI: exampleABI,
@@ -1140,7 +1140,7 @@ func newTestInternalTransaction(idempotencyKey string) *pldapi.TransactionInput 
 			Type:           pldapi.TransactionTypePrivate.Enum(),
 			Domain:         "domain1",
 			Function:       "doStuff",
-			To:             pldtypes.RandAddress(),
+			To:             confutil.P(pldtypes.RandAddress().ChainAddress()),
 			IdempotencyKey: idempotencyKey,
 		},
 		ABI: abi.ABI{testInternalTransactionFn},
@@ -1166,7 +1166,7 @@ func TestChainedPrivateTXInsertWithIdempotencyKeys(t *testing.T) {
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: exampleABI[0].FunctionSelectorBytes().String(),
 			From:     "sender1",
-			To:       contractAddr,
+			To:       confutil.P(contractAddr.ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -1470,7 +1470,7 @@ func TestUpdateTransactionKeyResolutionError(t *testing.T) {
 			Function: "set",
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     "identity@node1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`{"value": 46}`),
 		},
 		ABI: abi.ABI{{Type: abi.Function, Name: "set", Inputs: abi.ParameterArray{{Type: "uint256", Name: "value"}}}},
@@ -1514,7 +1514,7 @@ func TestUpdateTransactionKeyParseError(t *testing.T) {
 			Function: "set",
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     "identity@node1",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.RawJSON(`{"value": 46}`),
 		},
 		ABI: abi.ABI{{Type: abi.Function, Name: "set", Inputs: abi.ParameterArray{{Type: "uint256", Name: "value"}}}},
@@ -1536,7 +1536,7 @@ func TestUpdateTransactionCallPublicTXUpdate(t *testing.T) {
 			Function: "set",
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			From:     from.HexString(),
-			To:       to,
+			To:       confutil.P(to.ChainAddress()),
 			Data:     pldtypes.RawJSON(`{"value": 46}`),
 		},
 		ABI: abi.ABI{{Type: abi.Function, Name: "set", Inputs: abi.ParameterArray{{Type: "uint256", Name: "value"}}}},
@@ -1609,7 +1609,7 @@ func TestResolveUpdatedTransactionResolveFunctionError(t *testing.T) {
 
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
-			To: pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To: confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 		},
 		ABI: abi.ABI{},
 	}
@@ -1632,7 +1632,7 @@ func TestResolveUpdatedTransactionParseInputError(t *testing.T) {
 
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Function: "set",
 			Data:     pldtypes.RawJSON(`{`),
 		},
@@ -1651,7 +1651,7 @@ func TestResolveUpdatedTransactionSuccess(t *testing.T) {
 	from := pldtypes.MustEthAddress(pldtypes.RandHex(20))
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
-			To:       to,
+			To:       confutil.P(to.ChainAddress()),
 			Function: "set",
 			Data:     pldtypes.RawJSON(`{"value": 46}`),
 		},
@@ -1685,7 +1685,7 @@ func TestResolveUpdatedTransactionSuccess(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, validatedTransaction)
-	assert.Equal(t, to, validatedTransaction.Transaction.To)
+	assert.Equal(t, confutil.P(to.ChainAddress()), validatedTransaction.Transaction.To)
 	assert.Equal(t, from.String(), validatedTransaction.Transaction.From)
 	assert.Equal(t, pldapi.TransactionTypePublic.Enum(), validatedTransaction.Transaction.Type)
 	assert.Equal(t, "idempotencyKey", validatedTransaction.Transaction.IdempotencyKey)
@@ -1694,4 +1694,3 @@ func TestResolveUpdatedTransactionSuccess(t *testing.T) {
 	assert.Equal(t, `{"value":"46"}`, validatedTransaction.Transaction.Data.String())
 	assert.Equal(t, "60fe47b1000000000000000000000000000000000000000000000000000000000000002e", hex.EncodeToString(validatedTransaction.PublicTxData))
 }
-

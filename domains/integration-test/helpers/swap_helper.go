@@ -72,11 +72,14 @@ func DeploySwap(
 	deploy := NewTransactionHelper(ctx, t, tb, builder).SignAndSend(signer).Wait(5 * time.Second)
 	require.NoError(t, deploy.Error())
 	assert.NotNil(t, deploy.Receipt().ContractAddress)
+	// Swap is a raw EVM contract - unwrap explicitly.
+	addr, err := deploy.Receipt().ContractAddress.EthAddress()
+	require.NoError(t, err)
 	return &SwapHelper{
 		t:       t,
 		tb:      tb,
 		pld:     pld,
-		Address: deploy.Receipt().ContractAddress,
+		Address: addr,
 		ABI:     build.ABI,
 	}
 }

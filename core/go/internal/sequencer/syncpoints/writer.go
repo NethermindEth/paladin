@@ -53,13 +53,18 @@ to atomically allocate and record the nonce under that same transaction.
 // but never more than one of these.  We probably could make the mutually exclusive nature more explicit by using interfaces but its not worth the added complexity
 
 type syncPointOperation struct {
-	contractAddress   pldtypes.EthAddress
+	contractAddress   pldtypes.ChainAddress
 	domainContext     components.DomainContext
 	finalizeOperation *finalizeOperation
 	dispatchOperation *dispatchOperation
 }
 
 func (dso *syncPointOperation) WriteKey() string {
+	// Deploy dispatches have no contract address yet (the deploy is what creates it),
+	// so they all share this batching key rather than leaving WriteKey empty.
+	if dso.contractAddress.IsZero() {
+		return "deploy"
+	}
 	return dso.contractAddress.String()
 }
 

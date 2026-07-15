@@ -55,7 +55,7 @@ func TestPrivateSmartContractQueryFail(t *testing.T) {
 	})
 	defer done()
 
-	_, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, pldtypes.EthAddress(pldtypes.RandBytes(20)))
+	_, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, pldtypes.EthAddress(pldtypes.RandBytes(20)).ChainAddress())
 	assert.Regexp(t, "pop", err)
 
 }
@@ -69,7 +69,7 @@ func TestPrivateSmartContractQueryNoResult(t *testing.T) {
 	})
 	defer done()
 
-	_, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, pldtypes.EthAddress(pldtypes.RandBytes(20)))
+	_, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, pldtypes.EthAddress(pldtypes.RandBytes(20)).ChainAddress())
 	assert.Regexp(t, "PD011609", err)
 
 }
@@ -91,7 +91,7 @@ func goodPSC(t *testing.T, td *testDomainContext) *domainContract {
 	loadResult, psc, err := d.initSmartContract(d.ctx, d.dm.persistence.NOTX(), &PrivateSmartContract{
 		DeployTX:        uuid.New(),
 		RegistryAddress: *d.RegistryAddress(),
-		Address:         pldtypes.EthAddress(pldtypes.RandBytes(20)),
+		Address:         pldtypes.EthAddress(pldtypes.RandBytes(20)).ChainAddress(),
 		ConfigBytes:     []byte{0xfe, 0xed, 0xbe, 0xef},
 	})
 	require.NoError(t, err)
@@ -1145,7 +1145,8 @@ func TestPrepareTransactionPrivateResult(t *testing.T) {
 	tx.Signer = "signer1"
 
 	contractAddr := pldtypes.RandAddress()
-	td.dm.contractCache.Set(*contractAddr, psc)
+	contractAddrChain := contractAddr.ChainAddress()
+	td.dm.contractCache.Set(contractAddrChain, psc)
 
 	td.tp.Functions.PrepareTransaction = func(ctx context.Context, ptr *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 		return &prototk.PrepareTransactionResponse{
@@ -1165,7 +1166,7 @@ func TestPrepareTransactionPrivateResult(t *testing.T) {
 		Type:           pldapi.TransactionTypePrivate.Enum(),
 		Function:       "doTheNextThing(string)",
 		From:           tx.Signer,
-		To:             contractAddr,
+		To:             &contractAddrChain,
 		Data:           pldtypes.RawJSON(`{"thing": "something else"}`),
 		Domain:         psc.Domain().Name(),
 	}, tx.PreparedPrivateTransaction.TransactionBase)
@@ -1190,7 +1191,7 @@ func TestPrepareTransactionPrivateBadAddr(t *testing.T) {
 	}
 
 	err := psc.PrepareTransaction(td.mdc, td.c.dbTX, tx)
-	require.Regexp(t, "bad address", err)
+	require.Regexp(t, "unsupported chain address format", err)
 }
 
 func TestPrepareTransactionUnknownContract(t *testing.T) {
@@ -1550,7 +1551,7 @@ func TestGetPSCInvalidConfig(t *testing.T) {
 		}, nil
 	}
 
-	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, *addr)
+	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, addr.ChainAddress())
 	require.Regexp(t, "PD011610", err) // invalid config
 	assert.Nil(t, psc)
 }
@@ -1579,7 +1580,7 @@ func TestGetPSCUnknownDomain(t *testing.T) {
 		}, nil
 	}
 
-	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, *addr)
+	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, addr.ChainAddress())
 	require.Regexp(t, "PD011654", err) // domain no longer configured
 	assert.Nil(t, psc)
 }
@@ -1601,15 +1602,19 @@ func TestGetPSCInitError(t *testing.T) {
 		return nil, fmt.Errorf("pop")
 	}
 
-	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, *addr)
+	psc, err := td.dm.GetSmartContractByAddress(td.ctx, td.c.dbTX, addr.ChainAddress())
 	require.Regexp(t, "pop", err) // domain no longer configured
 	assert.Nil(t, psc)
 }
 
 func goodWrapPGTxCall(psc *domainContract, salt pldtypes.Bytes32) (*pldapi.TransactionInput, error) {
+	pscEthAddr, err := psc.Address().EthAddress()
+	if err != nil {
+		return nil, err
+	}
 	tx := &pldapi.PrivacyGroupEVMTX{
 		From:  "from.addr",
-		To:    confutil.P(psc.Address()),
+		To:    pscEthAddr,
 		Gas:   confutil.P(pldtypes.HexUint64(12345)),
 		Value: pldtypes.Uint64ToUint256(10000000000),
 		Input: pldtypes.JSONString(map[string]any{
@@ -1851,7 +1856,7 @@ func TestInitSmartContractQueryGroupsError(t *testing.T) {
 	loadResult, psc, err := td.d.initSmartContract(td.ctx, td.d.dm.persistence.NOTX(), &PrivateSmartContract{
 		DeployTX:        uuid.New(),
 		RegistryAddress: *td.d.RegistryAddress(),
-		Address:         *pldtypes.RandAddress(),
+		Address:         pldtypes.RandAddress().ChainAddress(),
 		ConfigBytes:     []byte{},
 	})
 	require.Error(t, err)
@@ -1888,7 +1893,7 @@ func TestInitSmartContractWithPrivacyGroup(t *testing.T) {
 	loadResult, psc, err := td.d.initSmartContract(td.ctx, td.d.dm.persistence.NOTX(), &PrivateSmartContract{
 		DeployTX:        uuid.New(),
 		RegistryAddress: *td.d.RegistryAddress(),
-		Address:         *pldtypes.RandAddress(),
+		Address:         pldtypes.RandAddress().ChainAddress(),
 		ConfigBytes:     []byte{},
 	})
 	require.NoError(t, err)

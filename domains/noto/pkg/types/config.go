@@ -23,6 +23,21 @@ import (
 
 type DomainConfig struct {
 	FactoryVersion int64 `json:"factoryVersion"`
+	// Stellar-only (chapter 14 step 6): the pre-deployed SNotoFactory instance's Stellar contract
+	// address (the contract stellarPrepareDeploy invokes) and the uploaded SNoto Wasm's hash -
+	// both required to build a real SorobanInvoke targeting SNotoFactory.deploy
+	// (soroban/contracts/snoto-factory). Ignored on EVM. NOT the same address as the domain's own
+	// registry (RegistryContractAddress, ConfigureDomainRequest) - that's the per-domain
+	// SaladinFactory instance domainmgr's event-stream trusts (chapter 14 step 5), passed as
+	// SNotoFactory.deploy's own saladin_factory argument, not this one.
+	StellarSnotoFactoryAddress string `json:"stellarSnotoFactoryAddress,omitempty"`
+	StellarSnotoWasmHash       string `json:"stellarSnotoWasmHash,omitempty"`
+	// StellarSacAddress is optional: SNoto's own initialize() requires a non-optional sac Address
+	// regardless of whether this instance backs a classic asset (the shield/unshield native-asset
+	// verbs, ch.14 §14.1, aren't wired for Stellar yet) - if unset, stellarPrepareDeploy uses the
+	// resolved notary's own chain address as a harmless inert placeholder, since deposit/withdraw
+	// are unreachable without shield/unshield. Revisit with a real value once that's built.
+	StellarSacAddress string `json:"stellarSacAddress,omitempty"`
 }
 
 var NotoConfigID_V0 = pldtypes.MustParseHexBytes("0x00010000")

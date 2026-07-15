@@ -92,6 +92,11 @@ type chainIO interface {
 	SelectFactoryABI(factoryVersion int64) abi.ABI
 	SelectInterfaceABI(variant pldtypes.HexUint64) abi.ABI
 
+	// NetworkPassphrase is Stellar-only: SNoto's own initialize() defines "config" as the raw
+	// network passphrase bytes (soroban/contracts/snoto/src/lib.rs's own doc comment), needed
+	// on-chain to recompute SALADIN_TYPED_DATA_V0 digests. Empty/unused on EVM.
+	NetworkPassphrase() string
+
 	// ComputeLockID mirrors the on-chain contract's own lock-ID derivation - today's
 	// keccak256(abi.encode(address(this), msg.sender, txId)) convention. A real Stellar
 	// implementation would be trivial here (SNoto's Rust contract already uses lock_id = tx_id,

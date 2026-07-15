@@ -27,9 +27,9 @@ type DomainConfig struct {
 }
 
 type Domain struct {
-	Name            string               `docstruct:"Domain" json:"name"`
-	RegistryAddress *pldtypes.EthAddress `docstruct:"Domain" json:"registryAddress"`
-	Config          *DomainConfig        `docstruct:"Domain" json:"config,omitempty"`
+	Name            string                 `docstruct:"Domain" json:"name"`
+	RegistryAddress *pldtypes.ChainAddress `docstruct:"Domain" json:"registryAddress"`
+	Config          *DomainConfig          `docstruct:"Domain" json:"config,omitempty"`
 }
 
 type ContractConfig struct {
@@ -37,11 +37,11 @@ type ContractConfig struct {
 }
 
 type DomainSmartContract struct {
-	DomainName    string               `docstruct:"SmartContract" json:"domainName"`
-	DomainAddress *pldtypes.EthAddress `docstruct:"SmartContract" json:"domainAddress"`
-	Address       pldtypes.EthAddress  `docstruct:"SmartContract" json:"address"`
-	Config        *ContractConfig      `docstruct:"SmartContract" json:"config,omitempty"`
-	Created       pldtypes.Timestamp   `docstruct:"SmartContract" json:"created"`
+	DomainName    string                 `docstruct:"SmartContract" json:"domainName"`
+	DomainAddress *pldtypes.ChainAddress `docstruct:"SmartContract" json:"domainAddress"`
+	Address       pldtypes.ChainAddress  `docstruct:"SmartContract" json:"address"`
+	Config        *ContractConfig        `docstruct:"SmartContract" json:"config,omitempty"`
+	Created       pldtypes.Timestamp     `docstruct:"SmartContract" json:"created"`
 }
 
 type DomainInvokeRPC struct {

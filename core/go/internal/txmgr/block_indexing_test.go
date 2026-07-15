@@ -108,7 +108,7 @@ func TestPublicConfirmWithErrorDecodeRealDB(t *testing.T) {
 				Type:         pldapi.TransactionTypePublic.Enum(),
 				ABIReference: abiRef,
 				From:         "sender1",
-				To:           pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				To:           confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			},
 		})
 		require.NoError(t, err)

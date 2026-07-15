@@ -40,7 +40,7 @@ type CoordinatorSelectionConfig struct {
 func ResolveCoordinatorSelectionConfig(
 	ctx context.Context,
 	nodeName string,
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	contractConfig *prototk.ContractConfig,
 ) (*CoordinatorSelectionConfig, error) {
 	cfg := &CoordinatorSelectionConfig{

@@ -357,7 +357,7 @@ func (sMgr *sequencerManager) revertDeploy(ctx context.Context, tx *components.P
 	tryFinalize = func() {
 		sMgr.syncPoints.QueueTransactionFinalize(ctx, &syncpoints.TransactionFinalizeRequest{
 			Domain:          tx.Domain,
-			ContractAddress: pldtypes.EthAddress{},
+			ContractAddress: pldtypes.ChainAddress{},
 			Originator:      tx.From,
 			TransactionID:   tx.ID,
 			FailureMessage:  deployError.Error(),
@@ -469,8 +469,7 @@ func (sMgr *sequencerManager) HandleTxResume(ctx context.Context, txi *component
 // in this function that the transaction isn't already being processed by the state machine.
 func (sMgr *sequencerManager) handleTx(ctx context.Context, dbTX persistence.DBTX, tx *components.PrivateTransaction, localTx *components.ResolvedTransaction, resume bool) error {
 	contractAddr := *localTx.Transaction.To
-	emptyAddress := pldtypes.EthAddress{}
-	if contractAddr == emptyAddress {
+	if contractAddr.IsZero() {
 		return i18n.NewError(ctx, msgs.MsgSequencerContractAddressNotProvided)
 	}
 
@@ -522,7 +521,7 @@ func (sMgr *sequencerManager) GetNodeName() string {
 }
 
 func (sMgr *sequencerManager) GetTxStatus(ctx context.Context, domainAddress string, txID uuid.UUID) (status components.PrivateTxStatus, err error) {
-	sequencer, err := sMgr.LoadSequencer(ctx, sMgr.components.Persistence().NOTX(), *pldtypes.MustEthAddress(domainAddress), nil, nil)
+	sequencer, err := sMgr.LoadSequencer(ctx, sMgr.components.Persistence().NOTX(), *pldtypes.MustParseChainAddress(domainAddress), nil, nil)
 	if err != nil || sequencer == nil {
 		return components.PrivateTxStatus{
 			TxID:   txID.String(),
@@ -537,7 +536,7 @@ func (sMgr *sequencerManager) HandleTransactionCollected(ctx context.Context, si
 
 	// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 	// so accept the fact that there may not be a sequencer for this public TX submission
-	sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustEthAddress(contractAddress))
+	sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(contractAddress).ChainAddress())
 	if sequencer != nil {
 		collectedEvent := &coordinatorTx.CollectedEvent{
 			BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
@@ -561,7 +560,7 @@ func (sMgr *sequencerManager) HandleNonceAssigned(ctx context.Context, nonce uin
 
 	// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 	// so accept the fact that there may not be a sequencer for this public TX submission
-	sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustEthAddress(contractAddress))
+	sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(contractAddress).ChainAddress())
 	if sequencer != nil {
 		coordinatorNonceAllocatedEvent := &coordinatorTx.NonceAllocatedEvent{
 			BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
@@ -585,7 +584,7 @@ func (sMgr *sequencerManager) HandlePublicTXSubmission(ctx context.Context, dbTX
 	if !deploy {
 		// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 		// so accept the fact that there may not be a sequencer for this public TX submission
-		sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustEthAddress(tx.TransactionContractAddress))
+		sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(tx.TransactionContractAddress).ChainAddress())
 		if sequencer != nil {
 			coordinatorSubmittedEvent := &coordinatorTx.SubmittedEvent{
 				BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
@@ -661,7 +660,9 @@ func (sMgr *sequencerManager) handleTransactionConfirmedSuccess(ctx context.Cont
 
 func (sMgr *sequencerManager) queueConfirmedRevertedEventToCoordinator(ctx context.Context, contractAddress pldtypes.EthAddress, txID uuid.UUID, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation, nonce *pldtypes.HexUint64) {
 	// If we don't have a loaded sequencer already then a newly loaded one will not know about this transaction
-	sequencer := sMgr.GetSequencer(ctx, contractAddress)
+	// contractAddress here is always EVM-sourced (block-indexer direct-revert path) - wrap for the
+	// now chain-neutral sequencer lookup.
+	sequencer := sMgr.GetSequencer(ctx, contractAddress.ChainAddress())
 	if sequencer == nil {
 		return
 	}
@@ -686,7 +687,7 @@ func (sMgr *sequencerManager) queueConfirmedRevertedEventToCoordinator(ctx conte
 func (sMgr *sequencerManager) HandleChainedTransactionOutcome(ctx context.Context, contractAddress pldtypes.EthAddress, txID uuid.UUID, receiptType components.ReceiptType, failureMessage string, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation) {
 	log.L(ctx).Infof("HandleChainedTransactionOutcome txID=%s contract=%s receiptType=%d", txID, contractAddress, receiptType)
 
-	sequencer := sMgr.GetSequencer(ctx, contractAddress)
+	sequencer := sMgr.GetSequencer(ctx, contractAddress.ChainAddress())
 	if sequencer == nil {
 		log.L(ctx).Warnf("HandleChainedTransactionOutcome: no loaded sequencer for contract %s txID=%s", contractAddress, txID)
 		return

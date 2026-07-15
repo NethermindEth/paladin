@@ -39,7 +39,7 @@ import (
 func TestSyncPointOperation_WriteKey(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	op := &syncPointOperation{
-		contractAddress: *contractAddr,
+		contractAddress: contractAddr.ChainAddress(),
 	}
 
 	key := op.WriteKey()
@@ -85,15 +85,15 @@ func TestRunBatch_OnlyDomainContexts(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc1,
 		},
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc2,
 		},
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc1, // Duplicate - should be deduplicated
 		},
 	}
@@ -124,7 +124,7 @@ func TestRunBatch_DomainContextFlushError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc,
 		},
 	}
@@ -161,7 +161,7 @@ func TestRunBatch_OnlyFinalizeOperations(t *testing.T) {
 
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:         "domain1",
@@ -172,7 +172,7 @@ func TestRunBatch_OnlyFinalizeOperations(t *testing.T) {
 			},
 		},
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:         "domain2",
@@ -208,7 +208,7 @@ func TestRunBatch_OnlyDispatchOperations(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				publicDispatches: []*PublicDispatch{
 					{
@@ -258,7 +258,7 @@ func TestRunBatch_MixedOperations(t *testing.T) {
 
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc,
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
@@ -270,7 +270,7 @@ func TestRunBatch_MixedOperations(t *testing.T) {
 			},
 		},
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc,
 			dispatchOperation: &dispatchOperation{
 				publicDispatches: []*PublicDispatch{
@@ -313,7 +313,7 @@ func TestRunBatch_FinalizeOperationError(t *testing.T) {
 
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:         "domain1",
@@ -349,7 +349,7 @@ func TestRunBatch_DispatchOperationError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				publicDispatches: []*PublicDispatch{
 					{
@@ -385,7 +385,7 @@ func TestRunBatch_NoOperations(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			// No operations set
 		},
 	}
@@ -422,11 +422,11 @@ func TestRunBatch_MultipleDomainContextsWithSameID(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc1,
 		},
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			domainContext:   dc2, // Same ID as dc1, overwrites dc1 in the map
 		},
 	}
@@ -460,7 +460,7 @@ func TestRunBatch_FinalizeOperationsWithEmptyFailureMessage(t *testing.T) {
 
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:         "domain1",
@@ -517,7 +517,7 @@ func TestRunBatch_FinalizeOperationsWithOnChainRevert(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:        "domain1",
@@ -568,7 +568,7 @@ func TestRunBatch_FinalizeOperations_ZeroValueOnChainPointerUsesOffChainReceiptT
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			finalizeOperation: &finalizeOperation{
 				TransactionFinalizeRequest: TransactionFinalizeRequest{
 					Domain:         "domain1",
@@ -710,7 +710,7 @@ func TestQueueTransactionFinalize_OnCommit(t *testing.T) {
 
 	sp.QueueTransactionFinalize(ctx, &TransactionFinalizeRequest{
 		Domain:          "domain1",
-		ContractAddress: *contractAddr,
+		ContractAddress: contractAddr.ChainAddress(),
 		TransactionID:   txID,
 		Originator:      "originator@node1",
 		// No failure message → empty receipts → commit with no DB writes
@@ -756,7 +756,7 @@ func TestQueueTransactionFinalize_OnRollback(t *testing.T) {
 
 	sp.QueueTransactionFinalize(ctx, &TransactionFinalizeRequest{
 		Domain:          "domain1",
-		ContractAddress: *contractAddr,
+		ContractAddress: contractAddr.ChainAddress(),
 		TransactionID:   txID,
 		Originator:      "originator@node1",
 		FailureMessage:  "assembly reverted",
@@ -792,7 +792,7 @@ func TestRunBatch_WithPrivateDispatches(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				privateDispatches: []*components.ChainedPrivateTransaction{chainedTx},
 			},
@@ -820,7 +820,7 @@ func TestRunBatch_WithPrivateDispatchesError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				privateDispatches: []*components.ChainedPrivateTransaction{
 					{ID: uuid.New()},
@@ -850,7 +850,7 @@ func TestRunBatch_WithPreparedReliableMsgs(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				preparedReliableMsgs: []*pldapi.ReliableMessage{
 					{Node: "node2", MessageType: pldapi.RMTState.Enum()},
@@ -880,7 +880,7 @@ func TestRunBatch_WithPreparedReliableMsgsError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				preparedReliableMsgs: []*pldapi.ReliableMessage{
 					{Node: "node2", MessageType: pldapi.RMTState.Enum()},
@@ -911,7 +911,7 @@ func TestRunBatch_WithLocalPreparedTxnsError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				localPreparedTxns: []*components.PreparedTransactionWithRefs{
 					{},
@@ -945,7 +945,7 @@ func TestRunBatch_WithLocalSequencerActivities(t *testing.T) {
 	txID := uuid.New()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				localSequencerActivites: []*components.SequencingActivity{
 					{
@@ -983,7 +983,7 @@ func TestRunBatch_WithLocalSequencerActivitiesError(t *testing.T) {
 	txID := uuid.New()
 	values := []*syncPointOperation{
 		{
-			contractAddress: *contractAddr,
+			contractAddress: contractAddr.ChainAddress(),
 			dispatchOperation: &dispatchOperation{
 				localSequencerActivites: []*components.SequencingActivity{
 					{

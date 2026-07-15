@@ -11,7 +11,12 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
-func addressFromStrkey(s string) (xdr.ScAddress, error) {
+// AddressFromStrkey converts a strkey string (account "G...", contract "C...", or muxed account
+// "M...") to its xdr.ScAddress form - the reverse of AddressToStrkey. Exported for callers outside
+// this package that need to build an Address SCVal without going through the full Spec-driven
+// FromJSON path (e.g. domains/noto's Stellar deploy args encoder, chapter 14 step 6, which only
+// needs this one conversion for a known, fixed shape).
+func AddressFromStrkey(s string) (xdr.ScAddress, error) {
 	version, raw, err := strkey.DecodeAny(s)
 	if err != nil {
 		return xdr.ScAddress{}, fmt.Errorf("invalid strkey address %q: %w", s, err)
@@ -51,7 +56,11 @@ func addressFromStrkey(s string) (xdr.ScAddress, error) {
 	}
 }
 
-func addressToStrkey(addr xdr.ScAddress) (string, error) {
+// AddressToStrkey converts an xdr.ScAddress (account, contract, or muxed account) to its strkey
+// string form. Exported for callers outside this package that need to decode an Address SCVal
+// without going through the full Spec-driven ToJSON path (e.g. domainmgr's SaladinFactory.register
+// event consumer, chapter 14 step 5, which only needs this one conversion for a known, fixed shape).
+func AddressToStrkey(addr xdr.ScAddress) (string, error) {
 	switch addr.Type {
 	case xdr.ScAddressTypeScAddressTypeAccount:
 		if addr.AccountId == nil || addr.AccountId.Ed25519 == nil {

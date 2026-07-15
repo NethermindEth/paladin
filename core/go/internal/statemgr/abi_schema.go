@@ -327,7 +327,7 @@ func (as *abiSchema) parseStateData(ctx context.Context, data pldtypes.RawJSON) 
 
 // Take the state, parse the value into the type tree of this schema, and from that
 // build the label values to store in the DB for comparison appropriate to the type.
-func (as *abiSchema) ProcessState(ctx context.Context, contractAddress *pldtypes.EthAddress, data pldtypes.RawJSON, id pldtypes.HexBytes, customHashFunction bool) (*components.StateWithLabels, error) {
+func (as *abiSchema) ProcessState(ctx context.Context, contractAddress *pldtypes.ChainAddress, data pldtypes.RawJSON, id pldtypes.HexBytes, customHashFunction bool) (*components.StateWithLabels, error) {
 	ctx = log.WithComponent(ctx, "schema")
 	// We need to re-serialize the data according to the ABI to:
 	// - Ensure it's valid

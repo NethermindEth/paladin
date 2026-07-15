@@ -198,7 +198,7 @@ func TestEngineIntegration_CheckPendingPrivateStateData_DomainOptedIn(t *testing
 	ctx := context.Background()
 	ei, m := newTestEngineIntegration(t)
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 
 	mp, err := mockpersistence.NewSQLMockProvider()
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestAssembleAndSign_DoesNotMutatePreAssembly_SuccessPath(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	domainName := "test-domain"
 
 	preAssembly := &components.TransactionPreAssembly{
@@ -295,7 +295,7 @@ func TestAssembleAndSign_DoesNotMutatePreAssembly_ResolverError(t *testing.T) {
 	ctx := context.Background()
 	ei, m := newTestEngineIntegration(t)
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{
 		RequiredVerifiers: []*prototk.ResolveVerifierRequest{
 			{
@@ -336,7 +336,7 @@ func TestEngineIntegration_AssembleAndSign_ImportSnapshotError(t *testing.T) {
 	preAssembly := &components.TransactionPreAssembly{}
 
 	m.domainSmartContract.On("Domain").Return(m.domain)
-	m.domainSmartContract.On("Address").Return(*pldtypes.RandAddress())
+	m.domainSmartContract.On("Address").Return(pldtypes.RandAddress().ChainAddress())
 	m.stateManager.On("NewDomainContext", mock.Anything, m.domain, mock.Anything).
 		Return(m.domainContext).Once()
 	m.domainContext.On("Close").Return().Once()
@@ -359,7 +359,7 @@ func TestEngineIntegration_AssembleAndSign_ResolveVerifierError(t *testing.T) {
 	}
 
 	m.domainSmartContract.On("Domain").Return(m.domain)
-	m.domainSmartContract.On("Address").Return(*pldtypes.RandAddress())
+	m.domainSmartContract.On("Address").Return(pldtypes.RandAddress().ChainAddress())
 	m.stateManager.On("NewDomainContext", mock.Anything, m.domain, mock.Anything).
 		Return(m.domainContext).Once()
 	m.domainContext.On("Close").Return().Once()
@@ -380,7 +380,7 @@ func TestEngineIntegration_AssembleAndSign_TxNotFound(t *testing.T) {
 	preAssembly := &components.TransactionPreAssembly{}
 
 	m.domainSmartContract.On("Domain").Return(m.domain)
-	m.domainSmartContract.On("Address").Return(*pldtypes.RandAddress())
+	m.domainSmartContract.On("Address").Return(pldtypes.RandAddress().ChainAddress())
 	m.stateManager.On("NewDomainContext", mock.Anything, m.domain, mock.Anything).
 		Return(m.domainContext).Once()
 	m.domainContext.On("Close").Return().Once()
@@ -401,7 +401,7 @@ func TestEngineIntegration_AssembleAndSign_TxLookupError(t *testing.T) {
 	preAssembly := &components.TransactionPreAssembly{}
 
 	m.domainSmartContract.On("Domain").Return(m.domain)
-	m.domainSmartContract.On("Address").Return(*pldtypes.RandAddress())
+	m.domainSmartContract.On("Address").Return(pldtypes.RandAddress().ChainAddress())
 	m.stateManager.On("NewDomainContext", mock.Anything, m.domain, mock.Anything).
 		Return(m.domainContext).Once()
 	m.domainContext.On("Close").Return().Once()
@@ -419,7 +419,7 @@ func TestEngineIntegration_AssembleAndSign_WrongDomain(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	m.domainSmartContract.On("Domain").Return(m.domain)
@@ -449,7 +449,7 @@ func TestEngineIntegration_AssembleAndSign_AssembleTransactionError(t *testing.T
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -486,7 +486,7 @@ func TestEngineIntegration_AssembleAndSign_NilPostAssembly(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -521,7 +521,7 @@ func TestEngineIntegration_AssembleAndSign_UnsupportedAttestationType(t *testing
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -562,7 +562,7 @@ func TestEngineIntegration_AssembleAndSign_SignAttestationLocalParty(t *testing.
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -624,7 +624,7 @@ func TestEngineIntegration_AssembleAndSign_SignAttestationRemoteParty(t *testing
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -671,7 +671,7 @@ func TestEngineIntegration_AssembleAndSign_EndorseAttestationType(t *testing.T) 
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -714,7 +714,7 @@ func TestEngineIntegration_AssembleAndSign_ResolveKeyError(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -764,7 +764,7 @@ func TestEngineIntegration_AssembleAndSign_InvalidSigningPartyLocator(t *testing
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -815,7 +815,7 @@ func TestEngineIntegration_AssembleAndSign_DebugLogging(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()
@@ -860,7 +860,7 @@ func TestEngineIntegration_AssembleAndSign_SignError(t *testing.T) {
 	ei, m := newTestEngineIntegration(t)
 
 	txID := uuid.New()
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	preAssembly := &components.TransactionPreAssembly{}
 
 	mp, err := mockpersistence.NewSQLMockProvider()

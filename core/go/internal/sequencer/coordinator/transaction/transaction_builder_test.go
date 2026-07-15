@@ -399,7 +399,7 @@ func (b *TransactionBuilderForTesting) Domain(domain string) *TransactionBuilder
 	return b
 }
 
-func (b *TransactionBuilderForTesting) Address(address pldtypes.EthAddress) *TransactionBuilderForTesting {
+func (b *TransactionBuilderForTesting) Address(address pldtypes.ChainAddress) *TransactionBuilderForTesting {
 	b.privateTransactionBuilder.Address(address)
 	return b
 }

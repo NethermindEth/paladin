@@ -100,7 +100,7 @@ type coordinator struct {
 	cancelStateTimeout   func() // cancels the pending give-up timer
 
 	/* Config */
-	contractAddress                *pldtypes.EthAddress
+	contractAddress                *pldtypes.ChainAddress
 	blockHeightTolerance           uint64
 	closingGracePeriod             int // expressed as a multiple of heartbeat intervals
 	inactiveGracePeriod            int // expressed as a multiple of heartbeat intervals
@@ -136,7 +136,7 @@ type coordinator struct {
 }
 
 func NewCoordinator(
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	domainAPI components.DomainSmartContract,
 	dCtx components.DomainContext,
 	allComponents components.AllComponents,

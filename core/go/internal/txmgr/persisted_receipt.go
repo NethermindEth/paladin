@@ -44,11 +44,11 @@ type transactionReceipt struct {
 	BlockNumber      *int64               `gorm:"column:block_number"`
 	TransactionIndex *int64               `gorm:"column:tx_index"`
 	LogIndex         *int64               `gorm:"column:log_index"`
-	Source           *pldtypes.EthAddress `gorm:"column:source"`
-	FailureMessage   *string              `gorm:"column:failure_message"`
-	RevertData       pldtypes.HexBytes    `gorm:"column:revert_data"`
-	ContractAddress  *pldtypes.EthAddress `gorm:"column:contract_address"`
-	Gap              *persistedReceiptGap `gorm:"foreignKey:Source;references:Source;"`
+	Source           *pldtypes.EthAddress   `gorm:"column:source"`
+	FailureMessage   *string                `gorm:"column:failure_message"`
+	RevertData       pldtypes.HexBytes      `gorm:"column:revert_data"`
+	ContractAddress  *pldtypes.ChainAddress `gorm:"column:contract_address"`
+	Gap              *persistedReceiptGap   `gorm:"foreignKey:Source;references:Source;"`
 }
 
 func (transactionReceipt) TableName() string {

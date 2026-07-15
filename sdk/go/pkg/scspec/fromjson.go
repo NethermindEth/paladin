@@ -165,7 +165,7 @@ func (s *Spec) FromJSON(value json.RawMessage, t xdr.ScSpecTypeDef) (xdr.ScVal, 
 		if err := json.Unmarshal(value, &v); err != nil {
 			return xdr.ScVal{}, fmt.Errorf("address: %w", err)
 		}
-		addr, err := addressFromStrkey(v)
+		addr, err := AddressFromStrkey(v)
 		if err != nil {
 			return xdr.ScVal{}, fmt.Errorf("address: %w", err)
 		}
@@ -256,7 +256,7 @@ func bytesNFromJSON(value json.RawMessage, n int) ([]byte, error) {
 		return nil, fmt.Errorf("expected string: %w", err)
 	}
 	if n == 32 {
-		if addr, err := addressFromStrkey(s); err == nil {
+		if addr, err := AddressFromStrkey(s); err == nil {
 			raw, rerr := addressRawBytes(addr)
 			if rerr == nil {
 				return raw, nil

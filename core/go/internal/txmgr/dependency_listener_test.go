@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
@@ -231,7 +232,7 @@ func TestNotifyDependentTransactions_SuccessWithDependent_CallsHandleTxResume(t 
 			From:     "me",
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -246,7 +247,7 @@ func TestNotifyDependentTransactions_SuccessWithDependent_CallsHandleTxResume(t 
 				From:     "me",
 				Type:     pldapi.TransactionTypePrivate.Enum(),
 				Function: "doIt",
-				To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 				Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 			},
 			ABI: exampleABI,
@@ -286,7 +287,7 @@ func TestNotifyDependentTransactions_FailurePropagatesToDependent(t *testing.T) 
 			From:     "me",
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -301,7 +302,7 @@ func TestNotifyDependentTransactions_FailurePropagatesToDependent(t *testing.T) 
 				From:     "me",
 				Type:     pldapi.TransactionTypePrivate.Enum(),
 				Function: "doIt",
-				To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 				Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 			},
 			ABI: exampleABI,
@@ -345,7 +346,7 @@ func TestNotifyDependentTransactions_HandleTxResumeError_LoggedAndCommitSucceeds
 			From:     "me",
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -359,7 +360,7 @@ func TestNotifyDependentTransactions_HandleTxResumeError_LoggedAndCommitSucceeds
 				From:     "me",
 				Type:     pldapi.TransactionTypePrivate.Enum(),
 				Function: "doIt",
-				To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+				To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 				Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 			},
 			ABI: exampleABI,

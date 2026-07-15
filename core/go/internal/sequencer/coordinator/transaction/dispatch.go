@@ -120,7 +120,14 @@ func (t *coordinatorTransaction) buildDispatchBatch(ctx context.Context) (*syncp
 			// a single private transaction with a unqiue idempotency key can still result in multiple base ledger submissions.
 			preparedPrivateTransaction.IdempotencyKey = fmt.Sprintf("%s_%d_%d", preparedPrivateTransaction.IdempotencyKey, t.clock.Now().UnixNano(), t.revertCount)
 		}
-		validatedPrivateTx, err := t.components.TxManager().PrepareChainedPrivateTransaction(ctx, t.components.Persistence().NOTX(), t.pt.PreAssembly.TransactionSpecification.From, t.pt.ID, t.pt.Domain, &t.pt.Address, &preparedPrivateTransaction, pldapi.SubmitModeAuto)
+		// PrepareChainedPrivateTransaction's originalDomainAddress stays EVM-only (the
+		// chained-transaction/Pente path is not yet chain-neutral) - unwrap here.
+		originalDomainAddrEth, err := t.pt.Address.EthAddress()
+		if err != nil {
+			log.L(ctx).Errorf("error resolving chained transaction's original domain address %s: %s", t.pt.Address.String(), err)
+			return nil, err
+		}
+		validatedPrivateTx, err := t.components.TxManager().PrepareChainedPrivateTransaction(ctx, t.components.Persistence().NOTX(), t.pt.PreAssembly.TransactionSpecification.From, t.pt.ID, t.pt.Domain, originalDomainAddrEth, &preparedPrivateTransaction, pldapi.SubmitModeAuto)
 		if err != nil {
 			log.L(ctx).Errorf("error preparing chained transaction %s: %s", t.pt.ID, err)
 			return nil, err
@@ -184,6 +191,13 @@ func (t *coordinatorTransaction) buildPublicTxSubmission(ctx context.Context) (*
 	}
 	log.L(ctx).Debugf("DispatchTransactions: creating PublicTxSubmission from %s", t.pt.Signer)
 	publicTx := t.pt.PreparedPublicTransaction
+	// pldapi.PublicTxInput.To stays EVM-only (unmigrated, same as the rest of the public tx API);
+	// public transactions are EVM-only in Paladin today, so unwrap here.
+	toEthAddr, err := t.pt.Address.EthAddress()
+	if err != nil {
+		log.L(ctx).Errorf("failed to resolve public transaction target address %s: %s", t.pt.Address.String(), err)
+		return nil, err
+	}
 	publicTxSubmission := &components.PublicTxSubmission{
 		Bindings: []*components.PaladinTXReference{{
 			TransactionID:              t.pt.ID,
@@ -193,7 +207,7 @@ func (t *coordinatorTransaction) buildPublicTxSubmission(ctx context.Context) (*
 		}},
 		PublicTxInput: pldapi.PublicTxInput{
 			From:            resolvedAddr,
-			To:              &t.pt.Address,
+			To:              toEthAddr,
 			PublicTxOptions: publicTx.PublicTxOptions,
 		},
 	}

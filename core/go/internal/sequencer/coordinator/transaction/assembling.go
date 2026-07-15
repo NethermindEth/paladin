@@ -34,7 +34,7 @@ func (t *coordinatorTransaction) revertTransactionFailedAssembly(ctx context.Con
 	tryFinalize = func() {
 		t.syncPoints.QueueTransactionFinalize(ctx, &syncpoints.TransactionFinalizeRequest{
 			Domain:          t.pt.Domain,
-			ContractAddress: pldtypes.EthAddress{},
+			ContractAddress: pldtypes.ChainAddress{},
 			Originator:      t.originator,
 			TransactionID:   t.pt.ID,
 			FailureMessage:  revertReason,

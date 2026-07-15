@@ -91,7 +91,7 @@ type TransactionBase struct {
 	Function       string                         `docstruct:"Transaction" json:"function,omitempty"`       // inferred from definition if not supplied. Resolved to full signature and stored. Required with abiReference on input if not constructor
 	ABIReference   *pldtypes.Bytes32              `docstruct:"Transaction" json:"abiReference,omitempty"`   // calculated if not supplied (ABI will be stored for you)
 	From           string                         `docstruct:"Transaction" json:"from,omitempty"`           // locator for a local signing identity to use for submission of this transaction
-	To             *pldtypes.EthAddress           `docstruct:"Transaction" json:"to,omitempty"`             // the target contract, or null for a deploy
+	To             *pldtypes.ChainAddress         `docstruct:"Transaction" json:"to,omitempty"`             // the target contract, or null for a deploy
 	Data           pldtypes.RawJSON               `docstruct:"Transaction" json:"data,omitempty"`           // pre-encoded array with/without function selector, array, or object input
 	PublicTxOptions
 	// TODO: PrivateTransactions string list
@@ -180,8 +180,8 @@ type TransactionReceiptData struct {
 	*TransactionReceiptDataOnchain      `json:",inline"`     // if the result was finalized by the blockchain (note quirk of omitempty that we can't put zero-valid int pointers on main struct)
 	*TransactionReceiptDataOnchainEvent `json:",inline"`     // if the result was finalized by the blockchain by an event
 	FailureMessage                      string               `docstruct:"TransactionReceiptData" json:"failureMessage,omitempty"`  // always set to a non-empty string if the transaction reverted, with as much detail as could be extracted
-	RevertData                          pldtypes.HexBytes    `docstruct:"TransactionReceiptData" json:"revertData,omitempty"`      // encoded revert data if available
-	ContractAddress                     *pldtypes.EthAddress `docstruct:"TransactionReceiptData" json:"contractAddress,omitempty"` // address of the new contract address, to be used in the `To` field for subsequent invoke transactions.  Nil if this transaction itself was an invoke
+	RevertData                          pldtypes.HexBytes      `docstruct:"TransactionReceiptData" json:"revertData,omitempty"`      // encoded revert data if available
+	ContractAddress                     *pldtypes.ChainAddress `docstruct:"TransactionReceiptData" json:"contractAddress,omitempty"` // address of the new contract address, to be used in the `To` field for subsequent invoke transactions.  Nil if this transaction itself was an invoke
 }
 
 type TransactionEvent struct{}
@@ -202,11 +202,11 @@ type TransactionDependencies struct {
 }
 
 type PreparedTransactionBase struct {
-	ID          uuid.UUID            `docstruct:"PreparedTransaction" json:"id"`
-	Domain      string               `docstruct:"PreparedTransaction" json:"domain"`
-	To          *pldtypes.EthAddress `docstruct:"PreparedTransaction" json:"to"`
-	Transaction TransactionInput     `docstruct:"PreparedTransaction" json:"transaction"`
-	Metadata    pldtypes.RawJSON     `docstruct:"PreparedTransaction" json:"metadata,omitempty"`
+	ID          uuid.UUID              `docstruct:"PreparedTransaction" json:"id"`
+	Domain      string                 `docstruct:"PreparedTransaction" json:"domain"`
+	To          *pldtypes.ChainAddress `docstruct:"PreparedTransaction" json:"to"`
+	Transaction TransactionInput       `docstruct:"PreparedTransaction" json:"transaction"`
+	Metadata    pldtypes.RawJSON       `docstruct:"PreparedTransaction" json:"metadata,omitempty"`
 }
 
 type PreparedTransaction struct {

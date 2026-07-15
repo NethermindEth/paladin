@@ -599,7 +599,7 @@ func TestRPCQuerySmartContracts_SuccessWithResults(t *testing.T) {
 	err := json.Unmarshal(resp.Result.Bytes(), &result)
 	require.NoError(t, err)
 	require.Len(t, result, 1)
-	assert.Equal(t, *contractAddr, result[0].Address)
+	assert.Equal(t, contractAddr.ChainAddress(), result[0].Address)
 	assert.Equal(t, domainAddr, *result[0].DomainAddress)
 	assert.Equal(t, "test1", result[0].DomainName)
 }
@@ -793,7 +793,7 @@ func TestRPCGetSmartContractByAddress_Success(t *testing.T) {
 	var result pldapi.DomainSmartContract
 	err := json.Unmarshal(resp.Result.Bytes(), &result)
 	require.NoError(t, err)
-	assert.Equal(t, *contractAddr, result.Address)
+	assert.Equal(t, contractAddr.ChainAddress(), result.Address)
 	assert.Equal(t, domainAddr, *result.DomainAddress)
 	assert.Equal(t, "test1", result.DomainName)
 }

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldclient"
-	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +35,7 @@ func transactionReceiptCondition(t *testing.T, ctx context.Context, txID uuid.UU
 		if txFull.Receipt != nil && !txFull.Receipt.Success {
 			return false
 		}
-		return txFull.Receipt != nil && (!isDeploy || (txFull.Receipt.ContractAddress != nil && *txFull.Receipt.ContractAddress != pldtypes.EthAddress{}))
+		return txFull.Receipt != nil && (!isDeploy || (txFull.Receipt.ContractAddress != nil && !txFull.Receipt.ContractAddress.IsZero()))
 	}
 }
 

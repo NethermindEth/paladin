@@ -61,11 +61,11 @@ func setupEndorsementMocks(t *testing.T, mocks *CoordinatorDependencyMocks) (*co
 	contractAddr := pldtypes.RandAddress()
 
 	mocks.DomainAPI.On("Domain").Return(mockDomain).Maybe()
-	mocks.DomainAPI.On("Address").Return(*contractAddr).Maybe()
+	mocks.DomainAPI.On("Address").Return(contractAddr.ChainAddress()).Maybe()
 
 	mockStateManager := componentsmocks.NewStateManager(t)
 	mockDomainContext := componentsmocks.NewDomainContext(t)
-	mockStateManager.On("NewDomainContext", mock.Anything, mockDomain, *contractAddr).Return(mockDomainContext)
+	mockStateManager.On("NewDomainContext", mock.Anything, mockDomain, contractAddr.ChainAddress()).Return(mockDomainContext)
 	mockDomainContext.On("Close").Return().Maybe()
 	mocks.AllComponents.On("StateManager").Return(mockStateManager).Maybe()
 

@@ -43,8 +43,8 @@ func setupTransferStateWidget(t *testing.T, ctx context.Context, ss *stateManage
 	err = ss.persistSchemas(ctx, ss.p.NOTX(), []*pldapi.Schema{schema.Schema})
 	require.NoError(t, err)
 
-	contractAddress := pldtypes.RandAddress()
-	return makeWidgets(t, ctx, ss, "domain1", contractAddress, schema.ID(), []string{
+	contractAddress := pldtypes.RandAddress().ChainAddress()
+	return makeWidgets(t, ctx, ss, "domain1", &contractAddress, schema.ID(), []string{
 		`{"size": 11111, "color": "red", "price": 100}`,
 	})[0]
 }

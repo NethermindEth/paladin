@@ -113,7 +113,7 @@ func (s *Spec) ToJSON(val xdr.ScVal, t xdr.ScSpecTypeDef) (json.RawMessage, erro
 		if val.Address == nil {
 			return nil, fmt.Errorf("address: missing value")
 		}
-		addr, err := addressToStrkey(*val.Address)
+		addr, err := AddressToStrkey(*val.Address)
 		if err != nil {
 			return nil, fmt.Errorf("address: %w", err)
 		}

@@ -149,7 +149,8 @@ func (r *TransactionInvokeReconciler) buildDeployTransaction(txi *corev1alpha1.T
 	if err = toTemplate.Execute(toBuff, crMap); err != nil {
 		return false, nil, fmt.Errorf("toTemplate failed: %s", err)
 	}
-	to, err := pldtypes.ParseEthAddress(toBuff.String())
+	// Chain-kind-aware: the CRD's templated address could target a Stellar contract too.
+	to, err := pldtypes.ParseChainAddress(toBuff.String())
 	if err != nil {
 		return false, nil, fmt.Errorf("toTemplate result '%s' not a valid address: %s", toBuff, err)
 	}

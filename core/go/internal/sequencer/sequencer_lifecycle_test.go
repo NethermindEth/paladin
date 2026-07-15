@@ -229,8 +229,8 @@ func TestSequencerManager_LoadSequencer_NewSequencer(t *testing.T) {
 	mockDomain.EXPECT().GetBlockHeight().Return(int64(0))
 	mockDomainSmartContract.EXPECT().Domain().Return(mockDomain)
 	mockDomainSmartContract.EXPECT().ContractConfig().Return(&prototk.ContractConfig{StaticCoordinator: proto.String("test-identity@test-coordinator")}).Maybe()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(mockDomainSmartContract, nil)
-	mocks.stateManager.EXPECT().NewDomainContext(ctx, mockDomain, *contractAddr).Return(componentsmocks.NewDomainContext(t)).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(mockDomainSmartContract, nil)
+	mocks.stateManager.EXPECT().NewDomainContext(ctx, mockDomain, contractAddr.ChainAddress()).Return(componentsmocks.NewDomainContext(t)).Once()
 
 	// Setup transport writer creation
 	mocks.transportWriter.EXPECT().SendDispatched(ctx, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
@@ -250,7 +250,7 @@ func TestSequencerManager_LoadSequencer_NewSequencer(t *testing.T) {
 	}
 
 	// Call LoadSequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, mockDomainSmartContract, tx)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), mockDomainSmartContract, tx)
 	require.NoError(t, err)
 	// Verify results
 
@@ -282,7 +282,7 @@ func TestSequencerManager_LoadSequencer_ExistingSequencer(t *testing.T) {
 
 	// Setup expectations for existing sequencer
 	mocks.setupDefaultExpectations(ctx, contractAddr)
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	// Create a mock private transaction
 	tx := &components.PrivateTransaction{
@@ -295,7 +295,7 @@ func TestSequencerManager_LoadSequencer_ExistingSequencer(t *testing.T) {
 	}
 
 	// Call LoadSequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, tx)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, tx)
 	require.NoError(t, err)
 	// Verify results
 
@@ -321,7 +321,7 @@ func TestSequencerManager_LoadSequencer_ExistingSequencer_NoCoordinator_Success(
 
 	// Setup expectations for existing sequencer
 	mocks.setupDefaultExpectations(ctx, contractAddr)
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	// Create a mock private transaction with required verifiers
 	tx := &components.PrivateTransaction{
@@ -334,7 +334,7 @@ func TestSequencerManager_LoadSequencer_ExistingSequencer_NoCoordinator_Success(
 	}
 
 	// this should not error for existing sequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, tx)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, tx)
 	require.NoError(t, err)
 	// Verify results
 
@@ -355,10 +355,10 @@ func TestSequencerManager_LoadSequencer_NoDomainAPI(t *testing.T) {
 	sm := newSequencerManagerForTesting(t, mocks)
 
 	// Setup expectations for domain manager returning nil
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("contract not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("contract not found")).Once()
 
 	// Call LoadSequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, nil)
 	require.NoError(t, err)
 	// Verify results
 
@@ -372,10 +372,10 @@ func TestSequencerManager_LoadSequencer_DomainManagerError(t *testing.T) {
 	sm := newSequencerManagerForTesting(t, mocks)
 
 	// Setup expectations for domain manager error
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("database error")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("database error")).Once()
 
 	// Call LoadSequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, nil)
 	require.NoError(t, err)
 	// Verify results
 	// This should not error, just return nil
@@ -390,11 +390,11 @@ func TestSequencerManager_LoadSequencer_NoDomainProvided(t *testing.T) {
 
 	// Setup expectations
 	mocks.setupDefaultExpectations(ctx, contractAddr)
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil)
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil)
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()
 
 	// Call LoadSequencer
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, nil)
 
 	// Verify results
 	require.Error(t, err)
@@ -409,7 +409,7 @@ func TestSequencerManager_GetSequencer_NotLoaded(t *testing.T) {
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
 
-	seq := sm.GetSequencer(ctx, *contractAddr)
+	seq := sm.GetSequencer(ctx, contractAddr.ChainAddress())
 	assert.Nil(t, seq)
 }
 
@@ -424,7 +424,7 @@ func TestSequencerManager_GetSequencer_Loaded(t *testing.T) {
 	sm.sequencers[contractAddr.String()] = existing
 	sm.sequencersLock.Unlock()
 
-	seq := sm.GetSequencer(ctx, *contractAddr)
+	seq := sm.GetSequencer(ctx, contractAddr.ChainAddress())
 	assert.Equal(t, existing, seq)
 }
 
@@ -435,7 +435,7 @@ func TestSequencerManager_handleTransactionConfirmedSuccess_NotLoaded(t *testing
 	sm := newSequencerManagerForTesting(t, mocks)
 
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 
 	txID := uuid.New()
 	nonce := pldtypes.HexUint64(7)
@@ -465,7 +465,7 @@ func TestSequencerManager_handleTransactionConfirmedSuccess_LoadedQueuesCoordina
 	sm.sequencersLock.Unlock()
 
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 
 	txID := uuid.New()
 	txHash := pldtypes.RandBytes32()
@@ -500,7 +500,7 @@ func TestSequencerManager_handleTransactionConfirmedSuccess_LoadedQueuesCoordina
 	sm.sequencersLock.Unlock()
 
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 
 	txID := uuid.New()
 	txHash := pldtypes.RandBytes32()
@@ -1164,7 +1164,7 @@ func TestSequencerManager_GetTxStatus_Success(t *testing.T) {
 	sMgr.sequencers[contractAddr.String()] = seq
 
 	// Setup expectations for LoadSequencer when sequencer already exists
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	// Setup expectations for GetTxStatus
 	txID := uuid.New()
@@ -1192,7 +1192,7 @@ func TestSequencerManager_GetTxStatus_LoadSequencerError(t *testing.T) {
 
 	// Setup expectations for LoadSequencer to return an error
 	// GetSmartContractByAddress expects a value type, not a pointer
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("domain not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("domain not found")).Once()
 
 	txID := uuid.New()
 
@@ -1215,7 +1215,7 @@ func TestSequencerManager_GetTxStatus_NilSequencer(t *testing.T) {
 	// Setup expectations for LoadSequencer to return nil sequencer (no error, but sequencer is nil)
 	// GetSmartContractByAddress expects a value type, not a pointer
 	// When it returns an error, LoadSequencer returns nil, nil (treats as deploy case)
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("domain not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("domain not found")).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Maybe()
 
 	txID := uuid.New()
@@ -1241,7 +1241,7 @@ func TestSequencerManager_GetTxStatus_OriginatorError(t *testing.T) {
 	sMgr.sequencers[contractAddr.String()] = seq
 
 	// Setup expectations for LoadSequencer when sequencer already exists
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	// Setup expectations for GetTxStatus to return an error
 	txID := uuid.New()
@@ -1308,7 +1308,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_PreservesOrder(t *testing
 	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(ctx, mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Times(3)
 
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Times(3)
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Times(3)
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Times(3)
 
 	var confirmedOrder []uuid.UUID
 	mocks.coordinator.EXPECT().QueueEvent(ctx, mock.MatchedBy(func(e interface{}) bool {
@@ -1342,7 +1342,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_SkipsDeploys(t *testing.T
 		{
 			ReceiptInput: components.ReceiptInput{
 				TransactionID:   txID,
-				ContractAddress: contractAddr,
+				ContractAddress: confutil.P(contractAddr.ChainAddress()),
 				OnChain:         pldtypes.OnChainLocation{TransactionHash: pldtypes.RandBytes32(), BlockNumber: 100},
 			},
 			PSC: mocks.domainAPI,
@@ -1384,7 +1384,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_SynchronousProcessing(t *
 	mp.Mock.ExpectQuery("SELECT count\\(\\*\\).*chained_dispatches").WithArgs(txID).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(ctx, mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Once()
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 
 	mocks.coordinator.EXPECT().QueueEvent(ctx, mock.MatchedBy(func(e interface{}) bool {
 		event, ok := e.(*coordinatorTx.ConfirmedSuccessEvent)
@@ -1648,11 +1648,11 @@ func TestSequencerManager_LoadSequencer_WithProvidedDomainAPI(t *testing.T) {
 	mockDomainSmartContract.EXPECT().ContractConfig().Return(&prototk.ContractConfig{StaticCoordinator: proto.String("test-identity@test-coordinator")}).Maybe()
 	mocks.components.EXPECT().TransportManager().Return(mocks.transportManager).Maybe()
 	mocks.transportManager.EXPECT().LocalNodeName().Return("test-node").Maybe()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mockDomainSmartContract, nil).Once()
-	mocks.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, *contractAddr).Return(componentsmocks.NewDomainContext(t)).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mockDomainSmartContract, nil).Once()
+	mocks.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, contractAddr.ChainAddress()).Return(componentsmocks.NewDomainContext(t)).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()
 
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, mockDomainSmartContract, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), mockDomainSmartContract, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -1667,11 +1667,11 @@ func TestSequencerManager_LoadSequencer_CreationGetSmartContractError(t *testing
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
 
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(nil, errors.New("db error")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(nil, errors.New("db error")).Once()
 
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, nil)
 	require.Error(t, err)
 	assert.Nil(t, result)
 }
@@ -1686,13 +1686,13 @@ func TestSequencerManager_LoadSequencer_InvalidSelectionConfig(t *testing.T) {
 	mockDomain := componentsmocks.NewDomain(t)
 	mockDomainSmartContract.EXPECT().Domain().Return(mockDomain).Maybe()
 	mockDomainSmartContract.EXPECT().ContractConfig().Return(&prototk.ContractConfig{StaticCoordinator: proto.String("not-a-valid-locator")}).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mockDomainSmartContract, nil).Once()
-	mocks.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, *contractAddr).Return(componentsmocks.NewDomainContext(t)).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mockDomainSmartContract, nil).Once()
+	mocks.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, contractAddr.ChainAddress()).Return(componentsmocks.NewDomainContext(t)).Once()
 	mocks.transportManager.EXPECT().LocalNodeName().Return("test-node").Maybe()
 
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr.ChainAddress(), nil, nil)
 	require.Error(t, err)
 	assert.Nil(t, result)
 }
@@ -1724,13 +1724,13 @@ func TestSequencerManager_LoadSequencer_ReachesTargetLimit(t *testing.T) {
 	mockDomain.EXPECT().GetBlockHeight().Return(int64(0))
 	mockDomainSmartContract.EXPECT().Domain().Return(mockDomain).Maybe()
 	mockDomainSmartContract.EXPECT().ContractConfig().Return(&prototk.ContractConfig{StaticCoordinator: proto.String("test-identity@test-coordinator")}).Maybe()
-	mocks1.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr3).Return(mocks1.domainAPI, nil).Once()
-	mocks1.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr3).Return(mockDomainSmartContract, nil).Once()
-	mocks1.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, *contractAddr3).Return(componentsmocks.NewDomainContext(t)).Once()
+	mocks1.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr3.ChainAddress()).Return(mocks1.domainAPI, nil).Once()
+	mocks1.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr3.ChainAddress()).Return(mockDomainSmartContract, nil).Once()
+	mocks1.stateManager.EXPECT().NewDomainContext(mock.Anything, mockDomain, contractAddr3.ChainAddress()).Return(componentsmocks.NewDomainContext(t)).Once()
 	mocks1.transportManager.EXPECT().LocalNodeName().Return("test-node").Maybe()
 	mocks1.metrics.EXPECT().SetActiveSequencers(1).Once()
 
-	result, err := sm.LoadSequencer(ctx, nil, *contractAddr3, nil, nil)
+	result, err := sm.LoadSequencer(ctx, nil, contractAddr3.ChainAddress(), nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.NotContains(t, sm.sequencers, contractAddr1.String())

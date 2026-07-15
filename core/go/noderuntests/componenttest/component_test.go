@@ -96,13 +96,15 @@ func TestRunSimpleStorageEthTransaction(t *testing.T) {
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
 	contractAddr := res.Receipt().ContractAddress
+	contractEthAddr, err := contractAddr.EthAddress()
+	require.NoError(t, err)
 
 	// set up the event listener
 	success, err := c.PTX().CreateBlockchainEventListener(ctx, &pldapi.BlockchainEventListener{
 		Name: "listener1",
 		Sources: []pldapi.BlockchainEventListenerSource{{
-			ABI:     abi.ABI{build.ABI.Events()["Changed"]},
-			Address: contractAddr,
+			ABI:          abi.ABI{build.ABI.Events()["Changed"]},
+			AddressChain: contractAddr,
 		}},
 	})
 	require.NoError(t, err)
@@ -124,7 +126,7 @@ func TestRunSimpleStorageEthTransaction(t *testing.T) {
 	var getX pldtypes.RawJSON
 	err = simpleStorage.Clone().
 		Function("get").
-		To(contractAddr).
+		To(contractEthAddr).
 		Outputs(&getX).
 		Call()
 	require.NoError(t, err)
@@ -132,7 +134,7 @@ func TestRunSimpleStorageEthTransaction(t *testing.T) {
 
 	res = simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":99887766}`).
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
@@ -142,7 +144,7 @@ func TestRunSimpleStorageEthTransaction(t *testing.T) {
 
 	res = simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":1234}`).
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
@@ -171,6 +173,8 @@ func TestBlockchainEventListeners(t *testing.T) {
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
 	contractAddr := res.Receipt().ContractAddress
+	contractEthAddr, err := contractAddr.EthAddress()
+	require.NoError(t, err)
 	deployBlock := res.Receipt().BlockNumber
 
 	// set up the event listener
@@ -178,8 +182,8 @@ func TestBlockchainEventListeners(t *testing.T) {
 		Name:    "listener1",
 		Started: confutil.P(false),
 		Sources: []pldapi.BlockchainEventListenerSource{{
-			ABI:     abi.ABI{build.ABI.Events()["Changed"]},
-			Address: contractAddr,
+			ABI:          abi.ABI{build.ABI.Events()["Changed"]},
+			AddressChain: contractAddr,
 		}},
 	})
 	require.NoError(t, err)
@@ -210,7 +214,7 @@ func TestBlockchainEventListeners(t *testing.T) {
 
 	res = simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":2}`).
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
@@ -229,7 +233,7 @@ func TestBlockchainEventListeners(t *testing.T) {
 
 	res = simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":3}`).
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
@@ -253,8 +257,8 @@ func TestBlockchainEventListeners(t *testing.T) {
 	_, err = c.PTX().CreateBlockchainEventListener(ctx, &pldapi.BlockchainEventListener{
 		Name: "listener2",
 		Sources: []pldapi.BlockchainEventListenerSource{{
-			ABI:     abi.ABI{build.ABI.Events()["Changed"]},
-			Address: contractAddr,
+			ABI:          abi.ABI{build.ABI.Events()["Changed"]},
+			AddressChain: contractAddr,
 		}},
 	})
 	require.NoError(t, err)
@@ -270,8 +274,8 @@ func TestBlockchainEventListeners(t *testing.T) {
 	_, err = c.PTX().CreateBlockchainEventListener(ctx, &pldapi.BlockchainEventListener{
 		Name: "listener3",
 		Sources: []pldapi.BlockchainEventListenerSource{{
-			ABI:     abi.ABI{build.ABI.Events()["Changed"]},
-			Address: contractAddr,
+			ABI:          abi.ABI{build.ABI.Events()["Changed"]},
+			AddressChain: contractAddr,
 		}},
 		Options: pldapi.BlockchainEventListenerOptions{
 			FromBlock: json.RawMessage(`"latest"`),
@@ -285,7 +289,7 @@ func TestBlockchainEventListeners(t *testing.T) {
 	// submit another transaction- this should be the next event that all the listeners receive
 	res = simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":4}`).
 		Send().Wait(5 * time.Second)
 	require.NoError(t, res.Error())
@@ -395,10 +399,12 @@ func TestUpdatePublicTransaction(t *testing.T) {
 	tx, err := c.PTX().GetTransactionFull(ctx, *res.ID())
 	require.NoError(t, err)
 	contractAddr := tx.Receipt.ContractAddress
+	contractEthAddr, err := contractAddr.EthAddress()
+	require.NoError(t, err)
 
 	setRes := simpleStorage.Clone().
 		Function("set").
-		To(contractAddr).
+		To(contractEthAddr).
 		Inputs(`{"_x":99887766}`).
 		PublicTxOptions(pldapi.PublicTxOptions{
 			// gas is set below instrinsic limit
@@ -502,7 +508,9 @@ func TestPrivateTransactionsDeployAndExecute(t *testing.T) {
                 }`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Start a private transaction
 	tx1 := client.ForABI(ctx, *domains.SimpleTokenTransferABI()).
@@ -616,7 +624,9 @@ func TestPrivateTransactionsMintThenTransfer(t *testing.T) {
 	txFull, err := client.PTX().GetTransactionFull(ctx, *deployTx.ID())
 	require.NoError(t, err)
 	require.NotNil(t, txFull.Receipt)
-	contractAddress := txFull.Receipt.ContractAddress
+	contractAddressChain := txFull.Receipt.ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 	require.NotNil(t, contractAddress)
 
 	// Start a private transaction - Mint to alice
@@ -684,7 +694,9 @@ func TestPrivateTransactionRevertedAssembleFailed(t *testing.T) {
 				}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Start a private transaction - Transfer from alice to bob but we expect that alice can't afford this
 	// however, that wont be known until the transaction is assembled which is asynchronous so the initial submission
@@ -765,7 +777,9 @@ func TestDeployOnOneNodeInvokeOnAnother(t *testing.T) {
 		}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Start a private transaction on alices node
 	// this is a mint to alice
@@ -979,7 +993,9 @@ func TestNotaryDelegated(t *testing.T) {
 				}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// As notary, mint some tokens to alice
 	// Start a private transaction on notary node
@@ -1074,7 +1090,9 @@ func TestNotaryDelegatedPrepare(t *testing.T) {
 				}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// As notary, mint some tokens to alice
 	// Start a private transaction on notary node
@@ -1112,7 +1130,7 @@ func TestNotaryDelegatedPrepare(t *testing.T) {
 	transferA2BTxID := transferA2BTx.ID()
 	require.NotNil(t, transferA2BTxID)
 
-	_, err := alice.GetClient().PTX().GetTransactionFull(ctx, *transferA2BTx.ID())
+	_, err = alice.GetClient().PTX().GetTransactionFull(ctx, *transferA2BTx.ID())
 	require.NoError(t, err)
 
 	_, err = notary.GetClient().PTX().GetTransactionFull(ctx, *transferA2BTx.ID())
@@ -1165,7 +1183,9 @@ func TestSingleNodeSelfEndorseConcurrentSpends(t *testing.T) {
                 }`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Do the 5 mints
 	mint := func() pldclient.SentTransaction {
@@ -1261,7 +1281,9 @@ func TestSingleNodeSelfEndorseSeriesOfTransfers(t *testing.T) {
                 }`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Start a private transaction - Mint to alice
 	tx1 := client.ForABI(ctx, *domains.SimpleTokenTransferABI()).
@@ -1361,7 +1383,9 @@ func TestNotaryEndorseConcurrentSpends(t *testing.T) {
 				}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Start a private transaction on notary node
 	// this is a mint to alice so alice should later be able to do a transfer to bob
@@ -1712,7 +1736,9 @@ func TestBaseLedgerRevertRetryable_ThenSucceeds(t *testing.T) {
 		}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Amount 1003: retryable error on first attempt, succeeds on retry
 	tx := client.ForABI(ctx, *domains.SimpleTokenTransferABI()).
@@ -1762,7 +1788,9 @@ func TestBaseLedgerRevertRetryable_ExceedsThreshold(t *testing.T) {
 		}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Amount 1004: retryable error every time - will exceed the threshold of 1
 	tx := client.ForABI(ctx, *domains.SimpleTokenTransferABI()).
@@ -1805,7 +1833,9 @@ func TestBaseLedgerRevertNonRetryable_FailsImmediately(t *testing.T) {
 		}`)).
 		Send().Wait(transactionLatencyThreshold(t))
 	require.NoError(t, deployTx.Error())
-	contractAddress := deployTx.Receipt().ContractAddress
+	contractAddressChain := deployTx.Receipt().ContractAddress
+	contractAddress, err := contractAddressChain.EthAddress()
+	require.NoError(t, err)
 
 	// Amount 1005: non-retryable error - fails immediately
 	tx := client.ForABI(ctx, *domains.SimpleTokenTransferABI()).

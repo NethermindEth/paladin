@@ -44,7 +44,7 @@ const notoPenteTrackerDefaultInitialMintAmount = int64(1000000)
 type notoPenteTrackerSuite struct {
 	ctx                 context.Context
 	runner              Runner
-	notoContractAddress *pldtypes.EthAddress
+	notoContractAddress *pldtypes.ChainAddress
 	notary              string
 	members             []string
 	listenerName        string
@@ -383,7 +383,7 @@ func (s *notoPenteTrackerSuite) PostRun() error {
 type notoPenteTrackerWorker struct {
 	testBase
 	suite               *notoPenteTrackerSuite
-	notoContractAddress *pldtypes.EthAddress
+	notoContractAddress *pldtypes.ChainAddress
 	members             []string
 	runner              Runner
 }

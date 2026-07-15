@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/mocks/componentsmocks"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
@@ -124,7 +125,7 @@ func TestStoreRetrieveABISchema(t *testing.T) {
 	err = ss.persistSchemas(ctx, ss.p.NOTX(), []*pldapi.Schema{as.Schema})
 	require.NoError(t, err)
 	schemaID := as.Persisted().ID
-	contractAddress := pldtypes.RandAddress()
+	contractAddress := confutil.P(pldtypes.RandAddress().ChainAddress())
 
 	// Check it handles data
 	var states []*pldapi.State
@@ -463,7 +464,7 @@ func TestABISchemaProcessStateInvalidType(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{"field1": 12345}`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{"field1": 12345}`), nil, false)
 	assert.Regexp(t, "PD010103", err)
 }
 
@@ -495,7 +496,7 @@ func TestABISchemaProcessStateLabelMissing(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{"field1": 12345}`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{"field1": 12345}`), nil, false)
 	assert.Regexp(t, "PD010110", err)
 }
 
@@ -531,7 +532,7 @@ func TestABISchemaProcessStateBadValue(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{!!! wrong`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{!!! wrong`), nil, false)
 	assert.Regexp(t, "PD010116", err)
 }
 
@@ -556,7 +557,7 @@ func TestABISchemaProcessStateMismatchValue(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{"field1":{}}`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{"field1":{}}`), nil, false)
 	assert.Regexp(t, "FF22030", err)
 }
 
@@ -581,7 +582,7 @@ func TestABISchemaProcessStateEIP712Failure(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{"field1":"0x753A7decf94E48a05Fa1B342D8984acA9bFaf6B2"}`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{"field1":"0x753A7decf94E48a05Fa1B342D8984acA9bFaf6B2"}`), nil, false)
 	assert.Regexp(t, "FF22073", err)
 }
 
@@ -606,7 +607,7 @@ func TestABISchemaProcessStateDataFailure(t *testing.T) {
 	var err error
 	as.tc, err = as.definition.TypeComponentTreeCtx(ctx)
 	require.NoError(t, err)
-	_, err = as.ProcessState(ctx, pldtypes.RandAddress(), pldtypes.RawJSON(`{"field1":"0x753A7decf94E48a05Fa1B342D8984acA9bFaf6B2"}`), nil, false)
+	_, err = as.ProcessState(ctx, confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{"field1":"0x753A7decf94E48a05Fa1B342D8984acA9bFaf6B2"}`), nil, false)
 	assert.Regexp(t, "FF22073", err)
 }
 
@@ -641,7 +642,7 @@ func TestABISchemaInsertCustomHashNoID(t *testing.T) {
 	tc, err := as.definition.Components.TypeComponentTree()
 	require.NoError(t, err)
 	as.tc = tc
-	_, err = as.ProcessState(context.Background(), pldtypes.RandAddress(), pldtypes.RawJSON(`{}`), nil, true)
+	_, err = as.ProcessState(context.Background(), confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{}`), nil, true)
 	assert.Regexp(t, "PD010130", err)
 }
 
@@ -653,7 +654,7 @@ func TestABISchemaInsertStandardHashMismatch(t *testing.T) {
 		Components:   abi.ParameterArray{},
 	})
 	require.NoError(t, err)
-	_, err = as.ProcessState(context.Background(), pldtypes.RandAddress(),
+	_, err = as.ProcessState(context.Background(), confutil.P(pldtypes.RandAddress().ChainAddress()),
 		pldtypes.RawJSON(`{}`), pldtypes.RandBytes(32), false)
 	assert.Regexp(t, "PD010129", err)
 }
@@ -668,7 +669,7 @@ func TestABISchemaInsertCustomHashBadData(t *testing.T) {
 	tc, err := as.definition.Components.TypeComponentTree()
 	require.NoError(t, err)
 	as.tc = tc
-	_, err = as.ProcessState(context.Background(), pldtypes.RandAddress(), pldtypes.RawJSON(`{}`), pldtypes.RandBytes(32), false)
+	_, err = as.ProcessState(context.Background(), confutil.P(pldtypes.RandAddress().ChainAddress()), pldtypes.RawJSON(`{}`), pldtypes.RandBytes(32), false)
 	assert.Regexp(t, "FF22040", err)
 }
 

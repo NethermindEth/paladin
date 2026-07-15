@@ -1393,6 +1393,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "snoto-factory"
+version = "0.0.0"
+dependencies = [
+ "factory",
+ "snoto",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "soroban-builtin-sdk-macros"
 version = "27.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

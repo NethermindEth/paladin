@@ -67,7 +67,7 @@ func (dm *domainManager) rpcGetDomain() rpcserver.RPCHandler {
 }
 
 func (dm *domainManager) rpcGetDomainByAddress() rpcserver.RPCHandler {
-	return rpcserver.RPCMethod1(func(ctx context.Context, address pldtypes.EthAddress) (*pldapi.Domain, error) {
+	return rpcserver.RPCMethod1(func(ctx context.Context, address pldtypes.ChainAddress) (*pldapi.Domain, error) {
 		ctx = log.WithComponent(ctx, "domainmanager")
 		domain, err := dm.getDomainByAddress(ctx, &address)
 		if err != nil {
@@ -109,7 +109,7 @@ func (dm *domainManager) rpcQuerySmartContracts() rpcserver.RPCHandler {
 }
 
 func (dm *domainManager) rpcGetSmartContractByAddress() rpcserver.RPCHandler {
-	return rpcserver.RPCMethod1(func(ctx context.Context, address pldtypes.EthAddress) (*pldapi.DomainSmartContract, error) {
+	return rpcserver.RPCMethod1(func(ctx context.Context, address pldtypes.ChainAddress) (*pldapi.DomainSmartContract, error) {
 		ctx = log.WithComponent(ctx, "domainmanager")
 		var sc components.DomainSmartContract
 		var err error
@@ -132,7 +132,7 @@ func (dm *domainManager) rpcGetSmartContractByAddress() rpcserver.RPCHandler {
 
 func (dm *domainManager) rpcInvokeRPC() rpcserver.RPCHandler {
 	return rpcserver.RPCMethod3(func(ctx context.Context,
-		address pldtypes.EthAddress,
+		address pldtypes.ChainAddress,
 		stateQualifier pldapi.StateStatusQualifier,
 		rpcCall pldapi.DomainInvokeRPC,
 	) (pldtypes.RawJSON, error) {

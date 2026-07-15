@@ -663,7 +663,7 @@ func TestSendTransactionGroupGetContractFail(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	mockDBPrivacyGroup(mc, schemaID, groupID, contractAddr)
 
-	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, *contractAddr).Return(nil, fmt.Errorf("pop"))
+	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, contractAddr.ChainAddress()).Return(nil, fmt.Errorf("pop"))
 
 	var res any
 	err := gm.Call(ctx, gm.p.NOTX(), &res, &pldapi.PrivacyGroupEVMCall{
@@ -685,7 +685,7 @@ func TestSendTransactionSendPreparedTx(t *testing.T) {
 	mockDBPrivacyGroup(mc, schemaID, groupID, contractAddr)
 
 	psc := componentsmocks.NewDomainSmartContract(t)
-	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, *contractAddr).Return(psc, nil)
+	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, contractAddr.ChainAddress()).Return(psc, nil)
 
 	psc.On("WrapPrivacyGroupEVMTX", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&pldapi.TransactionInput{}, nil)
 	mc.txManager.On("SendTransactions", mock.Anything, mock.Anything, mock.Anything).Return(nil, fmt.Errorf("pop"))
@@ -701,10 +701,10 @@ func TestSendTransactionSendPreparedTx(t *testing.T) {
 func mockGetPrivateSmartContract(t *testing.T, mc *mockComponents, schemaID pldtypes.Bytes32, groupID pldtypes.HexBytes, contractAddr *pldtypes.EthAddress) *componentsmocks.DomainSmartContract {
 	mockDBPrivacyGroup(mc, schemaID, groupID, contractAddr)
 	psc := componentsmocks.NewDomainSmartContract(t)
-	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, *contractAddr).Return(psc, nil)
+	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, contractAddr.ChainAddress()).Return(psc, nil)
 	psc.On("Domain").Return(mc.domain).Maybe()
 	mdc := componentsmocks.NewDomainContext(t)
-	mc.stateManager.On("NewDomainContext", mock.Anything, mc.domain, *contractAddr).Return(mdc)
+	mc.stateManager.On("NewDomainContext", mock.Anything, mc.domain, contractAddr.ChainAddress()).Return(mdc)
 	mdc.On("Close").Return()
 	return psc
 }
@@ -771,7 +771,7 @@ func TestInvokeRPCUnsupportedQualifier(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	mockDBPrivacyGroup(mc, schemaID, groupID, contractAddr)
 	psc := componentsmocks.NewDomainSmartContract(t)
-	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, *contractAddr).Return(psc, nil)
+	mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, contractAddr.ChainAddress()).Return(psc, nil)
 
 	_, err := gm.invokeRPC(ctx, gm.p.NOTX(), "domain1", groupID, "pending", pldapi.DomainInvokeRPC{Method: "pente_getCodeHash", Params: pldtypes.RawJSON(`[]`)})
 	require.Regexp(t, "PD011667", err)

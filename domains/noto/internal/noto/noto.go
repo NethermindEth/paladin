@@ -146,6 +146,7 @@ type Noto struct {
 
 	name                 string
 	config               types.DomainConfig
+	registryAddress      string
 	chainID              int64
 	chainIO              chainIO
 	fixedSigningIdentity string
@@ -525,6 +526,7 @@ func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomain
 
 	n.name = req.Name
 	n.config = config
+	n.registryAddress = req.RegistryContractAddress
 	n.chainID = req.ChainId
 	// The chain-kind switch (chapter 14 step 4): domainmgr now sends a chain-neutral ChainInfo
 	// (chapter 14 step 1), so this is the one lifecycle hook where the framework tells the domain
@@ -636,6 +638,11 @@ func (n *Noto) PrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequ
 	if err != nil {
 		return nil, err
 	}
+
+	if n.getChainIO().ChainKind() == "stellar" {
+		return n.stellarPrepareDeploy(ctx, req, params, notaryInfo)
+	}
+
 	notaryAddress := notaryInfo.address
 
 	deployData := &types.NotoConfigData_V0{

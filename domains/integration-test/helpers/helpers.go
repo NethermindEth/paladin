@@ -94,7 +94,7 @@ func (th *TransactionHelper) FindEvent(txHash *pldtypes.Bytes32, abi abi.ABI, ev
 	return nil
 }
 
-func NewDomainTransactionHelper(ctx context.Context, t *testing.T, rpc rpcclient.Client, to *pldtypes.EthAddress, fn *abi.Entry, inputs pldtypes.RawJSON) *DomainTransactionHelper {
+func NewDomainTransactionHelper(ctx context.Context, t *testing.T, rpc rpcclient.Client, to *pldtypes.ChainAddress, fn *abi.Entry, inputs pldtypes.RawJSON) *DomainTransactionHelper {
 	return &DomainTransactionHelper{
 		ctx: ctx,
 		t:   t,

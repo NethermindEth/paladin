@@ -115,8 +115,8 @@ func setupDefaultMocks(ctx context.Context, mocks *transportClientTestMocks, con
 	mocks.components.EXPECT().TxManager().Return(mocks.txManager).Maybe()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Maybe()
 	mocks.domainAPI.EXPECT().Domain().Return(mocks.domain).Maybe()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Maybe()
-	mocks.stateManager.EXPECT().NewDomainContext(ctx, mocks.domain, *contractAddr).Return(mocks.domainContext).Maybe()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Maybe()
+	mocks.stateManager.EXPECT().NewDomainContext(ctx, mocks.domain, contractAddr.ChainAddress()).Return(mocks.domainContext).Maybe()
 }
 
 func TestHandlePaladinMsg_Routing(t *testing.T) {
@@ -435,7 +435,8 @@ func newDelegationRequestMessage(fromNode string, contractAddr *pldtypes.EthAddr
 
 func newTestPrivateTx(contractAddr *pldtypes.EthAddress) *components.PrivateTransaction {
 	return &components.PrivateTransaction{
-		ID: uuid.New(),
+		ID:      uuid.New(),
+		Address: contractAddr.ChainAddress(),
 		PreAssembly: &components.TransactionPreAssembly{
 			TransactionSpecification: &prototk.TransactionSpecification{
 				ContractInfo: &prototk.ContractInfo{
@@ -459,7 +460,7 @@ func TestHandleDelegationRequest_Success(t *testing.T) {
 	setupDefaultMocks(ctx, mocks, contractAddr)
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Maybe()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Maybe()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Maybe()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Maybe()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -493,7 +494,7 @@ func TestHandleDelegationRequest_MultipleTxBatch(t *testing.T) {
 	setupDefaultMocks(ctx, mocks, contractAddr)
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Maybe()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Maybe()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Maybe()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Maybe()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -832,7 +833,7 @@ func TestHandleCoordinatorHeartbeatNotification_SequencerNotLoaded(t *testing.T)
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("not found")).Once()
 
 	sm.handleCoordinatorHeartbeatNotification(ctx, message)
 	assert.Empty(t, sm.sequencers)
@@ -1098,7 +1099,7 @@ func TestHandleEndorsementRequest_Success_Sign(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -1150,7 +1151,7 @@ func TestHandleEndorsementRequest_Success_Revert(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -1202,7 +1203,7 @@ func TestHandleEndorsementRequest_Success_EndorserSubmit(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -1297,7 +1298,7 @@ func TestHandleEndorsementRequest_QueuesEventWithDecodedFields(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -1359,7 +1360,7 @@ func TestHandleEndorsementRequest_LoadSequencerError(t *testing.T) {
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
 
 	// LoadSequencer returns nil because the existence check (GetSmartContractByAddress) errors.
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("not found")).Once()
 
 	// QueueEvent must NOT be called because LoadSequencer returned nil.
 	sm.handleEndorsementRequest(ctx, message)
@@ -1400,7 +1401,7 @@ func TestHandleEndorsementRequest_SendEndorsementResponseError(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -1444,7 +1445,7 @@ func TestHandleEndorsementRequest_SignValidationError(t *testing.T) {
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, nil).Once()
 
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
@@ -2281,7 +2282,7 @@ func TestHandleCoordinatorHeartbeatNotification_Success(t *testing.T) {
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.originator.EXPECT().QueueEvent(ctx, mock.Anything).Once()
 	mocks.coordinator.EXPECT().QueueEvent(ctx, mock.Anything).Once()
 	sm.handleCoordinatorHeartbeatNotification(ctx, &components.ReceivedMessage{
@@ -2471,7 +2472,7 @@ func TestHandleDelegationRequest_LoadSequencerError(t *testing.T) {
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(nil, errors.New("not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(nil, errors.New("not found")).Once()
 	sm.handleDelegationRequest(ctx, message)
 }
 
@@ -2538,7 +2539,7 @@ func TestHandleEndorsementRequest_WithExpiry(t *testing.T) {
 	mocks.components.EXPECT().Persistence().Return(mocks.persistence).Once()
 	mocks.persistence.EXPECT().NOTX().Return(nil).Once()
 	mocks.components.EXPECT().DomainManager().Return(mocks.domainManager).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, mock.Anything, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	seq := newSequencerForTransportClientTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
 	mocks.coordinator.EXPECT().QueueEvent(ctx, mock.MatchedBy(func(e interface{}) bool {

@@ -41,7 +41,7 @@ type DomainManager interface {
 	ConfiguredDomains() map[string]*pldconf.PluginConfig
 	DomainRegistered(name string, toDomain DomainManagerToDomain) (fromDomain plugintk.DomainCallbacks, err error)
 	GetDomainByName(ctx context.Context, name string) (Domain, error)
-	GetSmartContractByAddress(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.EthAddress) (DomainSmartContract, error)
+	GetSmartContractByAddress(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.ChainAddress) (DomainSmartContract, error)
 	ExecDeployAndWait(ctx context.Context, txID uuid.UUID, call func() error) (dc DomainSmartContract, err error)
 	ExecAndWaitTransaction(ctx context.Context, txID uuid.UUID, call func() error) error
 	GetSigner() signerapi.InMemorySigner
@@ -51,7 +51,7 @@ type DomainManager interface {
 type Domain interface {
 	Initialized() bool
 	Name() string
-	RegistryAddress() *pldtypes.EthAddress
+	RegistryAddress() *pldtypes.ChainAddress
 	Configuration() *prototk.DomainConfig
 	CustomHashFunction() bool
 	FullStateAvailablityRequired() bool
@@ -85,7 +85,7 @@ type Domain interface {
 // External interface for other components to call against a private smart contract
 type DomainSmartContract interface {
 	Domain() Domain
-	Address() pldtypes.EthAddress
+	Address() pldtypes.ChainAddress
 	ContractConfig() *prototk.ContractConfig
 
 	InitTransaction(ctx context.Context, ptx *PrivateTransaction, localTx *ResolvedTransaction) error

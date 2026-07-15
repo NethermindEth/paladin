@@ -549,7 +549,7 @@ func (s *notoTestSuite) testNotoLock(version, variant string) {
 	tx := paladinClient.ForABI(ctx, notoBuild.ABI).
 		Public().
 		From(recipient2Name).
-		To(noto.Address).
+		To(mustEthAddress(t, noto.Address)).
 		Function(prepareUnlockReceipt.LockInfo.UnlockFunction).
 		Inputs(prepareUnlockReceipt.LockInfo.UnlockParams).
 		Send().
@@ -713,7 +713,7 @@ func (s *notoTestSuite) TestNotoCreateMintLock() {
 	tx := pld.ForABI(ctx, notoBuild.ABI).
 		Public().
 		From(recipient1Name).
-		To(noto.Address).
+		To(mustEthAddress(t, noto.Address)).
 		Function(createMintLockReceipt.LockInfo.UnlockFunction).
 		Inputs(createMintLockReceipt.LockInfo.UnlockParams).
 		Send().
@@ -831,7 +831,7 @@ func (s *notoTestSuite) TestNotoCreateBurnLock() {
 	tx := pld.ForABI(ctx, notoBuild.ABI).
 		Public().
 		From(recipient1Name).
-		To(noto.Address).
+		To(mustEthAddress(t, noto.Address)).
 		Function(createBurnLockReceipt.LockInfo.UnlockFunction).
 		Inputs(createBurnLockReceipt.LockInfo.UnlockParams).
 		Send().
@@ -952,7 +952,7 @@ func (s *notoTestSuite) TestNotoPrepareMintUnlock() {
 	tx := pld.ForABI(ctx, notoBuild.ABI).
 		Public().
 		From(recipient1Name).
-		To(noto.Address).
+		To(mustEthAddress(t, noto.Address)).
 		Function(prepareMintUnlockReceipt.LockInfo.UnlockFunction).
 		Inputs(prepareMintUnlockReceipt.LockInfo.UnlockParams).
 		Send().
@@ -1096,7 +1096,7 @@ func (s *notoTestSuite) TestNotoPrepareBurnUnlock() {
 	tx := pld.ForABI(ctx, notoBuild.ABI).
 		Public().
 		From(recipient1Name).
-		To(noto.Address).
+		To(mustEthAddress(t, noto.Address)).
 		Function(prepareBurnUnlockReceipt.LockInfo.UnlockFunction).
 		Inputs(prepareBurnUnlockReceipt.LockInfo.UnlockParams).
 		Send().

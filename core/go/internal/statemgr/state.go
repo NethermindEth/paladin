@@ -230,7 +230,7 @@ func (ss *stateManager) getStateIDsMissingPrivateData(ctx context.Context, dbTX 
 	return missing, nil
 }
 
-func (ss *stateManager) GetStatesByID(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.EthAddress, stateIDs []pldtypes.HexBytes, failNotFound, withLabels bool) ([]*pldapi.State, error) {
+func (ss *stateManager) GetStatesByID(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.ChainAddress, stateIDs []pldtypes.HexBytes, failNotFound, withLabels bool) ([]*pldapi.State, error) {
 	ctx = log.WithComponent(ctx, "statemanager")
 	q := dbTX.DB().Table("states")
 	if withLabels {
@@ -292,7 +292,7 @@ func (ss *stateManager) labelSetFor(schema components.Schema) *trackingLabelSet 
 	return &tls
 }
 
-func (ss *stateManager) FindContractStates(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.EthAddress, schemaID pldtypes.Bytes32, query *query.QueryJSON, status pldapi.StateStatusQualifier) (s []*pldapi.State, err error) {
+func (ss *stateManager) FindContractStates(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.ChainAddress, schemaID pldtypes.Bytes32, query *query.QueryJSON, status pldapi.StateStatusQualifier) (s []*pldapi.State, err error) {
 	_, s, err = ss.findStates(ctx, dbTX, domainName, contractAddress, schemaID, query, &components.StateQueryOptions{StatusQualifier: status})
 	return s, err
 }
@@ -303,7 +303,7 @@ func (ss *stateManager) FindStates(ctx context.Context, dbTX persistence.DBTX, d
 	return s, err
 }
 
-func (ss *stateManager) FindContractNullifiers(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress pldtypes.EthAddress, schemaID pldtypes.Bytes32, query *query.QueryJSON, status pldapi.StateStatusQualifier) (s []*pldapi.State, err error) {
+func (ss *stateManager) FindContractNullifiers(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress pldtypes.ChainAddress, schemaID pldtypes.Bytes32, query *query.QueryJSON, status pldapi.StateStatusQualifier) (s []*pldapi.State, err error) {
 	_, s, err = ss.findNullifiers(ctx, dbTX, domainName, &contractAddress, schemaID, query, status, nil, nil)
 	return s, err
 }
@@ -317,7 +317,7 @@ func (ss *stateManager) findStates(
 	ctx context.Context,
 	dbTX persistence.DBTX,
 	domainName string,
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	schemaID pldtypes.Bytes32,
 	jq *query.QueryJSON,
 	options *components.StateQueryOptions,
@@ -366,7 +366,7 @@ func (ss *stateManager) findNullifiers(
 	ctx context.Context,
 	dbTX persistence.DBTX,
 	domainName string,
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	schemaID pldtypes.Bytes32,
 	jq *query.QueryJSON,
 	status pldapi.StateStatusQualifier,
@@ -414,7 +414,7 @@ func (ss *stateManager) findStatesCommon(
 	ctx context.Context,
 	dbTX persistence.DBTX,
 	domainName string,
-	contractAddress *pldtypes.EthAddress,
+	contractAddress *pldtypes.ChainAddress,
 	schemaID pldtypes.Bytes32,
 	jq *query.QueryJSON,
 	modifyQuery func(dbTX persistence.DBTX, q *gorm.DB) *gorm.DB,

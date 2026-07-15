@@ -829,8 +829,18 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 		return i18n.NewError(ctx, msgs.MsgTransactionAlreadyComplete, id)
 	}
 
+	// tx.To (pldapi.TransactionInput, now chain-neutral) is unwrapped here since this whole
+	// function is public-tx-specific (EVM-only today, same as the rest of publicTxMgr).
+	var toEthAddr *pldtypes.EthAddress
+	if tx.To != nil {
+		toEthAddr, err = tx.To.EthAddress()
+		if err != nil {
+			return err
+		}
+	}
+
 	if tx.Gas == nil || *tx.Gas == 0 {
-		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*from, tx.To, publicTxData))
+		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*from, toEthAddr, publicTxData))
 		if err != nil {
 			log.L(ctx).Errorf("EstimateGas error estimating gas for transaction: %+v, request: (%+v)", err, tx)
 			if ethclient.MapSubmissionRejected(err) {
@@ -848,7 +858,7 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 
 	newPtx := &DBPublicTxn{
 		From:  from.ChainAddress(),
-		To:    ethAddressChainAddress(tx.To),
+		To:    tx.To,
 		Gas:   tx.Gas.Uint64(),
 		Value: tx.Value,
 		Data:  publicTxData,

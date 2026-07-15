@@ -43,7 +43,7 @@ type domainContext struct {
 	ss                 *stateManager
 	domainName         string
 	customHashFunction bool
-	contractAddress    pldtypes.EthAddress
+	contractAddress    pldtypes.ChainAddress
 	stateLock          sync.Mutex
 	unFlushed          *pendingStateWrites
 	flushing           *pendingStateWrites
@@ -71,7 +71,7 @@ func (lr logStateSummary) String() string {
 }
 
 // Very important that callers Close domain contexts they open
-func (ss *stateManager) NewDomainContext(ctx context.Context, domain components.Domain, contractAddress pldtypes.EthAddress) components.DomainContext {
+func (ss *stateManager) NewDomainContext(ctx context.Context, domain components.Domain, contractAddress pldtypes.ChainAddress) components.DomainContext {
 	ctx = log.WithComponent(ctx, "statemanager")
 	id := uuid.New()
 	log.L(ctx).Debugf("Domain context %s for domain %s contract %s created", id, domain.Name(), contractAddress)

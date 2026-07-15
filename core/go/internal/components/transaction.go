@@ -85,9 +85,9 @@ type TransactionPostAssembly struct {
 type PrivateTransaction struct {
 
 	// The identifier for the transaction
-	ID      uuid.UUID           `json:"id"`
-	Domain  string              `json:"domain"`
-	Address pldtypes.EthAddress `json:"address"`
+	ID      uuid.UUID             `json:"id"`
+	Domain  string                `json:"domain"`
+	Address pldtypes.ChainAddress `json:"address"`
 
 	// This enum describes the point in the private transaction flow where processing of the transaction should stop
 	Intent prototk.TransactionSpecification_Intent `json:"intent"`

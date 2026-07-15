@@ -172,8 +172,8 @@ func (b *CoordinatorBuilderForTesting) ContractAddress(contractAddress *pldtypes
 	return b
 }
 
-func (b *CoordinatorBuilderForTesting) GetContractAddress() pldtypes.EthAddress {
-	return *b.contractAddress
+func (b *CoordinatorBuilderForTesting) GetContractAddress() pldtypes.ChainAddress {
+	return b.contractAddress.ChainAddress()
 }
 
 func (b *CoordinatorBuilderForTesting) CurrentBlockHeight(h uint64) *CoordinatorBuilderForTesting {
@@ -357,8 +357,9 @@ func (b *CoordinatorBuilderForTesting) Build() (*coordinator, *CoordinatorDepend
 		clock = common.RealClock()
 	}
 
+	contractAddrChain := b.contractAddress.ChainAddress()
 	coordinator := NewCoordinator(
-		b.contractAddress,
+		&contractAddrChain,
 		mocks.DomainAPI,
 		mocks.DomainContext,
 		mocks.AllComponents,

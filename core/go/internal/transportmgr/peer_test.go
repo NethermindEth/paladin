@@ -56,7 +56,7 @@ func mockGetStateOk(mc *mockComponents, conf *pldconf.TransportManagerInlineConf
 			{
 				StateBase: pldapi.StateBase{
 					DomainName:      args[2].(string),
-					ContractAddress: args[3].(*pldtypes.EthAddress),
+					ContractAddress: args[3].(*pldtypes.ChainAddress),
 					ID:              id,
 					Data:            []byte(fmt.Sprintf(`{"dataFor": "%s"}`, id.HexString())),
 				},

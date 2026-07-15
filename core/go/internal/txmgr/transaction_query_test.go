@@ -123,8 +123,8 @@ func TestGetTransactionByIDFullPublicHistory(t *testing.T) {
 	tx, err := txm.GetTransactionByIDFull(ctx, txID)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(tx.History))
-	assert.Equal(t, to1, tx.History[0].To)
-	assert.Equal(t, to2, tx.History[1].To)
+	assert.Equal(t, confutil.P(to1.ChainAddress()), tx.History[0].To)
+	assert.Equal(t, confutil.P(to2.ChainAddress()), tx.History[1].To)
 }
 
 func TestGetTransactionByIDFail(t *testing.T) {
@@ -197,7 +197,7 @@ func TestResolveABIReferencesAndCacheBadFunc(t *testing.T) {
 			ID: confutil.P(uuid.New()),
 			TransactionBase: pldapi.TransactionBase{
 				Function:     "doStuff()",
-				To:           pldtypes.RandAddress(),
+				To:           confutil.P(pldtypes.RandAddress().ChainAddress()),
 				ABIReference: confutil.P(abiHash),
 			},
 		}},

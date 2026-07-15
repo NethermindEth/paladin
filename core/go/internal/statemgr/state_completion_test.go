@@ -63,7 +63,7 @@ func seedPendingRow(t *testing.T, ss *stateManager, contract string, stateID pld
 }
 
 // makePendingEntry builds a PendingPrivateStateDataEntry using the given contract address.
-func makePendingEntry(stateID pldtypes.HexBytes, contract pldtypes.EthAddress, blockNumber int64) components.PendingPrivateStateDataEntry {
+func makePendingEntry(stateID pldtypes.HexBytes, contract pldtypes.ChainAddress, blockNumber int64) components.PendingPrivateStateDataEntry {
 	return components.PendingPrivateStateDataEntry{
 		StateID:     stateID,
 		Contract:    contract,
@@ -77,7 +77,7 @@ func TestWritePendingPrivateStateDataBatch_AllStatesPresent(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	id1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 
@@ -102,7 +102,7 @@ func TestWritePendingPrivateStateDataBatch_OneMissingState(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	presentID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	missingID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 
@@ -129,7 +129,7 @@ func TestWritePendingPrivateStateDataBatch_MultipleMissingStates(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	id1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id3 := pldtypes.HexBytes(pldtypes.RandBytes(32))
@@ -162,7 +162,7 @@ func TestWritePendingPrivateStateDataBatch_Idempotent(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	missingID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	entries := []components.PendingPrivateStateDataEntry{makePendingEntry(missingID, contractAddr, 10)}
 
@@ -196,7 +196,7 @@ func TestWritePendingPrivateStateDataBatch_DBError(t *testing.T) {
 
 	db.ExpectQuery("SELECT.*id.*states").WillReturnError(fmt.Errorf("db lookup error"))
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	stateID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	entries := []components.PendingPrivateStateDataEntry{makePendingEntry(stateID, contractAddr, 10)}
 
@@ -208,8 +208,8 @@ func TestWritePendingPrivateStateDataBatch_MultipleContracts(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contract1 := *pldtypes.RandAddress()
-	contract2 := *pldtypes.RandAddress()
+	contract1 := pldtypes.RandAddress().ChainAddress()
+	contract2 := pldtypes.RandAddress().ChainAddress()
 	id1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 
@@ -242,7 +242,7 @@ func TestWritePendingPrivateStateDataBatch_LockAcquisitionError(t *testing.T) {
 	wrapper := &lockControlledPersistence{Persistence: ss.p, lockErr: fmt.Errorf("lock error")}
 	ss.p = wrapper
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	stateID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	entries := []components.PendingPrivateStateDataEntry{makePendingEntry(stateID, contractAddr, 10)}
 
@@ -270,7 +270,7 @@ func TestUpdatePendingPrivateStateData_EmptyList(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	stateID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	seedPendingRow(t, ss, contractAddr.String(), stateID, 10)
 
@@ -287,7 +287,7 @@ func TestUpdatePendingPrivateStateData_NoMatchingRows(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	trackedID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	seedPendingRow(t, ss, contractAddr.String(), trackedID, 10)
 
@@ -306,7 +306,7 @@ func TestUpdatePendingPrivateStateData_SingleStateArrives(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	stateID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	seedPendingRow(t, ss, contractAddr.String(), stateID, 10)
 
@@ -322,7 +322,7 @@ func TestUpdatePendingPrivateStateData_MultipleStatesArrive(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	id1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	untrackedID := pldtypes.HexBytes(pldtypes.RandBytes(32))
@@ -341,7 +341,7 @@ func TestUpdatePendingPrivateStateData_PartialArrivals(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	id1 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	id2 := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	seedPendingRow(t, ss, contractAddr.String(), id1, 10)
@@ -361,7 +361,7 @@ func TestUpdatePendingPrivateStateData_LockAcquisitionError(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	stateID := pldtypes.HexBytes(pldtypes.RandBytes(32))
 	seedPendingRow(t, ss, contractAddr.String(), stateID, 10)
 
@@ -393,7 +393,7 @@ func TestCheckPendingPrivateStateDataForContract_NoRows_Complete(t *testing.T) {
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	complete, err := ss.CheckPendingPrivateStateDataForContract(ctx, ss.p.NOTX(), contractAddr.String(), 1000)
 	require.NoError(t, err)
 	assert.True(t, complete)
@@ -403,7 +403,7 @@ func TestCheckPendingPrivateStateDataForContract_RowAtOrBelowBlock_Incomplete(t 
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	seedPendingRow(t, ss, contractAddr.String(), pldtypes.RandBytes(32), 50)
 
 	complete, err := ss.CheckPendingPrivateStateDataForContract(ctx, ss.p.NOTX(), contractAddr.String(), 50)
@@ -415,7 +415,7 @@ func TestCheckPendingPrivateStateDataForContract_RowAboveMaxBlock_Complete(t *te
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	seedPendingRow(t, ss, contractAddr.String(), pldtypes.RandBytes(32), 100)
 
 	complete, err := ss.CheckPendingPrivateStateDataForContract(ctx, ss.p.NOTX(), contractAddr.String(), 50)
@@ -427,7 +427,7 @@ func TestCheckPendingPrivateStateDataForContract_DifferentContract_DoesNotInterf
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	otherContract := pldtypes.RandAddress().String()
 	seedPendingRow(t, ss, otherContract, pldtypes.RandBytes(32), 10)
 
@@ -440,7 +440,7 @@ func TestCheckPendingPrivateStateDataForContract_MultipleRows_Incomplete(t *test
 	ctx, ss, _, done := newDBTestStateManager(t)
 	defer done()
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	seedPendingRow(t, ss, contractAddr.String(), pldtypes.RandBytes(32), 10)
 	seedPendingRow(t, ss, contractAddr.String(), pldtypes.RandBytes(32), 20)
 
@@ -455,7 +455,7 @@ func TestCheckPendingPrivateStateDataForContract_DBError(t *testing.T) {
 
 	db.ExpectQuery("SELECT.*count.*pending_private_state_data").WillReturnError(fmt.Errorf("db count error"))
 
-	contractAddr := *pldtypes.RandAddress()
+	contractAddr := pldtypes.RandAddress().ChainAddress()
 	complete, err := ss.CheckPendingPrivateStateDataForContract(ctx, ss.p.NOTX(), contractAddr.String(), 100)
 	require.ErrorContains(t, err, "db count error")
 	assert.False(t, complete)

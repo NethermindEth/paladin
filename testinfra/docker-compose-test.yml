@@ -116,6 +116,20 @@ services:
     image: stellar/quickstart:testing
     ports:
       - 8000:8000  # stellar-rpc (Soroban RPC), served at /soroban/rpc - no Horizon on this port
+    environment:
+      # The image's own default (baked into /image.json's protocol_version_default, observed: 25)
+      # lags behind what its bundled stellar-core/soroban-rpc/soroban-sdk (all v27.0.0, matching
+      # soroban/Cargo.toml's pinned soroban-sdk) actually support (up to protocol 27) - and
+      # soroban-env-host's check_ledger_protocol_supported() requires an *exact* match to its own
+      # INTERFACE_VERSION.protocol (soroban-env-common's meta.rs), not just "new enough". So a
+      # contract built with this workspace's pinned soroban-sdk fails to deploy at all against a
+      # default-genesis ledger, with an otherwise-unhelpful `HostError: Error(Context,
+      # InternalError)`. PROTOCOL_VERSION is the image's own supported override (read by its
+      # `/start` script, defaulting to PROTOCOL_VERSION_DEFAULT) - setting it directly here lets
+      # the image bootstrap at the right protocol itself, rather than externally forcing a
+      # protocol upgrade after the fact (tried first; races the image's own bootstrap-time
+      # upgrade/soroban-config sequence and can crash the container).
+      - PROTOCOL_VERSION=27
     command:
       - --local
       - --enable

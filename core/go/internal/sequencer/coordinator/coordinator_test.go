@@ -821,7 +821,7 @@ func TestCoordinator_WaitForDone_CtxCancelledWhileDispatchLoopRunning_ReturnsEar
 func TestNewCoordinator_SenderMode_SetsCurrentActiveCoordinatorToNodeName(t *testing.T) {
 	const nodeName = "senderNode"
 	c := NewCoordinator(
-		pldtypes.RandAddress(),
+		confutil.P(pldtypes.RandAddress().ChainAddress()),
 		componentsmocks.NewDomainSmartContract(t),
 		nil,
 		componentsmocks.NewAllComponents(t),
@@ -845,7 +845,7 @@ func TestNewCoordinator_SenderMode_SetsCurrentActiveCoordinatorToNodeName(t *tes
 func TestNewCoordinator_EndorserMode_SetsEndorserCandidates(t *testing.T) {
 	endorsers := []string{"endorser1@node1", "endorser2@node2"}
 	c := NewCoordinator(
-		pldtypes.RandAddress(),
+		confutil.P(pldtypes.RandAddress().ChainAddress()),
 		componentsmocks.NewDomainSmartContract(t),
 		nil,
 		componentsmocks.NewAllComponents(t),

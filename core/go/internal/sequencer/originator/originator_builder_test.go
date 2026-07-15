@@ -91,8 +91,8 @@ func (b *OriginatorBuilderForTesting) CommitteeMembers(committeeMembers ...strin
 	return b
 }
 
-func (b *OriginatorBuilderForTesting) GetContractAddress() pldtypes.EthAddress {
-	return *b.contractAddress
+func (b *OriginatorBuilderForTesting) GetContractAddress() pldtypes.ChainAddress {
+	return b.contractAddress.ChainAddress()
 }
 
 func (b *OriginatorBuilderForTesting) GetCoordinatorHeartbeatThresholdMs() int {
@@ -207,11 +207,12 @@ func (b *OriginatorBuilderForTesting) Build() (*originator, *OriginatorDependenc
 		tw = mocks.TransportWriter
 	}
 
+	contractAddrChain := b.contractAddress.ChainAddress()
 	originator := NewOriginator(
 		*b.nodeName,
 		tw,
 		mocks.EngineIntegration,
-		b.contractAddress,
+		&contractAddrChain,
 		seqConfig,
 		b.metrics,
 		&common.CoordinatorSelectionConfig{},

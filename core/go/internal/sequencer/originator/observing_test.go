@@ -245,7 +245,7 @@ func Test_action_ProcessConfirmedTransactions_ConfirmedSuccess(t *testing.T) {
 		Transactions(mockTxn).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "any@node",
 		ContractAddress: &contractAddress,
@@ -275,7 +275,7 @@ func Test_action_ProcessConfirmedTransactions_NotInMemory_Skipped(t *testing.T) 
 		CurrentActiveCoordinator("coordinator@node1").
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "any@node",
 		ContractAddress: &contractAddress,
@@ -310,7 +310,7 @@ func Test_action_ProcessConfirmedTransactions_HandleEventError(t *testing.T) {
 		Transactions(mockTxn).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "any@node",
 		ContractAddress: &contractAddress,
@@ -351,7 +351,7 @@ func Test_action_ProcessRevertedTransactions_FiresConfirmedRevertedEvent(t *test
 		Transactions(mockTxn).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "coordinator@node1",
 		ContractAddress: &contractAddress,
@@ -389,7 +389,7 @@ func Test_action_ProcessRevertedTransactions_NilRevertReason_StillFiresEvent(t *
 		Transactions(mockTxn).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "coordinator@node1",
 		ContractAddress: &contractAddress,
@@ -417,7 +417,7 @@ func Test_action_ProcessRevertedTransactions_NotInMemory_Skipped(t *testing.T) {
 		CurrentActiveCoordinator("coordinator@node1").
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "coordinator@node1",
 		ContractAddress: &contractAddress,
@@ -450,7 +450,7 @@ func Test_action_ProcessRevertedTransactions_HandleEventError_ReturnsError(t *te
 		Transactions(mockTxn).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "coordinator@node1",
 		ContractAddress: &contractAddress,
@@ -480,7 +480,7 @@ func Test_action_ProcessCurrentCoordinatorHeartbeat_ResetsLivenessTimer(t *testi
 		Build()
 	o.heartbeatIntervalsSinceLastReceive = 5
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        coordinatorLocator,
 		ContractAddress: &contractAddress,
@@ -505,7 +505,7 @@ func Test_action_ProcessCurrentCoordinatorHeartbeat_DispatchedTransactionNotFoun
 		Build()
 
 	unknownTxID := uuid.New()
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        coordinatorLocator,
 		ContractAddress: &contractAddress,
@@ -616,7 +616,7 @@ func Test_action_ProcessCurrentCoordinatorHeartbeat_SubmittedHandleEventError(t 
 
 	signerAddress := pldtypes.RandAddress()
 	submissionHash := pldtypes.RandBytes32()
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        coordinatorLocator,
 		ContractAddress: &contractAddress,
@@ -655,7 +655,7 @@ func Test_action_ProcessCurrentCoordinatorHeartbeat_NonceAssignedHandleEventErro
 		Build()
 
 	nonce := uint64(99)
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        coordinatorLocator,
 		ContractAddress: &contractAddress,
@@ -743,7 +743,7 @@ func Test_ProcessEvent_HeartbeatReceived_HigherPriorityNode_RedirectsAndProcesse
 		HeartbeatIntervalsSinceLastReceive(5).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "node1",
 		ContractAddress: &contractAddress,
@@ -769,7 +769,7 @@ func Test_ProcessEvent_HeartbeatReceived_InactiveFallback_RedirectsAndProcessesH
 		InactiveGracePeriod(10).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "node2",
 		ContractAddress: &contractAddress,
@@ -795,7 +795,7 @@ func Test_ProcessEvent_HeartbeatReceived_LowerPriorityWithinGracePeriod_NoRedire
 		InactiveGracePeriod(10).
 		Build()
 
-	contractAddress := *pldtypes.RandAddress()
+	contractAddress := pldtypes.RandAddress().ChainAddress()
 	event := &common.HeartbeatReceivedEvent{
 		FromNode:        "node2",
 		ContractAddress: &contractAddress,

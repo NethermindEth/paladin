@@ -847,7 +847,7 @@ func TestUpdateTransactionRealDB_SuccessfulUpdateAndConfirmation(t *testing.T) {
 	err = ptm.UpdateTransaction(ctx, txID, *pubTx.LocalID, resolvedKey, &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			From:     resolvedKey.String(),
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Function: "set",
 			Data:     pldtypes.RawJSON(`{"value": 46}`),
 		},

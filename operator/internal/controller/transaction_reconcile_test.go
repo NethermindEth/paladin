@@ -326,6 +326,7 @@ func TestTrackTransactionAndRequeue_Success(t *testing.T) {
 	paladinRPC := &mockRPCClient{
 		callRPCFunc: func(ctx context.Context, result interface{}, method string, args ...interface{}) rpcclient.ErrorRPC {
 			tx := pldtypes.NewBytes32FromSlice([]byte("0xabc123"))
+			contractAddress := pldtypes.MustEthAddress("0x3078616263646566313233343536373839300000").ChainAddress()
 			if method == "ptx_getTransactionReceipt" {
 				receipt := &pldapi.TransactionReceipt{
 					TransactionReceiptData: pldapi.TransactionReceiptData{
@@ -333,7 +334,7 @@ func TestTrackTransactionAndRequeue_Success(t *testing.T) {
 						TransactionReceiptDataOnchain: &pldapi.TransactionReceiptDataOnchain{
 							TransactionHash: &tx,
 						},
-						ContractAddress: pldtypes.MustEthAddress("0x3078616263646566313233343536373839300000"),
+						ContractAddress: &contractAddress,
 						FailureMessage:  "",
 					},
 				}

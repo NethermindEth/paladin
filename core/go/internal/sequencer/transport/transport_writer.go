@@ -50,7 +50,7 @@ type TransportWriter interface {
 	SendDelegationRequest(ctx context.Context, coordinatorNode string, transactions []*components.PrivateTransaction, blockHeight uint64) error
 	SendDelegationResponse(ctx context.Context, delegatingNodeName string, delegationId string, transactionIDs []string, errors []int64, blockHeight uint64) error
 	SendDelegationRejection(ctx context.Context, delegatingNodeName string, delegationId string, rejectionReason engineProto.RejectionReason, activeCoordinator string, originatorBlockHeight, coordinatorBlockHeight, blockHeightTolerance int64) error
-	SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress) error
+	SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress) error
 	SendEndorsementRequest(ctx context.Context, txID uuid.UUID, idempotencyKey uuid.UUID, party string, attRequest *prototk.AttestationRequest, transactionSpecification *prototk.TransactionSpecification, verifiers []*prototk.ResolvedVerifier, signatures []*prototk.AttestationResult, inputStates []*prototk.EndorsableState, readStates []*prototk.EndorsableState, outputStates []*prototk.EndorsableState, infoStates []*prototk.EndorsableState, expiryTime time.Time, coordinatorBlockHeight int64, blockHeightTolerance int64) error
 	SendEndorsementResponse(ctx context.Context, transactionId, idempotencyKey, contractAddress string, attResult *prototk.AttestationResult, endorsementResult *components.EndorsementResult, revertReason, endorsementName, party, node string) error
 	SendEndorsementError(ctx context.Context, transactionId, idempotencyKey, contractAddress, errorMessage, party, attestationRequestName, node string) error
@@ -59,17 +59,17 @@ type TransportWriter interface {
 	SendAssembleResponse(ctx context.Context, txID uuid.UUID, assembleRequestId uuid.UUID, postAssembly *components.TransactionPostAssembly, preAssembly *components.TransactionPreAssembly, recipient string) error
 	SendAssembleError(ctx context.Context, txID uuid.UUID, assembleRequestId uuid.UUID, recipient string) error
 	SendAssembleRejection(ctx context.Context, txID uuid.UUID, assembleRequestId uuid.UUID, recipient string, reason engineProto.RejectionReason, coordinatorBlockHeight, assemblerBlockHeight int64) error
-	SendNonceAssigned(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, nonce uint64) error
-	SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, txHash *pldtypes.Bytes32) error
-	SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error
-	SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error
+	SendNonceAssigned(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, nonce uint64) error
+	SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, txHash *pldtypes.Bytes32) error
+	SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error
+	SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error
 	SendPreDispatchRequest(ctx context.Context, originatorNode string, idempotencyKey uuid.UUID, transactionSpecification *prototk.TransactionSpecification, hash *pldtypes.Bytes32) error
 	SendPreDispatchResponse(ctx context.Context, transactionOriginator string, idempotencyKey uuid.UUID, transactionSpecification *prototk.TransactionSpecification) error
 	SendPreDispatchRejection(ctx context.Context, txID uuid.UUID, requestID uuid.UUID, coordinatorNode string, reason engineProto.RejectionReason) error
 	SendDispatched(ctx context.Context, transactionOriginator string, idempotencyKey uuid.UUID, transactionSpecification *prototk.TransactionSpecification) error
 }
 
-func NewTransportWriter(ctx context.Context, contractAddress *pldtypes.EthAddress, nodeID string, transportManager components.TransportManager, loopbackHandler func(ctx context.Context, message *components.ReceivedMessage)) TransportWriter {
+func NewTransportWriter(ctx context.Context, contractAddress *pldtypes.ChainAddress, nodeID string, transportManager components.TransportManager, loopbackHandler func(ctx context.Context, message *components.ReceivedMessage)) TransportWriter {
 	loopbackTransport := NewLoopbackTransportWriter(loopbackHandler)
 	return &transportWriter{
 		ctx:                   ctx,
@@ -86,7 +86,7 @@ type transportWriter struct {
 	nodeID                string
 	transportManager      components.TransportManager
 	loopbackTransport     LoopbackTransportManager
-	contractAddress       *pldtypes.EthAddress
+	contractAddress       *pldtypes.ChainAddress
 	loopbackSenderStopped chan struct{}
 }
 
@@ -207,7 +207,7 @@ func (tw *transportWriter) SendDelegationRejection(
 	return nil
 }
 
-func (tw *transportWriter) SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress) error {
+func (tw *transportWriter) SendHandoverRequest(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress) error {
 	log.L(ctx).Debugf("transport writer sending handover request to %s for contract %s", targetNode, contractAddress.String())
 
 	handoverRequest := &engineProto.CoordinatorHandoverRequest{
@@ -381,7 +381,7 @@ func (tw *transportWriter) SendAssembleRequest(ctx context.Context, assemblingNo
 	assembleRequest := &engineProto.AssembleRequest{
 		TransactionId:          txID.String(),
 		AssembleRequestId:      idempotencyId.String(),
-		ContractAddress:        tw.contractAddress.HexString(),
+		ContractAddress:        tw.contractAddress.StorageString(),
 		PreAssembly:            preAssemblyBytes,
 		StateLocks:             stateLocksJSON,
 		CoordinatorBlockHeight: coordinatorBlockHeight,
@@ -415,7 +415,7 @@ func (tw *transportWriter) SendAssembleError(ctx context.Context, txID uuid.UUID
 	assembleError := &engineProto.AssembleError{
 		TransactionId:     txID.String(),
 		AssembleRequestId: assembleRequestId.String(),
-		ContractAddress:   tw.contractAddress.HexString(),
+		ContractAddress:   tw.contractAddress.StorageString(),
 	}
 	assembleErrorBytes, err := protoMarshalFn(assembleError)
 	if err != nil {
@@ -440,7 +440,7 @@ func (tw *transportWriter) SendAssembleRejection(ctx context.Context, txID uuid.
 	rejection := &engineProto.AssembleRejection{
 		TransactionId:          txID.String(),
 		AssembleRequestId:      assembleRequestId.String(),
-		ContractAddress:        tw.contractAddress.HexString(),
+		ContractAddress:        tw.contractAddress.StorageString(),
 		RejectionReason:        reason,
 		CoordinatorBlockHeight: coordinatorBlockHeight,
 		AssemblerBlockHeight:   assemblerBlockHeight,
@@ -471,7 +471,7 @@ func (tw *transportWriter) SendPreDispatchRejection(ctx context.Context, txID uu
 	msgBytes, err := protoMarshalFn(&engineProto.PreDispatchRejection{
 		TransactionId:   txID.String(),
 		RequestId:       requestID.String(),
-		ContractAddress: tw.contractAddress.HexString(),
+		ContractAddress: tw.contractAddress.StorageString(),
 		RejectionReason: reason,
 	})
 	if err != nil {
@@ -507,7 +507,7 @@ func (tw *transportWriter) SendAssembleResponse(ctx context.Context, txID uuid.U
 	assembleResponse := &engineProto.AssembleResponse{
 		TransactionId:     txID.String(),
 		AssembleRequestId: assembleRequestId.String(),
-		ContractAddress:   tw.contractAddress.HexString(),
+		ContractAddress:   tw.contractAddress.StorageString(),
 		PostAssembly:      postAssemblyBytes,
 		PreAssembly:       preAssemblyBytes,
 	}
@@ -527,7 +527,7 @@ func (tw *transportWriter) SendAssembleResponse(ctx context.Context, txID uuid.U
 	return nil
 }
 
-func (tw *transportWriter) SendNonceAssigned(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, nonce uint64) error {
+func (tw *transportWriter) SendNonceAssigned(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, nonce uint64) error {
 
 	log.L(ctx).Tracef("transport writer attempting to send nonce assigned message to node %s", originatorNode)
 
@@ -538,7 +538,7 @@ func (tw *transportWriter) SendNonceAssigned(ctx context.Context, txID uuid.UUID
 	nonceAssigned := &engineProto.NonceAssigned{
 		Id:              uuid.New().String(),
 		TransactionId:   txID.String(),
-		ContractAddress: contractAddress.HexString(),
+		ContractAddress: contractAddress.StorageString(),
 		Nonce:           int64(nonce),
 	}
 	nonceAssignedBytes, err := protoMarshalFn(nonceAssigned)
@@ -557,7 +557,7 @@ func (tw *transportWriter) SendNonceAssigned(ctx context.Context, txID uuid.UUID
 	return nil
 }
 
-func (tw *transportWriter) SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, txHash *pldtypes.Bytes32) error {
+func (tw *transportWriter) SendTransactionSubmitted(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, txHash *pldtypes.Bytes32) error {
 
 	log.L(ctx).Tracef("transport writer attempting to send transaction submitted message to node %s", originatorNode)
 
@@ -568,7 +568,7 @@ func (tw *transportWriter) SendTransactionSubmitted(ctx context.Context, txID uu
 	txSubmitted := &engineProto.TransactionSubmitted{
 		Id:              uuid.New().String(),
 		TransactionId:   txID.String(),
-		ContractAddress: contractAddress.HexString(),
+		ContractAddress: contractAddress.StorageString(),
 		Hash:            txHash.Bytes(),
 	}
 	txSubmittedBytes, err := protoMarshalFn(txSubmitted)
@@ -587,7 +587,7 @@ func (tw *transportWriter) SendTransactionSubmitted(ctx context.Context, txID uu
 	return nil
 }
 
-func (tw *transportWriter) SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.EthAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error {
+func (tw *transportWriter) SendTransactionConfirmed(ctx context.Context, txID uuid.UUID, originatorNode string, contractAddress *pldtypes.ChainAddress, nonce *pldtypes.HexUint64, outcome engineProto.TransactionConfirmed_Outcome, revertReason pldtypes.HexBytes, failureMessage string, willRetry bool) error {
 
 	log.L(ctx).Tracef("transport writer attempting to send transaction confirmed message to node %s", originatorNode)
 
@@ -599,7 +599,7 @@ func (tw *transportWriter) SendTransactionConfirmed(ctx context.Context, txID uu
 	txConfirmed := &engineProto.TransactionConfirmed{
 		Id:              uuid.New().String(),
 		TransactionId:   txID.String(),
-		ContractAddress: contractAddress.HexString(),
+		ContractAddress: contractAddress.StorageString(),
 		Outcome:         outcome,
 		RevertReason:    revertReason,
 		FailureMessage:  failureMessage,
@@ -624,7 +624,7 @@ func (tw *transportWriter) SendTransactionConfirmed(ctx context.Context, txID uu
 	return nil
 }
 
-func (tw *transportWriter) SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.EthAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error {
+func (tw *transportWriter) SendHeartbeat(ctx context.Context, targetNode string, contractAddress *pldtypes.ChainAddress, coordinatorSnapshot *common.CoordinatorSnapshot) error {
 
 	log.L(ctx).Tracef("transport writer attempting to send haertbeat to node %s", targetNode)
 
@@ -636,10 +636,10 @@ func (tw *transportWriter) SendHeartbeat(ctx context.Context, targetNode string,
 
 	heartbeatRequest := &engineProto.CoordinatorHeartbeatNotification{
 		From:                tw.transportManager.LocalNodeName(),
-		ContractAddress:     contractAddress.HexString(),
+		ContractAddress:     contractAddress.StorageString(),
 		CoordinatorSnapshot: coordinatorSnapshotBytes,
 	}
-	log.L(ctx).Debugf("sending heartbeat: From 	%s, Contract Address %s", tw.transportManager.LocalNodeName(), contractAddress.HexString())
+	log.L(ctx).Debugf("sending heartbeat: From 	%s, Contract Address %s", tw.transportManager.LocalNodeName(), contractAddress.StorageString())
 	heartbeatRequestBytes, err := protoMarshalFn(heartbeatRequest)
 	if err != nil {
 		log.L(ctx).Errorf("error marshalling heartbeat request message: %s", err)
@@ -668,7 +668,7 @@ func (tw *transportWriter) SendPreDispatchRequest(ctx context.Context, originato
 	dispatchConfirmationRequest := &engineProto.PreDispatchRequest{
 		Id:              idempotencyKey.String(),
 		TransactionId:   transactionSpecification.TransactionId,
-		ContractAddress: tw.contractAddress.HexString(),
+		ContractAddress: tw.contractAddress.StorageString(),
 		PostAssembleHash: hash.Bytes(),
 	}
 
@@ -695,7 +695,7 @@ func (tw *transportWriter) SendPreDispatchResponse(ctx context.Context, transact
 	dispatchResponseEvent := &engineProto.PreDispatchResponse{
 		Id:              idempotencyKey.String(),
 		TransactionId:   transactionSpecification.TransactionId,
-		ContractAddress: tw.contractAddress.HexString(),
+		ContractAddress: tw.contractAddress.StorageString(),
 	}
 
 	dispatchResponseEventBytes, err := protoMarshalFn(dispatchResponseEvent)
@@ -721,7 +721,7 @@ func (tw *transportWriter) SendDispatched(ctx context.Context, transactionOrigin
 	dispatchedEvent := &engineProto.TransactionDispatched{
 		Id:              idempotencyKey.String(),
 		TransactionId:   transactionSpecification.TransactionId,
-		ContractAddress: tw.contractAddress.HexString(),
+		ContractAddress: tw.contractAddress.StorageString(),
 		Signer:          transactionOriginator,
 	}
 

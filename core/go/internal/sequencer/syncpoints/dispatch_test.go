@@ -70,7 +70,7 @@ func TestPersistDispatchBatch_EmptyBatch(t *testing.T) {
 		PreparedTransactions: []*components.PreparedTransactionWithRefs{},
 	}
 
-	err = sp.PersistDispatchBatch(dCtx, *contractAddr, uuid.New(), dispatchBatch, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{})
+	err = sp.PersistDispatchBatch(dCtx, contractAddr.ChainAddress(), uuid.New(), dispatchBatch, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{})
 	require.NoError(t, err)
 	require.NoError(t, mp.Mock.ExpectationsWereMet())
 }
@@ -126,7 +126,7 @@ func TestPersistDispatchBatch_WithPreparedTxnDistributions_LocalNode(t *testing.
 		return len(txns) == 1 && txns[0] == preparedTxn
 	})).Return(nil)
 
-	err = sp.PersistDispatchBatch(dCtx, *contractAddr, uuid.New(), dispatchBatch, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{preparedTxn})
+	err = sp.PersistDispatchBatch(dCtx, contractAddr.ChainAddress(), uuid.New(), dispatchBatch, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{preparedTxn})
 	require.NoError(t, err)
 	require.NoError(t, mp.Mock.ExpectationsWereMet())
 	txMgr.AssertExpectations(t)
@@ -182,7 +182,7 @@ func TestPersistDispatchBatch_WithRemotePreparedTxnDistribution(t *testing.T) {
 	mp.Mock.ExpectBegin()
 	mp.Mock.ExpectCommit()
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), &DispatchBatch{}, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{remotePreparedTxn})
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), &DispatchBatch{}, []*components.StateDistribution{}, []*components.PreparedTransactionWithRefs{remotePreparedTxn})
 	require.NoError(t, err)
 }
 
@@ -199,7 +199,7 @@ func TestPersistDispatchBatch_WithStateDistributions(t *testing.T) {
 	mp.Mock.ExpectBegin()
 	mp.Mock.ExpectCommit()
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), &DispatchBatch{}, []*components.StateDistribution{stateDistribution}, []*components.PreparedTransactionWithRefs{})
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), &DispatchBatch{}, []*components.StateDistribution{stateDistribution}, []*components.PreparedTransactionWithRefs{})
 	require.NoError(t, err)
 }
 
@@ -240,7 +240,7 @@ func TestPersistDispatchBatch_WithPublicDispatch_LocalBinding(t *testing.T) {
 		},
 	}
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), dispatchBatch, nil, nil)
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), dispatchBatch, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -274,7 +274,7 @@ func TestPersistDispatchBatch_WithPublicDispatch_RemoteBinding(t *testing.T) {
 		},
 	}
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), dispatchBatch, nil, nil)
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), dispatchBatch, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -297,7 +297,7 @@ func TestPersistDispatchBatch_WithPrivateDispatch_Local(t *testing.T) {
 		}},
 	}
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), dispatchBatch, nil, nil)
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), dispatchBatch, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -320,7 +320,7 @@ func TestPersistDispatchBatch_WithPrivateDispatch_Remote(t *testing.T) {
 		}},
 	}
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), dispatchBatch, nil, nil)
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), dispatchBatch, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -420,7 +420,7 @@ func TestPersistDispatchBatch_SequencerActivitiesError(t *testing.T) {
 		}},
 	}
 
-	err := sp.PersistDispatchBatch(dCtx, *pldtypes.RandAddress(), uuid.New(), dispatchBatch, nil, nil)
+	err := sp.PersistDispatchBatch(dCtx, pldtypes.RandAddress().ChainAddress(), uuid.New(), dispatchBatch, nil, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "sequencer_activities insert failed")
 }

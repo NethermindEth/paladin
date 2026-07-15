@@ -66,6 +66,20 @@ task compile(type: Exec, dependsOn: cargoTest) {
     }
 }
 
+// Deploys SaladinFactory/SNotoFactory and uploads the SNoto Wasm to the local stellar/quickstart
+// network (chapter 14 step 6), so core/go/noderuntests/componenttest's Stellar acceptance test can
+// register a real SNoto instance - see deploy-stellar-fixtures.sh's own header comment for why this
+// lives at the Gradle layer rather than inside the Go test itself. Depends on :testinfra:startTestInfra
+// (the network must be up) and compile (the wasm artifacts must exist) - not wired into `build` or
+// `componentTest`'s local-development tasks, only core/go's componentTestStellarSQLite (see there).
+task deployStellarFixtures(type: Exec, dependsOn: [compile, ':testinfra:startTestInfra']) {
+    workingDir '.'
+    executable 'scripts/deploy-stellar-fixtures.sh'
+
+    outputs.file("${buildOutput}/stellar-fixtures.json")
+    outputs.upToDateWhen { false } // always redeploy - a restarted quickstart network has no state from a prior run
+}
+
 task assemble {
     enabled = false
 }

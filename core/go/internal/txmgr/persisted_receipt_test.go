@@ -323,9 +323,9 @@ func mockKeyResolver(t *testing.T, mc *mockComponents) *componentsmocks.KeyResol
 	return kr
 }
 
-func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ...pldtypes.EthAddress) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
+func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ...pldtypes.ChainAddress) func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
 	return func(conf *pldconf.TxManagerConfig, mc *mockComponents) {
-		mgsc := mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, mock.MatchedBy(func(a pldtypes.EthAddress) bool {
+		mgsc := mc.domainManager.On("GetSmartContractByAddress", mock.Anything, mock.Anything, mock.MatchedBy(func(a pldtypes.ChainAddress) bool {
 			if len(contractAddrs) == 0 {
 				return true
 			}
@@ -341,7 +341,7 @@ func mockDomainContractResolve(t *testing.T, domainName string, contractAddrs ..
 			mdmn := componentsmocks.NewDomain(t)
 			mdmn.On("Name").Return(domainName)
 			mpsc.On("Domain").Return(mdmn)
-			mpsc.On("Address").Return(args[2].(pldtypes.EthAddress)).Maybe()
+			mpsc.On("Address").Return(args[2].(pldtypes.ChainAddress)).Maybe()
 			mgsc.Return(mpsc, nil)
 		})
 	}
@@ -363,7 +363,7 @@ func TestFinalizeTransactionsInsertOkOffChain(t *testing.T) {
 			From:     "me",
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -423,7 +423,7 @@ func TestFinalizeTransactionsInsertOkEvent(t *testing.T) {
 			Type:     pldapi.TransactionTypePrivate.Enum(),
 			Domain:   "domain1",
 			Function: "doIt",
-			To:       pldtypes.MustEthAddress(pldtypes.RandHex(20)),
+			To:       confutil.P(pldtypes.MustEthAddress(pldtypes.RandHex(20)).ChainAddress()),
 			Data:     pldtypes.JSONString(pldtypes.HexBytes(callData)),
 		},
 		ABI: exampleABI,
@@ -487,7 +487,7 @@ func TestFinalizeTransactionsInsertOkChained(t *testing.T) {
 
 	var chainedTx *components.ValidatedTransaction
 	err := txm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) (err error) {
-		contractAddressDomain1 := pldtypes.RandAddress()
+		contractAddressDomain1 := confutil.P(pldtypes.RandAddress().ChainAddress())
 		chainedTx, err = txm.resolveNewTransaction(ctx, dbTX, &pldapi.TransactionInput{
 			TransactionBase: pldapi.TransactionBase{
 				From:           "me",
@@ -952,7 +952,7 @@ func TestBuildFullReceiptFailAddStateReceipt(t *testing.T) {
 			Domain:          "domain1",
 			Sequence:        1000,
 			Success:         true,
-			ContractAddress: pldtypes.RandAddress(),
+			ContractAddress: confutil.P(pldtypes.RandAddress().ChainAddress()),
 		},
 	}
 
@@ -992,7 +992,7 @@ func TestBuildFullReceiptFailDomainFindFail(t *testing.T) {
 			Domain:          "domain1",
 			Sequence:        1000,
 			Success:         true,
-			ContractAddress: pldtypes.RandAddress(),
+			ContractAddress: confutil.P(pldtypes.RandAddress().ChainAddress()),
 		},
 	}
 

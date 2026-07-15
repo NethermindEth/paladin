@@ -153,13 +153,14 @@ func TestSmartContractDeploymentReconcile_Success(t *testing.T) {
 
 	// Mock transaction reconcile
 	reconciler.newTransactionReconcileFunc = func(c client.Client, r *rpcClientManager, idempotencyKeyPrefix string, nodeName string, namespace string, pStatus *corev1alpha1.TransactionSubmission, timeout string, txFactory func() (bool, *pldapi.TransactionInput, error)) transactionReconcileInterface {
+		contractAddress := pldtypes.MustEthAddress("0x3078616263646566313233343536373839300000").ChainAddress()
 		return &mockTransactionReconcile{
 			pStatus:           pStatus,
 			statusChangedFlag: true,
 			succeededFlag:     true,
 			receiptValue: &pldapi.TransactionReceipt{
 				TransactionReceiptData: pldapi.TransactionReceiptData{
-					ContractAddress: pldtypes.MustEthAddress("0x3078616263646566313233343536373839300000"),
+					ContractAddress: &contractAddress,
 				},
 			},
 		}

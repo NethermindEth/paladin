@@ -51,7 +51,7 @@ type persistedTransaction struct {
 	Function           *string                               `gorm:"column:function"`
 	Domain             *string                               `gorm:"column:domain"`
 	From               string                                `gorm:"column:from"`
-	To                 *pldtypes.EthAddress                  `gorm:"column:to"`
+	To                 *pldtypes.ChainAddress                `gorm:"column:to"`
 	Data               pldtypes.RawJSON                      `gorm:"column:data"` // we always store in JSON object format
 	TransactionDeps        []*transactionDep        `gorm:"foreignKey:transaction;references:id"`
 	TransactionChainedDeps []*transactionChainedDep `gorm:"foreignKey:transaction;references:id"`
@@ -86,7 +86,7 @@ type persistedTransactionHistory struct {
 	Function             *string                               `gorm:"column:function"`
 	Domain               *string                               `gorm:"column:domain"`
 	From                 string                                `gorm:"column:from"`
-	To                   *pldtypes.EthAddress                  `gorm:"column:to"`
+	To                   *pldtypes.ChainAddress                `gorm:"column:to"`
 	Data                 pldtypes.RawJSON                      `gorm:"column:data"` // we always store in JSON object format
 	Gas                  *pldtypes.HexUint64                   `gorm:"column:gas"`
 	Value                *pldtypes.HexUint256                  `gorm:"column:value"`
@@ -118,7 +118,7 @@ var defaultConstructorSignature = func() string {
 	return sig
 }()
 
-func (tm *txManager) resolveFunction(ctx context.Context, dbTX persistence.DBTX, inputABI abi.ABI, inputABIRef *pldtypes.Bytes32, requiredFunction string, to *pldtypes.EthAddress) (_ *components.ResolvedFunction, err error) {
+func (tm *txManager) resolveFunction(ctx context.Context, dbTX persistence.DBTX, inputABI abi.ABI, inputABIRef *pldtypes.Bytes32, requiredFunction string, to *pldtypes.ChainAddress) (_ *components.ResolvedFunction, err error) {
 
 	// Lookup the ABI we're working with.
 	// Only needs to contain the function definition we're calling, but can be the whole ABI of the contract.
@@ -163,7 +163,7 @@ func (tm *txManager) resolveFunction(ctx context.Context, dbTX persistence.DBTX,
 	return resolvedFunction, nil
 }
 
-func (tm *txManager) pickFunction(ctx context.Context, pa *pldapi.StoredABI, requiredFunction string, to *pldtypes.EthAddress) (_ *components.ResolvedFunction, err error) {
+func (tm *txManager) pickFunction(ctx context.Context, pa *pldapi.StoredABI, requiredFunction string, to *pldtypes.ChainAddress) (_ *components.ResolvedFunction, err error) {
 
 	// If a function is specified, we cannot be invoking the constructor
 	if requiredFunction != "" && to == nil {
@@ -339,9 +339,13 @@ func (tm *txManager) callTransactionPublic(ctx context.Context, result any, call
 	if blockRef == "" {
 		blockRef = "latest"
 	}
+	var toEthAddr *pldtypes.EthAddress
+	if err == nil && call.To != nil {
+		toEthAddr, err = call.To.EthAddress()
+	}
 	if err == nil {
 		callReq = abiFunc.R(ctx).
-			To(call.To.Address0xHex()).
+			To(toEthAddr.Address0xHex()).
 			Input(call.Data).
 			BlockRef(ethclient.BlockRef(blockRef)).
 			Serializer(serializer).
@@ -505,11 +509,21 @@ func (tm *txManager) processNewTransactions(ctx context.Context, dbTX persistenc
 		txis[i] = txi
 		txIDs[i] = txID
 		if tx.Type.V() == pldapi.TransactionTypePublic {
+			// pldapi.PublicTxInput.To is EVM-only (unmigrated, same as the rest of the public tx
+			// API - see publictxmgr's existing DBPublicTxn.To/PublicTx(Input).To split); public
+			// transactions are EVM-only in Paladin today, so unwrap here rather than migrate it.
+			var publicTo *pldtypes.EthAddress
+			if tx.To != nil {
+				publicTo, err = tx.To.EthAddress()
+				if err != nil {
+					return nil, err
+				}
+			}
 			publicTxs = append(publicTxs, &components.PublicTxSubmission{
 				// Public transaction bound 1:1 with our parent transaction
 				Bindings: []*components.PaladinTXReference{{TransactionID: txID, TransactionType: pldapi.TransactionTypePublic.Enum()}},
 				PublicTxInput: pldapi.PublicTxInput{
-					To:              tx.To,
+					To:              publicTo,
 					Data:            txi.PublicTxData,
 					PublicTxOptions: tx.PublicTxOptions,
 				},

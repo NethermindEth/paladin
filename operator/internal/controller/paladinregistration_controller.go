@@ -274,10 +274,11 @@ func (r *PaladinRegistrationReconciler) buildRegistrationTX(ctx context.Context,
 		"owner":              addr,
 	}
 
+	registryAddrChain := registryAddr.ChainAddress()
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
-			To:       registryAddr,
+			To:       &registryAddrChain,
 			Function: registryABI.Functions()["registerIdentity"].String(),
 			From:     reg.Spec.RegistryAdminKey, // registry admin registers the root entry for the node
 			Data:     pldtypes.JSONString(registration),
@@ -331,10 +332,11 @@ func (r *PaladinRegistrationReconciler) buildTransportTX(ctx context.Context, re
 		"value":        transportDetails,
 	}
 
+	registryAddrChain := registryAddr.ChainAddress()
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
-			To:       registryAddr,
+			To:       &registryAddrChain,
 			Function: registryABI.Functions()["setIdentityProperty"].String(),
 			From:     reg.Spec.NodeKey, // node registers the transports
 			Data:     pldtypes.JSONString(property),

@@ -204,6 +204,7 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
         &lock_id,
         &soroban_sdk::Vec::from_array(&env, [input]),
         &soroban_sdk::Vec::from_array(&env, [locked_output.clone()]),
+        &soroban_sdk::Vec::new(&env),
         &Bytes::new(&env),
         &Bytes::new(&env),
     );

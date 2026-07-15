@@ -45,7 +45,7 @@ type PrivateTransactionBuilderForTesting struct {
 	originatorNode             string
 	originator                 *identityForTesting
 	domain                     string
-	address                    pldtypes.EthAddress
+	address                    pldtypes.ChainAddress
 	signerAddress              *pldtypes.EthAddress
 	numberOfEndorsers          int
 	numberOfEndorsements       int
@@ -91,7 +91,7 @@ func (b PrivateTransactionBuilderListForTesting) Build() []*components.PrivateTr
 	return transactions
 }
 
-func (b PrivateTransactionBuilderListForTesting) Address(address pldtypes.EthAddress) PrivateTransactionBuilderListForTesting {
+func (b PrivateTransactionBuilderListForTesting) Address(address pldtypes.ChainAddress) PrivateTransactionBuilderListForTesting {
 	for _, builder := range b {
 		builder.Address(address)
 	}
@@ -127,7 +127,7 @@ func NewPrivateTransactionBuilderForTesting() *PrivateTransactionBuilderForTesti
 	builder := &PrivateTransactionBuilderForTesting{
 		id:                   uuid.New(),
 		domain:               "defaultDomain",
-		address:              *pldtypes.RandAddress(),
+		address:              pldtypes.RandAddress().ChainAddress(),
 		originatorName:       "sender",
 		originatorNode:       "senderNode",
 		signerAddress:        nil,
@@ -144,7 +144,7 @@ func (b *PrivateTransactionBuilderForTesting) Domain(domain string) *PrivateTran
 	return b
 }
 
-func (b *PrivateTransactionBuilderForTesting) Address(address pldtypes.EthAddress) *PrivateTransactionBuilderForTesting {
+func (b *PrivateTransactionBuilderForTesting) Address(address pldtypes.ChainAddress) *PrivateTransactionBuilderForTesting {
 	b.address = address
 	return b
 }

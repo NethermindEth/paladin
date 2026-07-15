@@ -57,6 +57,10 @@ var eventSolSig_PaladinRegisterSmartContract_V0 = mustParseEventSoliditySignatur
 
 // var eventSig_PaladinPrivateTransaction_V0 = mustParseEventSignature(iPaladinContractABI, "PaladinPrivateTransaction_V0")
 
+// domainAddress/address use HexBytesField (hex-only decode) - deferred, chapter 14 step 5 sub-part
+// 2: this means domain_querySmartContracts can't yet filter on a Stellar StrKey address value.
+// Direct lookup-by-address (GetSmartContractByAddress, below) doesn't go through this filter
+// mechanism, so registration/execution aren't blocked by this gap, only the optional query filter.
 var smartContractFilters = filters.FieldMap{
 	"domainAddress": filters.HexBytesField("domain_address"),
 	"address":       filters.HexBytesField("address"),
@@ -74,9 +78,9 @@ func NewDomainManager(bgCtx context.Context, conf *pldconf.DomainManagerInlineCo
 		bgCtx:            bgCtx,
 		conf:             conf,
 		domainsByName:    make(map[string]*domain),
-		domainsByAddress: make(map[pldtypes.EthAddress]*domain),
+		domainsByAddress: make(map[pldtypes.ChainAddress]*domain),
 		privateTxWaiter:  inflight.NewInflightManager[uuid.UUID, *components.ReceiptInput](uuid.Parse),
-		contractCache:    cache.NewCache[pldtypes.EthAddress, *domainContract](&conf.DomainManager.ContractCache, &pldconf.PaladinConfigDefaults.DomainManager.ContractCache),
+		contractCache:    cache.NewCache[pldtypes.ChainAddress, *domainContract](&conf.DomainManager.ContractCache, &pldconf.PaladinConfigDefaults.DomainManager.ContractCache),
 	}
 }
 
@@ -112,10 +116,10 @@ type domainManager struct {
 	allComponents components.AllComponents
 
 	domainsByName    map[string]*domain
-	domainsByAddress map[pldtypes.EthAddress]*domain
+	domainsByAddress map[pldtypes.ChainAddress]*domain
 
 	privateTxWaiter *inflight.InflightManager[uuid.UUID, *components.ReceiptInput]
-	contractCache   cache.Cache[pldtypes.EthAddress, *domainContract]
+	contractCache   cache.Cache[pldtypes.ChainAddress, *domainContract]
 }
 
 type event_PaladinRegisterSmartContract_V0 struct {
@@ -147,7 +151,9 @@ func (dm *domainManager) PostInit(c components.AllComponents) error {
 	dm.groupManager = c.GroupManager()
 
 	for name, d := range dm.conf.Domains {
-		if _, err := pldtypes.ParseEthAddress(d.RegistryAddress); err != nil {
+		// Chain-kind-aware (auto-detects EVM 0x.../Stellar G.../C...) - a Stellar-configured
+		// domain's registry address is a StrKey, not 20-byte hex, so this must not assume EVM.
+		if _, err := pldtypes.ParseChainAddress(d.RegistryAddress); err != nil {
 			return i18n.WrapError(dm.bgCtx, err, msgs.MsgDomainRegistryAddressInvalid, d.RegistryAddress, name)
 		}
 	}
@@ -308,7 +314,7 @@ func (dm *domainManager) setDomainAddress(d *domain) {
 	dm.domainsByAddress[*d.RegistryAddress()] = d
 }
 
-func (dm *domainManager) getDomainByAddress(ctx context.Context, addr *pldtypes.EthAddress) (d *domain, _ error) {
+func (dm *domainManager) getDomainByAddress(ctx context.Context, addr *pldtypes.ChainAddress) (d *domain, _ error) {
 	dm.mux.Lock()
 	defer dm.mux.Unlock()
 	if addr != nil {
@@ -320,13 +326,13 @@ func (dm *domainManager) getDomainByAddress(ctx context.Context, addr *pldtypes.
 	return d, nil
 }
 
-func (dm *domainManager) getDomainByAddressOrNil(addr *pldtypes.EthAddress) *domain {
+func (dm *domainManager) getDomainByAddressOrNil(addr *pldtypes.ChainAddress) *domain {
 	dm.mux.Lock()
 	defer dm.mux.Unlock()
 	return dm.domainsByAddress[*addr]
 }
 
-func (dm *domainManager) GetSmartContractByAddress(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.EthAddress) (components.DomainSmartContract, error) {
+func (dm *domainManager) GetSmartContractByAddress(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.ChainAddress) (components.DomainSmartContract, error) {
 	ctx = log.WithComponent(ctx, "domainmanager")
 	loadResult, dc, err := dm.getSmartContractCached(ctx, dbTX, addr)
 	if dc != nil || err != nil {
@@ -342,7 +348,7 @@ func (dm *domainManager) GetSmartContractByAddress(ctx context.Context, dbTX per
 	}
 }
 
-func (dm *domainManager) getSmartContractCached(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.EthAddress) (pscLoadResult, *domainContract, error) {
+func (dm *domainManager) getSmartContractCached(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.ChainAddress) (pscLoadResult, *domainContract, error) {
 	dc, isCached := dm.contractCache.Get(addr)
 	if isCached {
 		return pscValid, dc, nil

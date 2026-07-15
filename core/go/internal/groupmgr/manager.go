@@ -562,7 +562,7 @@ func (gm *groupManager) resolvePrivateContract(ctx context.Context, dbTX persist
 	if pg.ContractAddress == nil {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgPGroupsNotReady, groupID, pg.GenesisTransaction)
 	}
-	psc, err := gm.domainManager.GetSmartContractByAddress(ctx, dbTX, *pg.ContractAddress)
+	psc, err := gm.domainManager.GetSmartContractByAddress(ctx, dbTX, pg.ContractAddress.ChainAddress())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -577,7 +577,7 @@ func (gm *groupManager) invokeRPC(ctx context.Context, dbTX persistence.DBTX, do
 	if stateQualifier != "" && stateQualifier != pldapi.StateStatusAvailable {
 		return nil, i18n.NewError(ctx, msgs.MsgDomainUnsupportedStateQualifier, stateQualifier)
 	}
-	dCtx := gm.stateManager.NewDomainContext(ctx, psc.Domain(), *pg.ContractAddress)
+	dCtx := gm.stateManager.NewDomainContext(ctx, psc.Domain(), pg.ContractAddress.ChainAddress())
 	defer dCtx.Close()
 	return psc.InvokeRPC(ctx, dCtx, dbTX, rpcCall)
 }

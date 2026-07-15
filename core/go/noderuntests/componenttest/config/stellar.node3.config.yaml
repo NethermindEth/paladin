@@ -32,6 +32,11 @@ baseLedger:
       funder: root
       startingBalance: "5"
 wallets:
+  # bip44HardenedSegments: 5 on both wallets below - SLIP-10 ed25519 derivation (used for every
+  # Stellar/ed25519 identity resolved here) requires *all* path segments to be hardened, unlike
+  # secp256k1/EVM's default of 1 (pldconf.SignerConfigDefaults.KeyDerivation.BIP44HardenedSegments)
+  # - a plain (unhardened) segment fails with "PD020829: SLIP-10 ed25519 derivation requires all
+  # path segments to be hardened". 5 covers any path depth Paladin's identity resolution builds.
   # "root" derives the raw secret seed of the standalone network's master/root account
   # (seed = SHA-256(networkPassphrase) - see network.ID in github.com/stellar/go-stellar-sdk),
   # which already holds the entire genesis supply on a freshly started quickstart network. There
@@ -43,24 +48,26 @@ wallets:
     signer:
       keyDerivation:
         type: "bip32"
+        bip44HardenedSegments: 5
       keyStore:
         type: "static"
         static:
           keys:
             seed:
-              encoding: none
+              encoding: hex
               inline: baefd734b8d3e48472cff83912375fedbc7573701912fe308af730180f97d74a
   - name: wallet1
     keySelector: .*
     signer:
       keyDerivation:
         type: "bip32"
+        bip44HardenedSegments: 5
       keyStore:
         type: "static"
         static:
           keys:
             seed:
-              encoding: none
+              encoding: hex
               inline: 5bb9f8aeefc59b53295caec27955040a4f8f902c7c963560206d2d3d18cb2693
 sequencerManager:
   heartbeatInterval: "1s"

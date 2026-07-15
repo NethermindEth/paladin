@@ -51,7 +51,7 @@ func newValidatedInvokeTx(contractAddr *pldtypes.EthAddress, domain string, subm
 				SubmitMode: submitMode.Enum(),
 				TransactionBase: pldapi.TransactionBase{
 					Domain: domain,
-					To:     contractAddr,
+					To:     confutil.P(contractAddr.ChainAddress()),
 					From:   "alice@test-node",
 				},
 			},
@@ -455,7 +455,7 @@ func TestSequencerManager_HandleNewTx_InvokeSuccess(t *testing.T) {
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
@@ -560,7 +560,7 @@ func TestSequencerManager_HandleTxResume_InvokeResume(t *testing.T) {
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(mock.Anything, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(mock.Anything, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
@@ -576,7 +576,7 @@ func TestSequencerManager_handleTx_EmptyContractAddress(t *testing.T) {
 	sm := newSequencerManagerForTesting(t, mocks)
 	dbTX := persistencemocks.NewDBTX(t)
 
-	empty := pldtypes.EthAddress{}
+	empty := pldtypes.ChainAddress{}
 	localTx := &components.ResolvedTransaction{
 		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: &empty}},
 	}
@@ -592,15 +592,15 @@ func TestSequencerManager_handleTx_DomainMismatch(t *testing.T) {
 	dbTX := persistencemocks.NewDBTX(t)
 
 	localTx := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "wrong-domain"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "wrong-domain"}},
 	}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("right-domain").Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 
-	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: *contractAddr}, localTx, false)
+	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
 
@@ -612,15 +612,15 @@ func TestSequencerManager_handleTx_NilPreAssembly(t *testing.T) {
 	dbTX := persistencemocks.NewDBTX(t)
 
 	localTx := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "test-domain"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "test-domain"}},
 	}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Return(nil).Once()
 
-	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: *contractAddr}, localTx, false)
+	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
 
@@ -774,7 +774,7 @@ func TestSequencerManager_handleTransactionConfirmedSuccess_DeploySkip(t *testin
 	completion := &components.TxCompletion{
 		ReceiptInput: components.ReceiptInput{
 			TransactionID:   uuid.New(),
-			ContractAddress: contractAddr,
+			ContractAddress: confutil.P(contractAddr.ChainAddress()),
 		},
 	}
 
@@ -944,7 +944,7 @@ func TestSequencerManager_CallPrivateSmartContract_Success(t *testing.T) {
 	call := &components.ResolvedTransaction{
 		Transaction: &pldapi.Transaction{
 			TransactionBase: pldapi.TransactionBase{
-				To:     contractAddr,
+				To:     confutil.P(contractAddr.ChainAddress()),
 				Domain: "test-domain",
 			},
 		},
@@ -956,8 +956,8 @@ func TestSequencerManager_CallPrivateSmartContract_Success(t *testing.T) {
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Twice()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitCall(ctx, call).Return([]*prototk.ResolveVerifierRequest{
 		{Lookup: "alice", Algorithm: "ECDSA", VerifierType: "eth_address"},
 	}, nil).Once()
@@ -967,7 +967,7 @@ func TestSequencerManager_CallPrivateSmartContract_Success(t *testing.T) {
 	identityResolver.EXPECT().ResolveVerifier(ctx, "alice", "ECDSA", "eth_address").Return("0xabc", nil).Once()
 
 	mockDCtx := componentsmocks.NewDomainContext(t)
-	mocks.stateManager.EXPECT().NewDomainContext(ctx, mockDomain, *contractAddr).Return(mockDCtx).Once()
+	mocks.stateManager.EXPECT().NewDomainContext(ctx, mockDomain, contractAddr.ChainAddress()).Return(mockDCtx).Once()
 	mockDCtx.EXPECT().Close().Once()
 	mocks.domainAPI.EXPECT().ExecCall(mockDCtx, nil, call, mock.Anything).Return(&abi.ComponentValue{}, nil).Once()
 
@@ -983,13 +983,13 @@ func TestSequencerManager_CallPrivateSmartContract_DomainMismatch(t *testing.T) 
 	sm := newSequencerManagerForTesting(t, mocks)
 
 	call := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "wrong"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "wrong"}},
 	}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("right").Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 
 	_, err := sm.CallPrivateSmartContract(ctx, call)
 	require.Error(t, err)
@@ -1004,7 +1004,7 @@ func TestSequencerManager_BuildStateDistributions(t *testing.T) {
 	schemaID := pldtypes.Bytes32(pldtypes.RandBytes(32))
 	tx := &components.PrivateTransaction{
 		Domain:  "test-domain",
-		Address: *pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890"),
+		Address: pldtypes.MustEthAddress("0x1234567890123456789012345678901234567890").ChainAddress(),
 		PreAssembly: &components.TransactionPreAssembly{
 			TransactionSpecification: &prototk.TransactionSpecification{From: "alice@test-node"},
 		},
@@ -1048,7 +1048,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_MatchingPublicTxSuccessEr
 		txID: {{TransactionHash: &txHash}},
 	}, nil).Once()
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 
 	sm.PrivateTransactionsConfirmed(ctx, []*components.TxCompletion{{
 		ReceiptInput: components.ReceiptInput{
@@ -1071,7 +1071,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_ChainedWithContractAddres
 	sm.PrivateTransactionsConfirmed(ctx, []*components.TxCompletion{{
 		ReceiptInput: components.ReceiptInput{
 			TransactionID:   txID,
-			ContractAddress: pldtypes.RandAddress(),
+			ContractAddress: confutil.P(pldtypes.RandAddress().ChainAddress()),
 			OnChain:         pldtypes.OnChainLocation{TransactionHash: pldtypes.RandBytes32()},
 		},
 		PSC: mocks.domainAPI,
@@ -1130,7 +1130,7 @@ func TestSequencerManager_PrivateTransactionsConfirmed_MatchingPublicTx(t *testi
 		txID: {{TransactionHash: &txHash, Nonce: &nonce}},
 	}, nil).Once()
 	mocks.metrics.EXPECT().IncConfirmedTransactions().Once()
-	mocks.domainAPI.EXPECT().Address().Return(*contractAddr).Once()
+	mocks.domainAPI.EXPECT().Address().Return(contractAddr.ChainAddress()).Once()
 	mocks.coordinator.EXPECT().QueueEvent(ctx, mock.MatchedBy(func(e interface{}) bool {
 		event, ok := e.(*coordinatorTx.ConfirmedSuccessEvent)
 		return ok && event.TransactionID == txID && event.Nonce != nil
@@ -1167,7 +1167,7 @@ func TestSequencerManager_resumeIncompleteTransactions_MaxTransactionsOverride(t
 						ID:      confutil.P(uuid.New()),
 						Created: pldtypes.Timestamp(time.Now().UnixNano()),
 						TransactionBase: pldapi.TransactionBase{
-							To: pldtypes.RandAddress(),
+							To: confutil.P(pldtypes.RandAddress().ChainAddress()),
 						},
 					}},
 				}, nil
@@ -1202,7 +1202,7 @@ func TestSequencerManager_resumeIncompleteTransactions_Pagination(t *testing.T) 
 						ID:      confutil.P(uuid.New()),
 						Created: pldtypes.Timestamp(time.Now().UnixNano()),
 						TransactionBase: pldapi.TransactionBase{
-							To: pldtypes.RandAddress(),
+							To: confutil.P(pldtypes.RandAddress().ChainAddress()),
 						},
 					}},
 				}, nil
@@ -1281,11 +1281,11 @@ func TestSequencerManager_handleTx_GetSmartContractError(t *testing.T) {
 	dbTX := persistencemocks.NewDBTX(t)
 
 	localTx := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "test-domain"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "test-domain"}},
 	}
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(nil, errors.New("not found")).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(nil, errors.New("not found")).Once()
 
-	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: *contractAddr}, localTx, false)
+	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
 
@@ -1294,11 +1294,11 @@ func TestSequencerManager_CallPrivateSmartContract_InitCallError(t *testing.T) {
 	contractAddr := pldtypes.RandAddress()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr}}}
+	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress())}}}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("d").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitCall(ctx, call).Return(nil, errors.New("init failed")).Once()
 	_, err := sm.CallPrivateSmartContract(ctx, call)
 	require.Error(t, err)
@@ -1309,11 +1309,11 @@ func TestSequencerManager_CallPrivateSmartContract_ResolveVerifierError(t *testi
 	contractAddr := pldtypes.RandAddress()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr}}}
+	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress())}}}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("d").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitCall(ctx, call).Return([]*prototk.ResolveVerifierRequest{{Lookup: "a"}}, nil).Once()
 	identityResolver := componentsmocks.NewIdentityResolver(t)
 	mocks.components.EXPECT().IdentityResolver().Return(identityResolver).Once()
@@ -1328,7 +1328,7 @@ func TestSequencerManager_resumeIncompleteTransactions_HandleTxResumeError(t *te
 	sm := newSequencerManagerForTesting(t, mocks)
 	mocks.persistence.EXPECT().Transaction(mock.Anything, mock.Anything).Return(errors.New("tx wrapper failed")).Once()
 	mocks.txManager.EXPECT().QueryTransactionsResolved(mock.Anything, mock.Anything, nil, true).Return([]*components.ResolvedTransaction{{
-		Transaction: &pldapi.Transaction{ID: confutil.P(uuid.New()), Created: pldtypes.Timestamp(time.Now().UnixNano()), TransactionBase: pldapi.TransactionBase{To: pldtypes.RandAddress()}},
+		Transaction: &pldapi.Transaction{ID: confutil.P(uuid.New()), Created: pldtypes.Timestamp(time.Now().UnixNano()), TransactionBase: pldapi.TransactionBase{To: confutil.P(pldtypes.RandAddress().ChainAddress())}},
 	}}, nil).Once()
 	sm.resumeIncompleteTransactions(ctx)
 }
@@ -1398,12 +1398,12 @@ func TestSequencerManager_resumeIncompleteTransactions_LimitTrim(t *testing.T) {
 					{Transaction: &pldapi.Transaction{
 						ID:              confutil.P(uuid.New()),
 						Created:         pldtypes.Timestamp(time.Now().UnixNano()),
-						TransactionBase: pldapi.TransactionBase{To: pldtypes.RandAddress()},
+						TransactionBase: pldapi.TransactionBase{To: confutil.P(pldtypes.RandAddress().ChainAddress())},
 					}},
 					{Transaction: &pldapi.Transaction{
 						ID:              confutil.P(uuid.New()),
 						Created:         pldtypes.Timestamp(time.Now().UnixNano() + 1),
-						TransactionBase: pldapi.TransactionBase{To: pldtypes.RandAddress()},
+						TransactionBase: pldapi.TransactionBase{To: confutil.P(pldtypes.RandAddress().ChainAddress())},
 					}},
 				}, nil
 			}
@@ -1454,7 +1454,7 @@ func TestSequencerManager_HandleNewTx_SubmitModeExternal(t *testing.T) {
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.MatchedBy(func(ptx *components.PrivateTransaction) bool {
 		return ptx.Intent == prototk.TransactionSpecification_PREPARE_TRANSACTION
 	}), mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
@@ -1510,15 +1510,15 @@ func TestSequencerManager_handleTx_InitTransactionError(t *testing.T) {
 	sm := newSequencerManagerForTesting(t, mocks)
 	dbTX := persistencemocks.NewDBTX(t)
 	localTx := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "test-domain"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "test-domain"}},
 		Function:    &components.ResolvedFunction{Definition: &abi.Entry{Name: "f", Type: abi.Function}},
 	}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Return(errors.New("init failed")).Once()
-	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: *contractAddr}, localTx, false)
+	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
 
@@ -1529,19 +1529,19 @@ func TestSequencerManager_handleTx_LoadSequencerError(t *testing.T) {
 	sm := newSequencerManagerForTesting(t, mocks)
 	dbTX := persistencemocks.NewDBTX(t)
 	localTx := &components.ResolvedTransaction{
-		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr, Domain: "test-domain"}},
+		Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress()), Domain: "test-domain"}},
 		Function:    &components.ResolvedFunction{Definition: &abi.Entry{Name: "f", Type: abi.Function}},
 	}
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, *contractAddr).Return(mocks.domainAPI, nil).Once()
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
 	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(nil, errors.New("create failed")).Once()
-	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: *contractAddr}, localTx, false)
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(nil, errors.New("create failed")).Once()
+	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
 
@@ -1599,8 +1599,8 @@ func TestSequencerManager_CallPrivateSmartContract_GetSmartContractError(t *test
 	contractAddr := pldtypes.RandAddress()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
-	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: contractAddr}}}
-	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, *contractAddr).Return(nil, errors.New("not found")).Once()
+	call := &components.ResolvedTransaction{Transaction: &pldapi.Transaction{TransactionBase: pldapi.TransactionBase{To: confutil.P(contractAddr.ChainAddress())}}}
+	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, nil, contractAddr.ChainAddress()).Return(nil, errors.New("not found")).Once()
 	_, err := sm.CallPrivateSmartContract(ctx, call)
 	require.Error(t, err)
 }

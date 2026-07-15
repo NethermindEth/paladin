@@ -88,12 +88,13 @@ func (tb *testbed) execBaseLedgerTransaction(ctx context.Context, signer string,
 			return nil, err
 		}
 	}
+	toChain := txInstruction.To.ChainAddress()
 	tx := &pldapi.TransactionInput{
 		TransactionBase: pldapi.TransactionBase{
 			Type:     pldapi.TransactionTypePublic.Enum(),
 			Function: txInstruction.FunctionABI.String(),
 			From:     signer,
-			To:       &txInstruction.To,
+			To:       &toChain,
 			Data:     data,
 		},
 		ABI: abi.ABI{txInstruction.FunctionABI},

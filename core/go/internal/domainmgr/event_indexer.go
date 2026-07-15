@@ -55,10 +55,14 @@ func (dm *domainManager) registrationIndexer(ctx context.Context, dbTX persisten
 
 	for _, ev := range batch.Events {
 		processedEvent := false
-		if ev.SoliditySignature == eventSolSig_PaladinRegisterSmartContract_V0 {
+		switch {
+		case ev.SoliditySignature == eventSolSig_PaladinRegisterSmartContract_V0:
 
 			// We only register against registries that we have indexed, so we should be able to find the domain for this address
-			d, err := dm.getDomainByAddress(ctx, &ev.Address)
+			// ev.Address is EVM-only (ABI-decoded blockchain event field) - wrap to chain-neutral
+			// at the boundary into domainmgr's now chain-neutral address-keyed lookups/types.
+			regAddrChain := ev.Address.ChainAddress()
+			d, err := dm.getDomainByAddress(ctx, &regAddrChain)
 			if err != nil {
 				log.L(ctx).Errorf("Registration event for unknown domain event: %s", pldtypes.JSONString(ev))
 				continue
@@ -70,33 +74,32 @@ func (dm *domainManager) registrationIndexer(ctx context.Context, dbTX persisten
 				log.L(ctx).Errorf("Failed to parse domain event (%s): %s", parseErr, pldtypes.JSONString(ev))
 			} else {
 				processedEvent = true
-				txID := parsedEvent.TXId.UUIDFirst16()
-				contracts = append(contracts, &PrivateSmartContract{
-					DeployTX:        txID,
-					RegistryAddress: ev.Address,
-					Address:         parsedEvent.Instance,
-					ConfigBytes:     parsedEvent.Config,
-				})
+				instanceChain := parsedEvent.Instance.ChainAddress()
+				contract, completion := newRegisteredContract(d, ev, parsedEvent.TXId.UUIDFirst16(), regAddrChain, instanceChain, parsedEvent.Config, &ev.Address)
+				contracts = append(contracts, contract)
+				txCompletions = append(txCompletions, completion)
+			}
 
-				// We don't know if the private transaction will match, but we need to pass it over
-				// to the private TX manager within our DB transaction to allow it to check
-				txCompletions = append(txCompletions, &components.TxCompletion{
-					ReceiptInput: components.ReceiptInput{
-						ReceiptType:   components.RT_Success,
-						TransactionID: txID,
-						Domain:        d.name,
-						OnChain: pldtypes.OnChainLocation{
-							Type:             pldtypes.OnChainEvent,
-							TransactionHash:  ev.TransactionHash,
-							BlockNumber:      ev.BlockNumber,
-							TransactionIndex: ev.TransactionIndex,
-							LogIndex:         ev.LogIndex,
-							Source:           &ev.Address,
-						},
-						ContractAddress: &parsedEvent.Instance,
-					},
-					PSC: nil, // currently unset for deployments (rather than fluffing up the domainContract at this point)
-				})
+		case ev.IndexedEvent != nil && ev.Signature == stellarRegisterSelector:
+
+			// Same trust boundary as the EVM case above: we only register against a
+			// SaladinFactory instance we've indexed as a domain's own configured registry
+			// (chapter 14 step 5 - see the "one dedicated factory instance per domain" design
+			// note in domain.go's processDomainConfig).
+			d, err := dm.getDomainByAddress(ctx, ev.AddressChain)
+			if err != nil {
+				log.L(ctx).Errorf("Registration event for unknown domain event: %s", pldtypes.JSONString(ev))
+				continue
+			}
+
+			txID, instanceChain, config, parseErr := decodeSaladinFactoryRegistration(ctx, ev)
+			if parseErr != nil {
+				log.L(ctx).Errorf("Failed to parse domain event (%s): %s", parseErr, pldtypes.JSONString(ev))
+			} else {
+				processedEvent = true
+				contract, completion := newRegisteredContract(d, ev, txID, *ev.AddressChain, instanceChain, pldtypes.HexBytes(config), nil)
+				contracts = append(contracts, contract)
+				txCompletions = append(txCompletions, completion)
 			}
 		}
 		if !processedEvent {
@@ -123,6 +126,39 @@ func (dm *domainManager) registrationIndexer(ctx context.Context, dbTX persisten
 	return nonRegisterEvents, txCompletions, nil
 }
 
+// newRegisteredContract builds the PrivateSmartContract row and TxCompletion notification shared
+// by both the EVM (PaladinRegisterSmartContract_V0) and Stellar (SaladinFactory.register)
+// registration paths above. source is EVM-only (OnChainLocation.Source is not yet chain-neutral -
+// a separate, pre-existing gap, not this task's scope) and is nil for a Stellar-sourced event.
+func newRegisteredContract(d *domain, ev *pldapi.EventWithData, txID uuid.UUID, registryAddress, instanceAddress pldtypes.ChainAddress, config pldtypes.HexBytes, source *pldtypes.EthAddress) (*PrivateSmartContract, *components.TxCompletion) {
+	contract := &PrivateSmartContract{
+		DeployTX:        txID,
+		RegistryAddress: registryAddress,
+		Address:         instanceAddress,
+		ConfigBytes:     config,
+	}
+	// We don't know if the private transaction will match, but we need to pass it over
+	// to the private TX manager within our DB transaction to allow it to check
+	completion := &components.TxCompletion{
+		ReceiptInput: components.ReceiptInput{
+			ReceiptType:   components.RT_Success,
+			TransactionID: txID,
+			Domain:        d.name,
+			OnChain: pldtypes.OnChainLocation{
+				Type:             pldtypes.OnChainEvent,
+				TransactionHash:  ev.TransactionHash,
+				BlockNumber:      ev.BlockNumber,
+				TransactionIndex: ev.TransactionIndex,
+				LogIndex:         ev.LogIndex,
+				Source:           source,
+			},
+			ContractAddress: &instanceAddress,
+		},
+		PSC: nil, // currently unset for deployments (rather than fluffing up the domainContract at this point)
+	}
+	return contract, completion
+}
+
 // Direct waiters are only used by the testbed
 func (dm *domainManager) notifyWaiters(txCompletions txCompletionsOrdered) {
 	for _, completion := range txCompletions {
@@ -144,7 +180,7 @@ func (d *domain) batchEventsByAddress(ctx context.Context, dbTX persistence.DBTX
 			// Note: hits will be cached, but events from unrecognized contracts will always
 			// result in a cache miss and a database lookup
 			// TODO: revisit if we should optimize this
-			_, psc, err := d.dm.getSmartContractCached(ctx, dbTX, ev.Address)
+			_, psc, err := d.dm.getSmartContractCached(ctx, dbTX, ev.Address.ChainAddress())
 			if err != nil {
 				return nil, err
 			}
@@ -194,7 +230,8 @@ func (d *domain) handleEventBatch(ctx context.Context, dbTX persistence.DBTX, ba
 		return err
 	}
 	for addr, batch := range batchesByAddress {
-		res, err := d.handleEventBatchForContract(ctx, dbTX, addr, batch)
+		addrChain := addr.ChainAddress()
+		res, err := d.handleEventBatchForContract(ctx, dbTX, addrChain, batch)
 		if err != nil {
 			return err
 		}
@@ -275,7 +312,7 @@ func (d *domain) recoverTransactionID(ctx context.Context, txIDString string) (*
 	return &txUUID, nil
 }
 
-func (d *domain) handleEventBatchForContract(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.EthAddress, batch *pscEventBatch) (*prototk.HandleEventBatchResponse, error) {
+func (d *domain) handleEventBatchForContract(ctx context.Context, dbTX persistence.DBTX, addr pldtypes.ChainAddress, batch *pscEventBatch) (*prototk.HandleEventBatchResponse, error) {
 	// We have a domain context for queries, but we never flush it to DB - as the only updates
 	// we allow in this function are those performed within our dbTX.
 	dCtx := d.dm.stateStore.NewDomainContext(ctx, d, addr)

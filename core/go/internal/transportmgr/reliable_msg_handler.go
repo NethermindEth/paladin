@@ -585,7 +585,8 @@ func parseState(ctx context.Context, sd *components.StateDistributionWithData) (
 		parsed.SchemaID, err = pldtypes.ParseBytes32(sd.SchemaID)
 	}
 	if err == nil && sd.ContractAddress != "" {
-		parsed.ContractAddress, err = pldtypes.ParseEthAddress(sd.ContractAddress)
+		// Chain-kind-aware: distributed states can belong to a Stellar contract too, not just EVM.
+		parsed.ContractAddress, err = pldtypes.ParseChainAddress(sd.ContractAddress)
 	}
 	if err != nil {
 		return nil, err

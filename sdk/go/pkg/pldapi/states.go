@@ -91,21 +91,21 @@ type Schema struct {
 }
 
 type StateBase struct {
-	ID              pldtypes.HexBytes    `docstruct:"State" json:"id"                  gorm:"primaryKey"`
-	Created         pldtypes.Timestamp   `docstruct:"State" json:"created"             gorm:"autoCreateTime:nano"`
-	DomainName      string               `docstruct:"State" json:"domain"              gorm:"primaryKey"`
-	Schema          pldtypes.Bytes32     `docstruct:"State" json:"schema"`
-	ContractAddress *pldtypes.EthAddress `docstruct:"State" json:"contractAddress"` // nil used for states like privacy group genesis that exists before state creation
-	Data            pldtypes.RawJSON     `docstruct:"State" json:"data"`
+	ID              pldtypes.HexBytes      `docstruct:"State" json:"id"                  gorm:"primaryKey"`
+	Created         pldtypes.Timestamp     `docstruct:"State" json:"created"             gorm:"autoCreateTime:nano"`
+	DomainName      string                 `docstruct:"State" json:"domain"              gorm:"primaryKey"`
+	Schema          pldtypes.Bytes32       `docstruct:"State" json:"schema"`
+	ContractAddress *pldtypes.ChainAddress `docstruct:"State" json:"contractAddress"` // nil used for states like privacy group genesis that exists before state creation
+	Data            pldtypes.RawJSON       `docstruct:"State" json:"data"`
 }
 
 // Like StateBase, but encodes Data as HexBytes
 type StateEncoded struct {
-	ID              pldtypes.HexBytes    `json:"id"`
-	DomainName      string               `json:"domain"`
-	Schema          pldtypes.Bytes32     `json:"schema"`
-	ContractAddress *pldtypes.EthAddress `json:"contractAddress"` // nil used for states like privacy group genesis that exists before state creation
-	Data            pldtypes.HexBytes    `json:"data"`
+	ID              pldtypes.HexBytes      `json:"id"`
+	DomainName      string                 `json:"domain"`
+	Schema          pldtypes.Bytes32       `json:"schema"`
+	ContractAddress *pldtypes.ChainAddress `json:"contractAddress"` // nil used for states like privacy group genesis that exists before state creation
+	Data            pldtypes.HexBytes      `json:"data"`
 }
 
 type State struct {

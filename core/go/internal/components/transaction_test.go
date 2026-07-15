@@ -29,7 +29,7 @@ func TestReleasePostAssemblyData(t *testing.T) {
 	pt := &PrivateTransaction{
 		ID:      uuid.New(),
 		Domain:  "test-domain",
-		Address: *pldtypes.RandAddress(),
+		Address: pldtypes.RandAddress().ChainAddress(),
 		Signer:  "signer@node1",
 		PreAssembly: &TransactionPreAssembly{
 			TransactionSpecification: &prototk.TransactionSpecification{},

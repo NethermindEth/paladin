@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
 	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/internal/sequencer/common"
@@ -326,7 +327,7 @@ func TestNewOriginator_SenderMode_SetsCurrentActiveCoordinatorToNodeName(t *test
 		nodeName,
 		testutil.NewSentMessageRecorder(),
 		sequencercommonmocks.NewEngineIntegration(t),
-		pldtypes.RandAddress(),
+		confutil.P(pldtypes.RandAddress().ChainAddress()),
 		&pldconf.SequencerDefaults,
 		metrics.InitMetrics(context.Background(), prometheus.NewRegistry()),
 		&common.CoordinatorSelectionConfig{
@@ -342,7 +343,7 @@ func TestNewOriginator_EndorserMode_SetsEndorserCandidates(t *testing.T) {
 		"node1",
 		testutil.NewSentMessageRecorder(),
 		sequencercommonmocks.NewEngineIntegration(t),
-		pldtypes.RandAddress(),
+		confutil.P(pldtypes.RandAddress().ChainAddress()),
 		&pldconf.SequencerDefaults,
 		metrics.InitMetrics(context.Background(), prometheus.NewRegistry()),
 		&common.CoordinatorSelectionConfig{

@@ -102,7 +102,10 @@ func deploySimpleTokenInDomain(t *testing.T, ctx context.Context, client pldclie
 		Inputs(pldtypes.JSONString(params)).
 		Send().Wait(transactionLatencyThreshold(t) + 5*time.Second)
 	require.NoError(t, dplyTx.Error())
-	return dplyTx.Receipt().ContractAddress
+	// This test harness deploys EVM-only test domains - unwrap explicitly rather than assume.
+	ethAddr, err := dplyTx.Receipt().ContractAddress.EthAddress()
+	require.NoError(t, err)
+	return ethAddr
 }
 
 func TestChainedTransactionSuccess(t *testing.T) {

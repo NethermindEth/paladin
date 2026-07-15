@@ -32,7 +32,7 @@ import (
 // For on-chain failures (base ledger reverts), OnChain and RevertData are set.
 type TransactionFinalizeRequest struct {
 	Domain          string
-	ContractAddress pldtypes.EthAddress
+	ContractAddress pldtypes.ChainAddress
 	Originator      string
 	TransactionID   uuid.UUID
 	FailureMessage  string                    // pre-formatted message for off-chain failures

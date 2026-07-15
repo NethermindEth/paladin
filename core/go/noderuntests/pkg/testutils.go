@@ -43,6 +43,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/plugins"
 	"github.com/LFDT-Paladin/paladin/core/noderuntests/pkg/domains"
 	"github.com/LFDT-Paladin/paladin/core/pkg/config"
+	"github.com/LFDT-Paladin/paladin/domains/noto/pkg/noto"
 	"github.com/LFDT-Paladin/paladin/registries/static/pkg/static"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -217,6 +218,21 @@ func NewInstanceForTesting(t *testing.T, domainRegistryAddress *pldtypes.EthAddr
 			Config:          map[string]any{},
 			RegistryAddress: domainConfig.Domain2RegistryAddress,
 		}
+	case *domains.NotoStellarDomainConfig:
+		// domainRegistryAddress (the shared EVM-shaped parameter every other case above uses) is
+		// irrelevant here - RegistryAddress comes from domainConfig itself, a Stellar strkey.
+		i.conf.Domains["noto"] = &pldconf.DomainConfig{
+			AllowSigning: true,
+			Plugin: pldconf.PluginConfig{
+				Type:    string(pldtypes.LibraryTypeCShared),
+				Library: "loaded/via/unit/test/loader",
+			},
+			Config: map[string]any{
+				"stellarSnotoFactoryAddress": domainConfig.SnotoFactoryAddress,
+				"stellarSnotoWasmHash":       domainConfig.SnotoWasmHash,
+			},
+			RegistryAddress: domainConfig.RegistryAddress,
+		}
 	}
 
 	if identity := getFixedSigningIdentity(); identity != "" {
@@ -292,6 +308,15 @@ func NewInstanceForTesting(t *testing.T, domainRegistryAddress *pldtypes.EthAddr
 		"domain1":             domains.SimpleTokenDomain(t, i.ctx),
 		"domain2":             domains.SimpleTokenDomain(t, i.ctx),
 		"simpleStorageDomain": domains.SimpleStorageDomain(t, i.ctx),
+		// The real domains/noto plugin (chapter 14 step 6) - unlike the fake domains above, its
+		// implementation lives in a separate Go module (domains/noto), so it's wired directly
+		// here via its exported pkg/noto.New constructor rather than a helper in this package.
+		// (noto.New returns the noto package's own Noto interface, not plugintk.DomainAPI
+		// directly, so it needs wrapping even though Noto embeds DomainAPI - Go function types
+		// aren't covariant in their return type.)
+		"noto": plugintk.NewDomain(func(callbacks plugintk.DomainCallbacks) plugintk.DomainAPI {
+			return noto.New(callbacks)
+		}),
 		"grpc":                grpc.NewPlugin(i.ctx),
 		"registry1":           static.NewPlugin(i.ctx),
 	}
@@ -614,7 +639,10 @@ func (p *partyForTesting) DeploySimpleDomainInstanceContract(t *testing.T, const
 		Inputs(pldtypes.JSONString(constructorParameters)).
 		Send().Wait(transactionLatencyThreshold(t) + 5*time.Second) //TODO deploy transaction seems to take longer than expected
 	require.NoError(t, dplyTx.Error())
-	return dplyTx.Receipt().ContractAddress
+	// This test harness deploys EVM-only test domains - unwrap explicitly rather than assume.
+	ethAddr, err := dplyTx.Receipt().ContractAddress.EthAddress()
+	require.NoError(t, err)
+	return ethAddr
 }
 
 func (p *partyForTesting) DeploySimpleStorageDomainInstanceContract(t *testing.T, constructorParameters *domains.SimpleStorageConstructorParameters,
@@ -628,7 +656,10 @@ func (p *partyForTesting) DeploySimpleStorageDomainInstanceContract(t *testing.T
 		Send().Wait(transactionLatencyThreshold(t) + 5*time.Second) //TODO deploy transaction seems to take longer than expected
 
 	require.NoError(t, dplyTx.Error())
-	return dplyTx.Receipt().ContractAddress
+	// This test harness deploys EVM-only test domains - unwrap explicitly rather than assume.
+	ethAddr, err := dplyTx.Receipt().ContractAddress.EthAddress()
+	require.NoError(t, err)
+	return ethAddr
 }
 
 type partyForTesting struct {

@@ -77,6 +77,12 @@ type TxBuilder interface {
 	To(to *pldtypes.EthAddress) TxBuilder // the contract address to send the transaction to, or nil for a constructor
 	GetTo() *pldtypes.EthAddress
 
+	// ToChainAddress is To's chain-neutral sibling, additive alongside it (not a replacement -
+	// To/GetTo stay EVM-typed for existing SDK consumers, see their own doc comment) for callers
+	// that need to target a non-EVM contract address (e.g. a Stellar/Soroban contract ID).
+	ToChainAddress(to *pldtypes.ChainAddress) TxBuilder
+	GetToChainAddress() *pldtypes.ChainAddress
+
 	Bytecode(bytecode []byte) TxBuilder // for public transaction constructors this is required (not applicable to private transactions directly - Pente is a special case handled separately)
 	GetBytecode() pldtypes.HexBytes
 
@@ -377,8 +383,21 @@ func (t *txBuilder) GetPublicCallOptions() pldapi.PublicCallOptions {
 	return t.tx.PublicCallOptions
 }
 
+// GetTo/To keep this builder's public signature EVM-typed (*pldtypes.EthAddress) even though
+// pldapi.TransactionBase.To is now chain-neutral (*pldtypes.ChainAddress) - zero breaking change
+// for external SDK consumers. A non-EVM To (not settable via this method anyway) would silently
+// unwrap to nil here, mirroring the same unwrap-with-guard idiom used elsewhere in the repo
+// (e.g. txmgr's blockchain event listener mapping) rather than erroring from a method with no
+// error return.
 func (t *txBuilder) GetTo() *pldtypes.EthAddress {
-	return t.tx.To
+	if t.tx.To == nil {
+		return nil
+	}
+	ethAddr, err := t.tx.To.EthAddress()
+	if err != nil {
+		return nil
+	}
+	return ethAddr
 }
 
 func (t *txBuilder) GetType() pldapi.TransactionType {
@@ -430,8 +449,22 @@ func (t *txBuilder) SolidityBuild(build *solutils.SolidityBuild) TxBuilder {
 }
 
 func (t *txBuilder) To(to *pldtypes.EthAddress) TxBuilder {
+	if to == nil {
+		t.tx.To = nil
+	} else {
+		chainAddr := to.ChainAddress()
+		t.tx.To = &chainAddr
+	}
+	return t
+}
+
+func (t *txBuilder) ToChainAddress(to *pldtypes.ChainAddress) TxBuilder {
 	t.tx.To = to
 	return t
+}
+
+func (t *txBuilder) GetToChainAddress() *pldtypes.ChainAddress {
+	return t.tx.To
 }
 
 func (t *txBuilder) Wrap(tx *pldapi.TransactionInput) TxBuilder {
