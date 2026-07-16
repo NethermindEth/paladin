@@ -59,6 +59,38 @@ const SIGN_PAYLOAD_TYPE: &str = "opaque:eddsa";
 /// `soroban/contracts/sente`'s own `transition`/`sign_transition` test helper exactly.
 const TRANSITION_TYPE_NAME: &str = "sente.Transition";
 
+/// Declared via `ConfigureDomainResponse.domain_config.abi_events_json` so Go's event-stream
+/// mechanism (`core/go/internal/domainmgr/domain.go`'s `processDomainConfig`) sets up a source
+/// watching this contract's own events - reused purely as a *name* carrier for Stellar matching
+/// (`core/go/pkg/baseledger/stellar.ComputeEventSelector` hashes the event *name*, not any
+/// ABI-decoded field), the same convention `domains/noto`'s own `allEventsJSON` already
+/// established for its Stellar chain kind. Types are still filled in with their real Solidity-ABI
+/// shape (not left opaque) since this is standard, parseable ABI JSON, not a Sente-specific
+/// format.
+const SENTE_EVENTS_ABI_JSON: &str = r#"[
+  {
+    "type": "event",
+    "name": "genesis",
+    "anonymous": false,
+    "inputs": [
+      {"name": "tx_id", "type": "bytes32", "indexed": true},
+      {"name": "members", "type": "bytes32[]", "indexed": false},
+      {"name": "network_passphrase", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "transition",
+    "anonymous": false,
+    "inputs": [
+      {"name": "tx_id", "type": "bytes32", "indexed": true},
+      {"name": "old_root", "type": "bytes32", "indexed": true},
+      {"name": "new_root", "type": "bytes32", "indexed": false},
+      {"name": "external_call_count", "type": "uint32", "indexed": false}
+    ]
+  }
+]"#;
+
 /// S3 genesis config, supplied by the Paladin administrator as this domain's `config_json`
 /// (`ConfigureDomainRequest.config_json`) - the same "runtime config comes from the domain's own
 /// config block, not a compiled-in constant" convention Noto's Stellar `chainIO` config already
@@ -285,16 +317,97 @@ fn saladin_typed_data_digest(
     hasher.finalize().into()
 }
 
-/// XDR shape of `soroban/contracts/sente::TransitionPayload(BytesN<32>, BytesN<32>,
+/// Mirrors `core/go/pkg/baseledger/stellar.ComputeEventSelector` exactly (chapter 12 §12.4):
+/// `SHA-256("saladin:" + topic0Symbol + ":v0")`. Duplicated for the same reason
+/// `saladin_typed_data_digest` is - a tiny, stable, pure function not worth a cross-language
+/// dependency. This is what an `OnChainEvent.signature` is matched against to tell `genesis`
+/// events apart from `transition` events in `handle_event_batch`.
+fn stellar_event_selector(topic0_symbol: &str) -> [u8; 32] {
+    Sha256::digest(format!("saladin:{topic0_symbol}:v0").as_bytes()).into()
+}
+
+/// The JSON shape core's own generic event-stream delivery uses for a Stellar-sourced event
+/// (`core/go/internal/domainmgr/event_indexer_stellar.go`'s `stellarRegistrationEventPayload`) -
+/// hex-encoded topics and data, since Stellar's event pipeline deliberately leaves Soroban event
+/// bodies XDR-encoded rather than ABI-decoding them into named fields the way EVM's blockindexer
+/// does. `OnChainEvent.data_json` carries exactly this shape regardless of which event fired.
+#[derive(serde::Deserialize)]
+struct StellarEventPayload {
+    topics: Vec<String>,
+    data: String,
+}
+
+impl StellarEventPayload {
+    fn topic(&self, index: usize) -> Result<ScVal, String> {
+        let hex_str = self
+            .topics
+            .get(index)
+            .ok_or_else(|| format!("event has no topic {index}"))?;
+        let bytes = hex::decode(hex_str.trim_start_matches("0x"))
+            .map_err(|e| format!("invalid topic {index}: {e}"))?;
+        ScVal::from_xdr(bytes, Limits::none())
+            .map_err(|e| format!("invalid topic {index} XDR: {e}"))
+    }
+
+    fn data(&self) -> Result<ScVal, String> {
+        let bytes = hex::decode(self.data.trim_start_matches("0x"))
+            .map_err(|e| format!("invalid event data: {e}"))?;
+        ScVal::from_xdr(bytes, Limits::none()).map_err(|e| format!("invalid event data XDR: {e}"))
+    }
+}
+
+/// Decodes a `ScVal::Bytes` value expected to be exactly 32 bytes - `tx_id`/`old_root`/`new_root`
+/// are all this shape, both as event topics/data and as `SenteEntry` storage values.
+fn scval_bytes32(val: &ScVal) -> Result<[u8; 32], String> {
+    let ScVal::Bytes(bytes) = val else {
+        return Err(format!("expected a Bytes ScVal, got {val:?}"));
+    };
+    bytes
+        .0
+        .as_slice()
+        .try_into()
+        .map_err(|_| "expected exactly 32 bytes".to_string())
+}
+
+/// The inverse of `tx_id_bytes`: the Paladin `transaction_id` string form Go's
+/// `recoverTransactionID`/`ParseBytes32Ctx` expects (`NewConfirmedState.transaction_id`,
+/// `CompletedTransaction.transaction_id`), built from raw on-chain `tx_id` bytes recovered from an
+/// event.
+fn paladin_transaction_id(tx_id: [u8; 32]) -> String {
+    format!("0x{}", hex::encode(tx_id))
+}
+
+/// Decodes a Paladin `transaction_id` ("a 32 byte 0x prefixed hex string ... UUID in first 16
+/// bytes", `to_domain.proto`'s own wording) into its raw 32 bytes - the same convention
+/// `domains/noto/internal/noto/deploy_stellar.go`'s `pldtypes.ParseBytes32Ctx` already
+/// establishes. This is what the on-chain `tx_id` argument must carry: Go's event indexer recovers
+/// the *original* Paladin transaction UUID via `Bytes32.UUIDFirst16()` on whatever bytes it finds
+/// on-chain, so submitting anything other than this exact value (e.g. a hash of the string) would
+/// make every on-chain confirmation uncorrelatable back to its originating transaction.
+fn tx_id_bytes(transaction_id: &str) -> Result<[u8; 32], String> {
+    let hex_str = transaction_id.trim_start_matches("0x");
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| format!("transaction_id {transaction_id} is not valid hex: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("transaction_id {transaction_id} does not decode to 32 bytes"))
+}
+
+/// XDR shape of `soroban/contracts/sente::TransitionPayload(BytesN<32>, BytesN<32>, BytesN<32>,
 /// Vec<AtomOperation>)` - a tuple struct, so its `#[contracttype]` derive encodes it as a plain
 /// positional `ScVal::Vec`, matching the contract's own doc comment for choosing a tuple struct
 /// here. `external_calls` is always empty for this phase's root-only transitions (module doc
 /// comment) - an empty `Vec<AtomOperation>` encodes as `ScVal::Vec(Some(ScVec([])))` regardless of
 /// `AtomOperation`'s own shape (empirically confirmed), so no `AtomOperation` encoding is needed
 /// yet.
-fn transition_payload_xdr(old_root: [u8; 32], new_root: [u8; 32]) -> Result<Vec<u8>, String> {
+fn transition_payload_xdr(
+    tx_id: [u8; 32],
+    old_root: [u8; 32],
+    new_root: [u8; 32],
+) -> Result<Vec<u8>, String> {
     let payload = ScVal::Vec(Some(ScVec(
         vec![
+            ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap())),
             ScVal::Vec(Some(ScVec(VecM::default()))),
@@ -423,7 +536,7 @@ impl DomainHandler for SenteDomain {
             domain_config: Some(pb::DomainConfig {
                 custom_hash_function: false,
                 abi_state_schemas_json: vec![sente_host::SENTE_ENTRY_ABI_SCHEMA_JSON.to_string()],
-                abi_events_json: String::new(),
+                abi_events_json: SENTE_EVENTS_ABI_JSON.to_string(),
                 signing_algorithms: Default::default(),
                 full_state_availablity_required: false,
                 max_input_states: 0,
@@ -526,7 +639,7 @@ impl DomainHandler for SenteDomain {
         let wasm_hash_bytes = hex::decode(&config.sente_wasm_hash)
             .map_err(|e| format!("invalid senteWasmHash config: {e}"))?;
         let saladin_factory = decode_contract_address(&config.saladin_factory_address)?;
-        let tx_id_hash: [u8; 32] = Sha256::digest(transaction.transaction_id.as_bytes()).into();
+        let tx_id = tx_id_bytes(&transaction.transaction_id)?;
 
         // Argument order must match `sente-factory`'s real Rust signature exactly:
         // `deploy_group(wasm_hash, members, config, saladin_factory, tx_id)`.
@@ -547,7 +660,7 @@ impl DomainHandler for SenteDomain {
             )),
             ScVal::Address(ScAddress::Contract(saladin_factory)),
             ScVal::Bytes(ScBytes(
-                tx_id_hash
+                tx_id
                     .to_vec()
                     .try_into()
                     .map_err(|_| "failed to build tx_id ScBytes".to_string())?,
@@ -671,7 +784,8 @@ impl DomainHandler for SenteDomain {
 
         let old_root = decode_root(&prior_group_entry.entry.val().map_err(|e| e.to_string())?)?;
         let new_root = derive_new_root(&old_root, &transaction.transaction_id);
-        let payload_xdr = transition_payload_xdr(old_root, new_root)?;
+        let tx_id = tx_id_bytes(&transaction.transaction_id)?;
+        let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root)?;
         let config = self.config()?;
         let on_chain_digest = saladin_typed_data_digest(
             config.network_passphrase.as_bytes(),
@@ -808,7 +922,8 @@ impl DomainHandler for SenteDomain {
             });
         }
 
-        let payload_xdr = transition_payload_xdr(info.old_root, info.new_root)?;
+        let tx_id = tx_id_bytes(&info.transaction_id)?;
+        let payload_xdr = transition_payload_xdr(tx_id, info.old_root, info.new_root)?;
         let config = self.config()?;
         let contract_id_bytes = BASE64
             .decode(&info.contract_id)
@@ -911,7 +1026,11 @@ impl DomainHandler for SenteDomain {
                 .map_err(|_| "failed to build signatures ScVec".to_string())?,
         )));
 
+        let tx_id = tx_id_bytes(&info.transaction_id)?;
+        // Argument order must match `sente`'s real Rust signature exactly:
+        // `transition(tx_id, new_root, external_calls, signatures)`.
         let args: VecM<ScVal> = vec![
+            ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(info.new_root.to_vec().try_into().unwrap())),
             ScVal::Vec(Some(ScVec(VecM::default()))),
             signatures_val,
@@ -953,6 +1072,172 @@ impl DomainHandler for SenteDomain {
                     },
                 )),
             }),
+        })
+    }
+
+    /// Turns confirmed `genesis`/`transition` events (declared via `abi_events_json` above) back
+    /// into Paladin states/completions - the Go-side integration piece chapter 14 §14.3's own
+    /// "what's genuinely still open" note flagged as missing. `genesis` produces the group's very
+    /// first tracked `SenteEntry` (root = `[0; 32]`) directly from the deploy transaction's own
+    /// event, with no separate out-of-band population step; `transition` spends the prior tracked
+    /// instance state and confirms the root-spliced successor, and marks the originating private
+    /// transaction complete. Any other event on this contract (e.g. a future external-call side
+    /// effect) is ignored - out of scope for this phase's root-only transitions.
+    async fn handle_event_batch(
+        &self,
+        req: pb::HandleEventBatchRequest,
+    ) -> Result<pb::HandleEventBatchResponse, String> {
+        let schema_id = self.schema_id()?;
+        let contract_info = req
+            .contract_info
+            .clone()
+            .ok_or("handle_event_batch: contract_info not set")?;
+        let contract_id = decode_contract_address(&contract_info.contract_address)?;
+        let contract_address = ScAddress::Contract(contract_id);
+        let contract_id_base64 = BASE64.encode(
+            contract_address
+                .to_xdr(Limits::none())
+                .map_err(|e| e.to_string())?,
+        );
+        let instance_key_base64 = instance_key_xdr_base64();
+
+        let genesis_selector = stellar_event_selector("genesis");
+        let transition_selector = stellar_event_selector("transition");
+
+        let mut new_states = Vec::new();
+        let mut spent_states = Vec::new();
+        let mut transactions_complete = Vec::new();
+
+        for event in &req.events {
+            let selector_bytes = hex::decode(event.signature.trim_start_matches("0x"))
+                .map_err(|e| format!("invalid event signature: {e}"))?;
+            let Ok(selector) = <[u8; 32]>::try_from(selector_bytes.as_slice()) else {
+                continue; // not a 32-byte selector - not one of our events
+            };
+            let payload: StellarEventPayload = serde_json::from_str(&event.data_json)
+                .map_err(|e| format!("invalid event data_json: {e}"))?;
+
+            if selector == genesis_selector {
+                // topics = [genesis symbol (matched via selector), tx_id]; data = [members, network_passphrase].
+                let tx_id = scval_bytes32(&payload.topic(1)?)?;
+                let data = payload.data()?;
+                let ScVal::Vec(Some(fields)) = &data else {
+                    return Err("genesis event data: expected a Vec".to_string());
+                };
+                if fields.len() != 2 {
+                    return Err(format!(
+                        "genesis event data: expected 2 elements (members, network_passphrase), got {}",
+                        fields.len()
+                    ));
+                }
+                let ScVal::Vec(Some(members_vec)) = &fields[0] else {
+                    return Err("genesis event data[0]: expected a Vec".to_string());
+                };
+                let member_pubkeys = members_vec
+                    .iter()
+                    .map(scval_bytes32)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ScVal::Bytes(passphrase_bytes) = &fields[1] else {
+                    return Err("genesis event data[1]: expected Bytes".to_string());
+                };
+
+                let config = self.config()?;
+                let wasm_hash_bytes = hex::decode(&config.sente_wasm_hash)
+                    .map_err(|e| format!("invalid senteWasmHash config: {e}"))?;
+                let wasm_hash: [u8; 32] = wasm_hash_bytes.try_into().map_err(|_| {
+                    "senteWasmHash config must decode to exactly 32 bytes".to_string()
+                })?;
+                let genesis_val =
+                    genesis_instance_val(wasm_hash, &member_pubkeys, passphrase_bytes.0.as_slice())?;
+                let genesis_entry = sente_host::SenteEntry {
+                    contract_id: contract_id_base64.clone(),
+                    key_xdr: instance_key_base64.clone(),
+                    val_xdr: BASE64.encode(
+                        genesis_val
+                            .to_xdr(Limits::none())
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    durability: sente_host::EntryDurability::Persistent,
+                    seq: 0,
+                };
+                new_states.push(pb::NewConfirmedState {
+                    schema_id: schema_id.clone(),
+                    state_data_json: serde_json::to_string(&genesis_entry)
+                        .map_err(|e| e.to_string())?,
+                    id: None,
+                    transaction_id: paladin_transaction_id(tx_id),
+                });
+                // The deploy transaction's own completion is already handled by
+                // registrationIndexer's generic registration path (chapter 14 step 5) - not
+                // duplicated here via transactions_complete.
+            } else if selector == transition_selector {
+                // topics = [transition symbol, tx_id, old_root]; data = [new_root, external_call_count].
+                let tx_id = scval_bytes32(&payload.topic(1)?)?;
+                let data = payload.data()?;
+                let ScVal::Vec(Some(fields)) = &data else {
+                    return Err("transition event data: expected a Vec".to_string());
+                };
+                let new_root = scval_bytes32(
+                    fields
+                        .first()
+                        .ok_or("transition event data: expected at least 1 element (new_root)")?,
+                )?;
+
+                let prior = self.prior_entries(&req.state_query_context).await?;
+                let prior_entry = prior.iter().find(|p| {
+                    p.entry.contract_id == contract_id_base64
+                        && p.entry.key_xdr == instance_key_base64
+                });
+                let Some(prior_entry) = prior_entry else {
+                    return Err(
+                        "transition event: no prior tracked instance state found to spend"
+                            .to_string(),
+                    );
+                };
+
+                let new_instance_val = with_updated_root(
+                    &prior_entry.entry.val().map_err(|e| e.to_string())?,
+                    new_root,
+                )?;
+                let new_entry = sente_host::SenteEntry {
+                    contract_id: contract_id_base64.clone(),
+                    key_xdr: instance_key_base64.clone(),
+                    val_xdr: BASE64.encode(
+                        new_instance_val
+                            .to_xdr(Limits::none())
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    durability: sente_host::EntryDurability::Persistent,
+                    seq: prior_entry.entry.seq + 1,
+                };
+
+                spent_states.push(pb::StateUpdate {
+                    id: prior_entry.id.clone(),
+                    transaction_id: paladin_transaction_id(tx_id),
+                });
+                new_states.push(pb::NewConfirmedState {
+                    schema_id: schema_id.clone(),
+                    state_data_json: serde_json::to_string(&new_entry)
+                        .map_err(|e| e.to_string())?,
+                    id: None,
+                    transaction_id: paladin_transaction_id(tx_id),
+                });
+                transactions_complete.push(pb::CompletedTransaction {
+                    transaction_id: paladin_transaction_id(tx_id),
+                    location: Some(event.location.clone().unwrap_or_default()),
+                    chain_location: None,
+                });
+            }
+            // Any other event on this contract is out of scope for this phase - ignored.
+        }
+
+        Ok(pb::HandleEventBatchResponse {
+            transactions_complete,
+            spent_states,
+            read_states: vec![],
+            confirmed_states: vec![],
+            info_states: vec![],
+            new_states,
         })
     }
 }
@@ -1024,13 +1309,15 @@ mod tests {
     /// `prepare_transaction` never cryptographically verifies a signature itself (that's the
     /// on-chain contract's job) - it just decodes each endorsement's resolved verifier strkey and
     /// repackages whatever bytes it was given, so a synthetic (not genuinely-signed) payload is
-    /// enough to prove the XDR bundling itself is correct: real `new_root`/empty `external_calls`/
-    /// the exact `(pubkey, signature)` pairs, in `transition`'s real positional argument order.
+    /// enough to prove the XDR bundling itself is correct: real `tx_id`/`new_root`/empty
+    /// `external_calls`/the exact `(pubkey, signature)` pairs, in `transition`'s real positional
+    /// argument order.
     #[tokio::test]
     async fn prepare_transaction_bundles_signatures_into_transition_args() {
         let (client, _to_core_rx) = PaladinClient::new_test("prepare-test");
         let domain = SenteDomain::new(client);
 
+        let transaction_id = format!("0x{}", hex::encode([0x01u8; 32]));
         let new_root = [7u8; 32];
         let contract_id_base64 = BASE64.encode(
             ScAddress::Contract(ContractId(Hash([0x11; 32])))
@@ -1038,7 +1325,7 @@ mod tests {
                 .unwrap(),
         );
         let info = InfoState::new(
-            "tx-1".to_string(),
+            transaction_id.clone(),
             contract_id_base64,
             [0u8; 32],
             new_root,
@@ -1078,13 +1365,17 @@ mod tests {
         assert_eq!(invoke.function_name, "transition");
 
         let args = VecM::<ScVal>::from_xdr(invoke.args_xdr, Limits::none()).unwrap();
-        assert_eq!(args.len(), 3);
+        assert_eq!(args.len(), 4);
         assert_eq!(
             args[0],
+            ScVal::Bytes(ScBytes([0x01u8; 32].to_vec().try_into().unwrap()))
+        );
+        assert_eq!(
+            args[1],
             ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap()))
         );
-        assert_eq!(args[1], ScVal::Vec(Some(ScVec(VecM::default()))));
-        let ScVal::Vec(Some(sigs)) = &args[2] else {
+        assert_eq!(args[2], ScVal::Vec(Some(ScVec(VecM::default()))));
+        let ScVal::Vec(Some(sigs)) = &args[3] else {
             panic!("expected a Vec of signature pairs");
         };
         assert_eq!(sigs.len(), 1);
@@ -1099,5 +1390,216 @@ mod tests {
             pair[1],
             ScVal::Bytes(ScBytes(signature.to_vec().try_into().unwrap()))
         );
+    }
+
+    fn scval_hex(val: &ScVal) -> String {
+        format!("0x{}", hex::encode(val.to_xdr(Limits::none()).unwrap()))
+    }
+
+    fn genesis_event_json(tx_id: [u8; 32], member_pubkeys: &[[u8; 32]], passphrase: &[u8]) -> String {
+        let topics = vec![
+            scval_hex(&ScVal::Symbol(ScSymbol("genesis".try_into().unwrap()))),
+            scval_hex(&ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap()))),
+        ];
+        let members_val = ScVal::Vec(Some(ScVec(
+            member_pubkeys
+                .iter()
+                .map(|pk| ScVal::Bytes(ScBytes(pk.to_vec().try_into().unwrap())))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )));
+        let passphrase_val = ScVal::Bytes(ScBytes(passphrase.to_vec().try_into().unwrap()));
+        let data = scval_hex(&ScVal::Vec(Some(ScVec(
+            vec![members_val, passphrase_val].try_into().unwrap(),
+        ))));
+        serde_json::json!({"topics": topics, "data": data}).to_string()
+    }
+
+    fn transition_event_json(tx_id: [u8; 32], old_root: [u8; 32], new_root: [u8; 32]) -> String {
+        let topics = vec![
+            scval_hex(&ScVal::Symbol(ScSymbol("transition".try_into().unwrap()))),
+            scval_hex(&ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap()))),
+            scval_hex(&ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap()))),
+        ];
+        let data = scval_hex(&ScVal::Vec(Some(ScVec(
+            vec![
+                ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap())),
+                ScVal::U32(0),
+            ]
+            .try_into()
+            .unwrap(),
+        ))));
+        serde_json::json!({"topics": topics, "data": data}).to_string()
+    }
+
+    fn test_config_json(contract_address_strkey: &str) -> String {
+        serde_json::json!({
+            "senteFactoryAddress": contract_address_strkey,
+            "saladinFactoryAddress": contract_address_strkey,
+            "senteWasmHash": hex::encode([0x22u8; 32]),
+            "networkPassphrase": "Test SDF Network ; September 2015",
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn handle_event_batch_genesis_creates_first_sente_entry() {
+        let (client, _to_core_rx) = PaladinClient::new_test("handle-event-genesis");
+        let domain = SenteDomain::new(client);
+
+        let contract_address = ScAddress::Contract(ContractId(Hash([0x11; 32])));
+        let contract_address_strkey = contract_strkey(&contract_address).unwrap();
+
+        domain
+            .configure_domain(pb::ConfigureDomainRequest {
+                config_json: test_config_json(&contract_address_strkey),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        domain
+            .init_domain(pb::InitDomainRequest {
+                abi_state_schemas: vec![pb::StateSchema {
+                    id: "SenteEntry".to_string(),
+                    signature: "SenteEntry".to_string(),
+                }],
+            })
+            .await
+            .unwrap();
+
+        let tx_id = [0x77u8; 32];
+        let member_pubkeys = [[1u8; 32], [2u8; 32]];
+        let passphrase = b"Test SDF Network ; September 2015";
+
+        let req = pb::HandleEventBatchRequest {
+            state_query_context: "ctx-1".to_string(),
+            batch_id: "batch-1".to_string(),
+            contract_info: Some(pb::ContractInfo {
+                contract_address: contract_address_strkey,
+                contract_config_json: "{}".to_string(),
+            }),
+            events: vec![pb::OnChainEvent {
+                location: Some(pb::OnChainEventLocation {
+                    transaction_hash: "0xabc".to_string(),
+                    block_number: 1,
+                    transaction_index: 0,
+                    log_index: 0,
+                }),
+                signature: hex::encode(stellar_event_selector("genesis")),
+                solidity_signature: String::new(),
+                data_json: genesis_event_json(tx_id, &member_pubkeys, passphrase),
+            }],
+            chain_events: vec![],
+        };
+
+        let response = domain.handle_event_batch(req).await.unwrap();
+        assert_eq!(response.new_states.len(), 1);
+        assert!(
+            response.transactions_complete.is_empty(),
+            "genesis completion is handled by registrationIndexer, not handle_event_batch"
+        );
+        assert!(response.spent_states.is_empty());
+
+        let entry: sente_host::SenteEntry =
+            serde_json::from_str(&response.new_states[0].state_data_json).unwrap();
+        assert_eq!(entry.seq, 0);
+        assert_eq!(decode_root(&entry.val().unwrap()).unwrap(), [0u8; 32]);
+        assert_eq!(
+            response.new_states[0].transaction_id,
+            paladin_transaction_id(tx_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_batch_transition_spends_prior_and_confirms_new_root() {
+        let (client, mut to_core_rx) = PaladinClient::new_test("handle-event-transition");
+
+        let contract_address = ScAddress::Contract(ContractId(Hash([0x11; 32])));
+        let contract_address_strkey = contract_strkey(&contract_address).unwrap();
+        let contract_id_base64 = BASE64.encode(contract_address.to_xdr(Limits::none()).unwrap());
+
+        let genesis_val = genesis_instance_val([0x22; 32], &[[1u8; 32]], b"passphrase").unwrap();
+        let prior_entry = sente_host::SenteEntry {
+            contract_id: contract_id_base64,
+            key_xdr: instance_key_xdr_base64(),
+            val_xdr: BASE64.encode(genesis_val.to_xdr(Limits::none()).unwrap()),
+            durability: sente_host::EntryDurability::Persistent,
+            seq: 0,
+        };
+        let prior_entry_json = serde_json::to_string(&prior_entry).unwrap();
+        let fake_core_client = client.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = to_core_rx.recv().await {
+                let Some(header) = msg.header else { continue };
+                if let Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) =
+                    msg.request_from_domain
+                {
+                    fake_core_client.resolve_test(
+                        &header.message_id,
+                        Ok(pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
+                            pb::FindAvailableStatesResponse {
+                                states: vec![pb::StoredState {
+                                    id: "prior-0".to_string(),
+                                    schema_id: "SenteEntry".to_string(),
+                                    created_at: 0,
+                                    data_json: prior_entry_json.clone(),
+                                    locks: vec![],
+                                }],
+                            },
+                        )),
+                    );
+                }
+            }
+        });
+
+        let domain = SenteDomain::new(client);
+        domain
+            .init_domain(pb::InitDomainRequest {
+                abi_state_schemas: vec![pb::StateSchema {
+                    id: "SenteEntry".to_string(),
+                    signature: "SenteEntry".to_string(),
+                }],
+            })
+            .await
+            .unwrap();
+
+        let tx_id = [0x88u8; 32];
+        let new_root = [9u8; 32];
+        let req = pb::HandleEventBatchRequest {
+            state_query_context: "ctx-1".to_string(),
+            batch_id: "batch-2".to_string(),
+            contract_info: Some(pb::ContractInfo {
+                contract_address: contract_address_strkey,
+                contract_config_json: "{}".to_string(),
+            }),
+            events: vec![pb::OnChainEvent {
+                location: Some(pb::OnChainEventLocation {
+                    transaction_hash: "0xdef".to_string(),
+                    block_number: 2,
+                    transaction_index: 0,
+                    log_index: 0,
+                }),
+                signature: hex::encode(stellar_event_selector("transition")),
+                solidity_signature: String::new(),
+                data_json: transition_event_json(tx_id, [0u8; 32], new_root),
+            }],
+            chain_events: vec![],
+        };
+
+        let response = domain.handle_event_batch(req).await.unwrap();
+        assert_eq!(response.spent_states.len(), 1);
+        assert_eq!(response.spent_states[0].id, "prior-0");
+        assert_eq!(response.new_states.len(), 1);
+        assert_eq!(response.transactions_complete.len(), 1);
+        assert_eq!(
+            response.transactions_complete[0].transaction_id,
+            paladin_transaction_id(tx_id)
+        );
+
+        let entry: sente_host::SenteEntry =
+            serde_json::from_str(&response.new_states[0].state_data_json).unwrap();
+        assert_eq!(entry.seq, 1);
+        assert_eq!(decode_root(&entry.val().unwrap()).unwrap(), new_root);
     }
 }

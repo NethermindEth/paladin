@@ -65,8 +65,12 @@ impl Contract {
             .deploy_v2(wasm_hash, ());
 
         let initialize = Symbol::new(&env, "initialize");
-        let init_args: Vec<Val> =
-            soroban_sdk::vec![&env, members.into_val(&env), config.into_val(&env),];
+        let init_args: Vec<Val> = soroban_sdk::vec![
+            &env,
+            members.into_val(&env),
+            config.into_val(&env),
+            tx_id.into_val(&env),
+        ];
         let _: Val = env.invoke_contract(&sente_address, &initialize, init_args);
 
         let register = Symbol::new(&env, "register");

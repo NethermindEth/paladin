@@ -44,7 +44,13 @@ fn deploy_group_deploys_initializes_and_registers() {
 
     // `env.events().all()` only retains events from the *most recent* top-level invocation
     // (`contracts/factory`'s own test comment) - assert this immediately, before the
-    // confirmation call below starts a new one.
+    // confirmation call below starts a new one. `initialize` publishes `Genesis` before
+    // `deploy_group` calls `register`, so it appears first.
+    let expected_genesis = sente::Genesis {
+        tx_id: tx_id.clone(),
+        members: members.clone(),
+        network_passphrase: config.clone(),
+    };
     let expected_registration = factory::Registration {
         tx_id,
         instance: sente_address.clone(),
@@ -52,7 +58,10 @@ fn deploy_group_deploys_initializes_and_registers() {
     };
     assert_eq!(
         env.events().all(),
-        std::vec![expected_registration.to_xdr(&env, &factory_contract_id)]
+        std::vec![
+            expected_genesis.to_xdr(&env, &sente_address),
+            expected_registration.to_xdr(&env, &factory_contract_id),
+        ]
     );
 
     // Confirms the deployed address is a real, initialized SentePrivacyGroup (not just some

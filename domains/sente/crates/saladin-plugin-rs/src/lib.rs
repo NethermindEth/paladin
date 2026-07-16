@@ -188,6 +188,13 @@ pub trait DomainHandler: Send + Sync + 'static {
     ) -> Result<pb::PrepareTransactionResponse, String> {
         Err("prepare_transaction not implemented".to_string())
     }
+
+    async fn handle_event_batch(
+        &self,
+        _req: pb::HandleEventBatchRequest,
+    ) -> Result<pb::HandleEventBatchResponse, String> {
+        Err("handle_event_batch not implemented".to_string())
+    }
 }
 
 /// Parses the `grpc_target` string Paladin's loader passes to `Run` - `"unix:<path>"` for a Unix
@@ -366,12 +373,13 @@ where
 /// `response_from_domain` oneof variant. `ConfigureDomain`/`InitDomain` (Phase 0),
 /// `InitContract`/`InitTransaction`/`AssembleTransaction`/`EndorseTransaction`/
 /// `PrepareTransaction` (Phase 2/S2 - the chain needed for one private invoke to go from
-/// submitted to endorsed and prepared), and `InitDeploy`/`PrepareDeploy` (Phase 3/S3 - genesis: a
+/// submitted to endorsed and prepared), `InitDeploy`/`PrepareDeploy` (Phase 3/S3 - genesis: a
 /// new privacy group's on-chain deploy, declarative verifier resolution the same
 /// `required_verifiers`/`resolved_verifiers` shape `InitTransaction`/`AssembleTransaction` already
-/// use) are wired - every other request type errors cleanly rather than panicking, so a plugin
-/// fails loudly (and correctly, via `ERROR_RESPONSE`) if core ever asks it to do more than it's
-/// built for yet.
+/// use), and `HandleEventBatch` (Phase 3/S3 - Go-side integration: turning a confirmed on-chain
+/// `genesis`/`transition` event back into Paladin states and transaction completions) are wired -
+/// every other request type errors cleanly rather than panicking, so a plugin fails loudly (and
+/// correctly, via `ERROR_RESPONSE`) if core ever asks it to do more than it's built for yet.
 async fn dispatch(
     handler: Arc<dyn DomainHandler>,
     request: Option<pb::domain_message::RequestToDomain>,
@@ -414,6 +422,10 @@ async fn dispatch(
             .prepare_transaction(req)
             .await
             .map(|res| Some(ResponseFromDomain::PrepareTransactionRes(res))),
+        Some(RequestToDomain::HandleEventBatch(req)) => handler
+            .handle_event_batch(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::HandleEventBatchRes(res))),
         Some(other) => Err(format!("unhandled request_to_domain variant: {other:?}")),
         None => Err("request_to_domain not set".to_string()),
     }

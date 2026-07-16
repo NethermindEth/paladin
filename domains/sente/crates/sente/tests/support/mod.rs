@@ -30,9 +30,17 @@ fn run_step(mode: &str, request_bytes: &[u8]) -> Vec<u8> {
         .expect("stdout must be valid base64")
 }
 
+/// Real Paladin `transaction_id`s are "a 32 byte 0x prefixed hex string" (`to_domain.proto`), not
+/// an arbitrary label - callers here still pass a readable label (`"two-node-invoke-tx"`), hashed
+/// into that shape so every test call site doesn't need to hand-construct valid hex.
+fn hex_transaction_id(label: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("0x{}", hex::encode(Sha256::digest(label.as_bytes())))
+}
+
 pub fn fixed_transaction(transaction_id: &str) -> pb::TransactionSpecification {
     pb::TransactionSpecification {
-        transaction_id: transaction_id.to_string(),
+        transaction_id: hex_transaction_id(transaction_id),
         from: "sender@node1".to_string(),
         contract_info: Some(pb::ContractInfo {
             contract_address: sente::fixture::contract_address(),

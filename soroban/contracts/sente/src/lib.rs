@@ -54,16 +54,44 @@ use soroban_sdk::{
 /// A **tuple** struct, not a named-field one - same reasoning as `snoto::UnlockPayload`: XDR
 /// encoding of a tuple struct is a plain positional `ScVal::Vec`, trivial to reproduce from any
 /// off-chain language computing the same digest, unlike a named struct's by-field-name sort order.
+/// `tx_id` is folded into the signed payload (not just the event) so a signature can't be replayed
+/// against a transition claiming a different Paladin transaction id.
 #[contracttype]
-pub struct TransitionPayload(pub BytesN<32>, pub BytesN<32>, pub Vec<AtomOperation>);
+pub struct TransitionPayload(
+    pub BytesN<32>, /* tx_id */
+    pub BytesN<32>, /* old_root */
+    pub BytesN<32>, /* new_root */
+    pub Vec<AtomOperation>,
+);
 
+/// `tx_id` (also `Genesis::tx_id` below) is what lets the Go-side event indexer correlate this
+/// on-chain confirmation back to the private Paladin transaction that produced it (chapter 14
+/// §14.3's Go-integration work) - the same `#[topic] tx_id` convention `factory::Registration`
+/// already established.
 #[contractevent(topics = ["transition"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Transition {
     #[topic]
+    pub tx_id: BytesN<32>,
+    #[topic]
     pub old_root: BytesN<32>,
     pub new_root: BytesN<32>,
     pub external_call_count: u32,
+}
+
+/// Published once, by `initialize` - the only event a group's genesis produces (`initialize`
+/// itself has no on-chain concept of "config" beyond its own arguments, unlike `factory::register`
+/// which carries an opaque `config` blob). Lets the Go-side event indexer construct the group's
+/// genesis `SenteEntry` (root = `[0; 32]`) directly from the deploy transaction's own event batch,
+/// without needing a separate out-of-band state-population mechanism - see
+/// `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 S3's Go-integration section.
+#[contractevent(topics = ["genesis"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Genesis {
+    #[topic]
+    pub tx_id: BytesN<32>,
+    pub members: Vec<BytesN<32>>,
+    pub network_passphrase: Bytes,
 }
 
 #[contract]
@@ -74,7 +102,10 @@ impl Contract {
     /// Membership fixed at genesis, "as Pente v1" - there is no add/remove-member entry point.
     /// `network_passphrase` is needed on-chain to recompute `SALADIN_TYPED_DATA_V0` digests, the
     /// same `config`-as-raw-passphrase-bytes convention `snoto::initialize` already established.
-    pub fn initialize(env: Env, members: Vec<BytesN<32>>, network_passphrase: Bytes) {
+    /// `tx_id` is the deploying Paladin transaction's id, passed straight through from
+    /// `sente-factory::deploy_group` - carried only to publish on `Genesis` (see that event's own
+    /// doc comment), not stored.
+    pub fn initialize(env: Env, members: Vec<BytesN<32>>, network_passphrase: Bytes, tx_id: BytesN<32>) {
         if storage::is_initialized(&env) {
             panic!("sente: already initialized");
         }
@@ -82,6 +113,12 @@ impl Contract {
             panic!("sente: a privacy group needs at least one member");
         }
         storage::init(&env, &members, &network_passphrase);
+        Genesis {
+            tx_id,
+            members,
+            network_passphrase,
+        }
+        .publish(&env);
     }
 
     /// The current hash-chain head - what an assembling node must treat as `old_root` when
@@ -101,6 +138,7 @@ impl Contract {
     /// already relies on.
     pub fn transition(
         env: Env,
+        tx_id: BytesN<32>,
         new_root: BytesN<32>,
         external_calls: Vec<AtomOperation>,
         signatures: Vec<(BytesN<32>, BytesN<64>)>,
@@ -111,7 +149,12 @@ impl Contract {
         }
 
         let old_root = storage::root(&env);
-        let payload = TransitionPayload(old_root.clone(), new_root.clone(), external_calls.clone());
+        let payload = TransitionPayload(
+            tx_id.clone(),
+            old_root.clone(),
+            new_root.clone(),
+            external_calls.clone(),
+        );
         let payload_xdr = payload.to_xdr(&env);
         let passphrase = storage::network_passphrase(&env);
         let contract_id = current_contract_id(&env);
@@ -144,6 +187,7 @@ impl Contract {
         }
 
         Transition {
+            tx_id,
             old_root,
             new_root,
             external_call_count: external_calls.len(),
