@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/saladin-plugin-rs", "crates/sente"]
+members = ["crates/saladin-plugin-rs", "crates/sente", "crates/sente-host"]
 
 # Deliberately a standalone workspace, not a member of ../../soroban/'s own workspace: that
 # workspace's rust-toolchain.toml pins the wasm32v1-none target for its contract crates, while

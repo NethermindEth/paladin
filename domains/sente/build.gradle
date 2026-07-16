@@ -44,10 +44,12 @@ if (Os.isFamily(Os.FAMILY_WINDOWS)) {
 }
 def outputLib = file("target/release/${libName}")
 
-// Phase 0 (chapter 14 §14.3's M0 spike): builds only the hello-world `sente` cdylib, proving the
-// Rust-cdylib-via-JNA loading path before any soroban-env-host embedding work starts. Cargo builds
-// the whole workspace's dependency graph regardless of `-p`, so this doesn't need per-crate tasks
-// yet - revisit once later phases add more crates with meaningfully different build needs.
+// Phase 0 (chapter 14 §14.3's M0 spike) builds only the hello-world `sente` cdylib, proving the
+// Rust-cdylib-via-JNA loading path. Phase 1 (soroban-env-host/soroban-simulation embedding,
+// crates/sente-host) has no cdylib of its own yet - its determinism proof is exercised entirely by
+// `cargo test --workspace` below, not this task. Cargo builds the whole workspace's dependency
+// graph regardless of `-p`, so this doesn't need per-crate tasks yet - revisit once later phases
+// add more crates with meaningfully different build needs.
 task cargoBuild(type: Exec) {
     executable 'cargo'
     args 'build', '--release', '--locked', '-p', 'sente'
