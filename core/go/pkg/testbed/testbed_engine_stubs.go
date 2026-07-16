@@ -23,10 +23,14 @@ import (
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/query"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 )
@@ -100,6 +104,79 @@ func (tb *testbed) execBaseLedgerTransaction(ctx context.Context, signer string,
 		ABI: abi.ABI{txInstruction.FunctionABI},
 	}
 	return tb.ExecTransactionSync(ctx, tx)
+}
+
+// execChainInvokeTransaction is the chain-neutral counterpart to execBaseLedgerDeployTransaction/
+// execBaseLedgerTransaction, for domains (e.g. Sente/Soroban) whose PrepareDeploy/PrepareTransaction
+// return a PreparedChainTransaction instead of the legacy EVM-only Eth*Transaction shapes.
+// ExecTransactionSync can't be reused here: it goes through TxManager().SendTransactions, which
+// hard-codes ECDSA_SECP256K1/ETH_ADDRESS key resolution and ABI-encodes Data unconditionally - not
+// applicable to a raw Soroban invoke. Instead this mirrors `buildChainTxSubmission`
+// (core/go/internal/sequencer/coordinator/transaction/dispatch.go), the same real engine path
+// TestStellarComponentTest already proves end-to-end, submitting directly through
+// PublicTxManager() (already chain-neutral, already supports XDR_INVOKE_CONTRACT_ARGS) rather than
+// through TxManager()/publictxmgr's EVM-only front door.
+func (tb *testbed) execChainInvokeTransaction(ctx context.Context, signer string, chainTx *prototk.PreparedChainTransaction) (tx *pldapi.PublicTx, err error) {
+	soroban := chainTx.GetSoroban()
+	if soroban == nil {
+		return nil, fmt.Errorf("only Soroban chain-neutral transactions are supported")
+	}
+
+	resolvedKey, err := tb.ResolveKey(ctx, signer, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve signer for chain transaction: %s", err)
+	}
+	resolvedChainAddr, err := pldtypes.NewStellarAccountAddress(resolvedKey.Verifier.Verifier)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := baseledgerstellar.BuildInvokeHostFunctionXDR(soroban.ContractId, soroban.FunctionName, soroban.ArgsXdr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode host function for chain transaction: %s", err)
+	}
+
+	submission := &components.PublicTxSubmission{
+		Bindings: []*components.PaladinTXReference{{
+			TransactionID:   uuid.New(),
+			TransactionType: pldapi.TransactionTypePublic.Enum(),
+		}},
+		PublicTxInput: pldapi.PublicTxInput{
+			From:        &resolvedChainAddr,
+			Data:        pldtypes.HexBytes(data),
+			PayloadKind: pldapi.PublicTxPayloadKindXDRInvokeContractArgs.Enum(),
+		},
+	}
+	submitted, err := tb.c.PublicTxManager().SingleTransactionSubmit(ctx, submission)
+	if err != nil {
+		return nil, err
+	}
+
+	// SingleTransactionSubmit only validates+writes the transaction - unlike ExecTransactionSync's
+	// TxManager()-backed path, there's no txmgr transaction/receipt record to poll here, so poll
+	// PublicTxManager()'s own record by localId instead (the same lookup GetPublicTransactionForHash
+	// itself uses internally).
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		results, err := tb.c.PublicTxManager().QueryPublicTxWithBindings(ctx, tb.c.Persistence().NOTX(),
+			query.NewQueryBuilder().Equal("localId", *submitted.LocalID).Query())
+		if err != nil {
+			return nil, fmt.Errorf("error checking for chain transaction completion: %s", err)
+		}
+		if len(results) == 0 {
+			continue
+		}
+		found := results[0].PublicTx
+		if found.CompletedAt == nil {
+			continue
+		}
+		if found.Success == nil || !*found.Success {
+			return nil, fmt.Errorf("chain transaction failed: %s", found.RevertData)
+		}
+		return found, nil
+	}
 }
 
 func (tb *testbed) ExecBaseLedgerCall(ctx context.Context, result any, tx *pldapi.TransactionCall) error {

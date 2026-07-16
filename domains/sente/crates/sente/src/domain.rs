@@ -453,6 +453,7 @@ pub struct SenteDomain {
     schema_id: Mutex<Option<String>>,
     config: Mutex<Option<SenteConfig>>,
     contracts: Mutex<HashMap<String, GroupState>>,
+    fixed_signing_identity: Mutex<String>,
 }
 
 impl SenteDomain {
@@ -462,6 +463,7 @@ impl SenteDomain {
             schema_id: Mutex::new(None),
             config: Mutex::new(None),
             contracts: Mutex::new(HashMap::new()),
+            fixed_signing_identity: Mutex::new(String::new()),
         }
     }
 
@@ -532,6 +534,7 @@ impl DomainHandler for SenteDomain {
                 .map_err(|e| format!("invalid Sente domain config_json: {e}"))?;
             *self.config.lock().unwrap() = Some(config);
         }
+        *self.fixed_signing_identity.lock().unwrap() = req.fixed_signing_identity.clone();
         Ok(pb::ConfigureDomainResponse {
             domain_config: Some(pb::DomainConfig {
                 custom_hash_function: false,
@@ -672,8 +675,28 @@ impl DomainHandler for SenteDomain {
             .to_xdr(Limits::none())
             .map_err(|e| format!("failed to XDR-encode deploy args: {e}"))?;
 
+        // Prefer the administrator-configured fixed signing identity
+        // (`ConfigureDomainRequest.fixed_signing_identity`) if set, else fall back to a one-time
+        // deploy key scoped to this transaction - the exact same convention
+        // `domains/noto/internal/noto/deploy_stellar.go`'s `stellarPrepareDeploy` already
+        // establishes (`n.fixedSigningIdentity`/`n.name+".deploy."+uuid`). Required either way:
+        // `PrivateContractDeploy.Signer` stays empty unless the domain sets
+        // `PrepareDeployResponse.signer` explicitly - an empty signer fails key resolution at
+        // submission time, it isn't a usable "let the engine pick" default. A one-time random
+        // identity resolves to a brand new, unfunded Stellar account, which itself needs to be a
+        // pre-existing/funded account for `InvokeHostFunction`'s own SourceAccount to submit
+        // successfully (channel-account pooling only funds the outer transaction envelope, not the
+        // operation's own source) - so real deployments need a funded `fixedSigningIdentity`
+        // configured, same as Noto.
+        let fixed_signing_identity = self.fixed_signing_identity.lock().unwrap().clone();
+        let signer = if fixed_signing_identity.is_empty() {
+            format!("sente.deploy.{}", transaction.transaction_id)
+        } else {
+            fixed_signing_identity
+        };
+
         Ok(pb::PrepareDeployResponse {
-            signer: None,
+            signer: Some(signer),
             transaction: None,
             deploy: None,
             chain_transaction: Some(pb::PreparedChainTransaction {

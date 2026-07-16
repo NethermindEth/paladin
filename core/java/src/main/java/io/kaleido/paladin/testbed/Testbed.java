@@ -91,8 +91,11 @@
              String domain,
              @JsonProperty
              String from,
+             // A plain Object, not JsonHex.Address: an EVM contract address (existing callers,
+             // unchanged) or a Stellar strkey String (chapter 14 §14.3's Sente integration) - same
+             // reasoning as ConfigDomain.registryAddress above.
              @JsonProperty
-             JsonHex.Address to,
+             Object to,
              @JsonProperty
              Map<String, Object> data,
              @JsonProperty
@@ -125,14 +128,29 @@
      ) {
      }
  
+     // BaseLedger selects which chain kind Testbed's own base-ledger config block targets - EVM
+     // (the original, still-default behavior) or Stellar (chapter 14 §14.3's Sente integration,
+     // never previously exercised through this class - see baseConfig()'s own doc comment).
+     public enum BaseLedger {
+         EVM,
+         STELLAR,
+     }
+
+     private final BaseLedger baseLedger;
+
      public Testbed(Setup testbedSetup, ConfigDomain... domains) throws Exception {
+         this(testbedSetup, BaseLedger.EVM, domains);
+     }
+
+     public Testbed(Setup testbedSetup, BaseLedger baseLedger, ConfigDomain... domains) throws Exception {
          this.testbedSetup = testbedSetup;
+         this.baseLedger = baseLedger;
          this.configuredDomains = domains;
          // Assign ourselves a free port
          try (ServerSocket s = new ServerSocket(0);) {
              availableRPCPort = s.getLocalPort();
          }
- 
+
          // Build the config
          ObjectMapper objectMapper = new ObjectMapper(YAMLFactory.builder().build());
          var baseConfig = baseConfig();
@@ -151,16 +169,33 @@
              throw e;
          }
      }
- 
+
      public record ConfigDomain(
              String name,
+             // A plain Object, not JsonHex.Address: an EVM registry address (existing callers,
+             // unchanged - Jackson serializes a JsonHex.Address exactly as before via its own
+             // serializer) or a Stellar strkey String (chapter 14 §14.3's Sente integration -
+             // JsonHex.Address's 20-byte-hex constructor cannot hold one).
              @JsonProperty
-             JsonHex.Address registryAddress,
+             Object registryAddress,
              @JsonProperty
              ConfigPlugin plugin,
              @JsonProperty
-             Map<String, Object> config
+             Map<String, Object> config,
+             // Matches pldconf.DomainConfig.FixedSigningIdentity - which base-ledger identity to
+             // submit every public/chain-neutral transaction for this domain as, rather than a
+             // fresh one-time key per transaction. Needed on Stellar (chapter 14 §14.3's Sente
+             // integration): a one-time key resolves to a brand new, unfunded account, which a
+             // chain-neutral InvokeHostFunction's own SourceAccount needs to be pre-existing/funded
+             // for - channel-account pooling only funds the outer transaction envelope, not the
+             // operation's own source.
+             @JsonProperty
+             @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+             String fixedSigningIdentity
      ) {
+         public ConfigDomain(String name, Object registryAddress, ConfigPlugin plugin, Map<String, Object> config) {
+             this(name, registryAddress, plugin, config, "");
+         }
      }
  
      public record ConfigPlugin(
@@ -184,19 +219,7 @@
                      autoMigrate:   true
                      migrationsDir: %s
                      debugQueries:  false
-                 wallets:
-                 - name: wallet1
-                   keySelector: .*
-                   signer:
-                     keyDerivation:
-                       type: "bip32"
-                     keyStore:
-                       type: "static"
-                       static:
-                         keys:
-                           seed:
-                             encoding: hex
-                             inline: '%s'                    
+                 %s
                  rpcServer:
                    http:
                      port: %s
@@ -208,11 +231,7 @@
                      shutdownTimeout: 0s
                  blockIndexer:
                    fromBlock: latest
-                 blockchain:
-                    http:
-                      url: http://localhost:8545
-                    ws:
-                      url: ws://localhost:8546
+                 %s
                  loader:
                    debug: true
                  log:
@@ -222,10 +241,101 @@
                      filename: %s
                  """.formatted(
                  new File(testbedSetup.dbMigrationsDir).getAbsolutePath(),
-                 JsonHex.randomBytes32(),
+                 walletsYaml(),
                  availableRPCPort,
+                 baseLedgerYaml(),
                  new File(testbedSetup.logFile).getAbsolutePath()
          );
+     }
+
+     private String walletsYaml() {
+         return switch (baseLedger) {
+             case EVM -> """
+                     wallets:
+                     - name: wallet1
+                       keySelector: .*
+                       signer:
+                         keyDerivation:
+                           type: "bip32"
+                         keyStore:
+                           type: "static"
+                           static:
+                             keys:
+                               seed:
+                                 encoding: hex
+                                 inline: '%s'
+                     """.formatted(JsonHex.randomBytes32());
+             // Fixed seeds, matching core/go/noderuntests/componenttest/config/stellar.node1.config.yaml
+             // exactly (the proven precedent this mirrors) - bip44HardenedSegments: 5 on both wallets
+             // is required for SLIP-10 ed25519 derivation (every Stellar/ed25519 identity resolved
+             // here), unlike secp256k1/EVM's default of 1. "root" derives the standalone network's
+             // genesis/root account (seed = SHA-256(networkPassphrase)), which funds channel accounts
+             // since there's no friendbot in this dev/test setup (Horizon is never started).
+             case STELLAR -> """
+                     wallets:
+                       - name: root
+                         keySelector: "^root$"
+                         signer:
+                           keyDerivation:
+                             type: "bip32"
+                             bip44HardenedSegments: 5
+                           keyStore:
+                             type: "static"
+                             static:
+                               keys:
+                                 seed:
+                                   encoding: hex
+                                   inline: baefd734b8d3e48472cff83912375fedbc7573701912fe308af730180f97d74a
+                       - name: wallet1
+                         keySelector: .*
+                         signer:
+                           keyDerivation:
+                             type: "bip32"
+                             bip44HardenedSegments: 5
+                           keyStore:
+                             type: "static"
+                             static:
+                               keys:
+                                 seed:
+                                   encoding: hex
+                                   inline: cdd8dbc37a9fa235a3c56367bb029c27a1bdf49b8090070d1b22993f343e098d
+                     """;
+         };
+     }
+
+     // Stellar quickstart --local network defaults (testinfra/docker-compose-test.yml's
+     // stellar_quickstart service) - mirrors core/go/noderuntests/componenttest/config/
+     // stellar.node1.config.yaml's baseLedger block verbatim, the proven precedent this reuses
+     // rather than inventing a second Stellar test config from scratch.
+     private String baseLedgerYaml() {
+         return switch (baseLedger) {
+             case EVM -> """
+                     blockchain:
+                        http:
+                          url: http://localhost:8545
+                        ws:
+                          url: ws://localhost:8546
+                     """;
+             case STELLAR -> """
+                     baseLedger:
+                       type: stellar
+                       stellar:
+                         url: http://localhost:8000/soroban/rpc
+                         networkPassphrase: "Standalone Network ; February 2017"
+                         ingestor:
+                           pollInterval: "1s"
+                           insertDBBatchSize: 100
+                         channelAccounts:
+                           poolSize: 8
+                           funder: root
+                           startingBalance: "5"
+                     publicTxManager:
+                       gasPrice:
+                         fixedGasPrice:
+                           maxFeePerGas: "0x0"
+                           maxPriorityFeePerGas: "0x0"
+                     """;
+         };
      }
  
      private void start() throws Exception {

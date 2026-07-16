@@ -65,8 +65,14 @@ func (af *BalanceManagerWithInMemoryTracking) GetAddressBalance(ctx context.Cont
 			log.L(ctx).Errorf("Failed retrieving balance for address %s from connector due to: %+v", address, err)
 			return nil, err
 		}
-		addressBalance = *accountInfo.Balance.Int()
-		af.balanceCache.Set(address, accountInfo.Balance.Int())
+		// accountInfo.Balance is deliberately left nil by the Stellar baseledger.Client
+		// (chapter 12 §12.3 - balance tracking/affordability checking isn't implemented for
+		// Stellar yet) - treat that the same as "unknown, don't throttle on balance" rather than
+		// panicking on a nil dereference.
+		if accountInfo.Balance != nil {
+			addressBalance = *accountInfo.Balance.Int()
+			af.balanceCache.Set(address, accountInfo.Balance.Int())
+		}
 		// set the flag to false so that the following requests of this address
 		// uses cache if there is no new balance change
 		af.retrieveAddressBalanceMap[address] = false

@@ -52,6 +52,11 @@ func (tb *testbed) initRPC() {
 		// - PREPARE_DEPLOY
 		Add("testbed_deploy", tb.rpcTestbedDeploy()).
 
+		// testbed_deploy's chain-neutral counterpart, for domains (e.g. Sente/Soroban) whose
+		// PrepareDeploy returns a chain-neutral PreparedChainTransaction - returns the deployed
+		// contract's chain-neutral address (a Stellar strkey) instead of unwrapping to an EVM one.
+		Add("testbed_deployChainNeutral", tb.rpcTestbedDeployChainNeutral()).
+
 		// Performs a privacy preserving smart contract invoke.
 		// Selecting the private states required for the transaction,
 		// coordinating the required endorsements/signatures,
@@ -132,63 +137,91 @@ func (tb *testbed) resolveVerifiers(ctx context.Context, requiredVerifiers []*pr
 	return verifiers, nil
 }
 
+// deployPrivateContract is the domain-agnostic core of a testbed deploy: InitDeploy -> resolve
+// verifiers -> PrepareDeploy -> submit whichever of the (mutually exclusive) transaction shapes
+// the domain returned, waiting for the domain to index the resulting registration event. Shared by
+// rpcTestbedDeploy (EVM, unwraps to *pldtypes.EthAddress) and rpcTestbedDeployChainNeutral
+// (chain-neutral, e.g. Sente/Soroban) so neither duplicates this sequence.
+func (tb *testbed) deployPrivateContract(ctx context.Context, domainName, from string, constructorParams pldtypes.RawJSON) (components.DomainSmartContract, error) {
+	domain, err := tb.c.DomainManager().GetDomainByName(ctx, domainName)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := &components.PrivateContractDeploy{
+		ID:     uuid.New(),
+		Domain: domain.Name(),
+		From:   from,
+		Inputs: constructorParams,
+	}
+	err = domain.InitDeploy(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	if tx.Verifiers, err = tb.resolveVerifiers(ctx, tx.RequiredVerifiers); err != nil {
+		return nil, err
+	}
+
+	// Prepare the deployment transaction
+	err = domain.PrepareDeploy(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Rather than just inspecting the TX - we wait for the domain to index the event, such that
+	// we know it's in the map by the time we return.
+	return tb.c.DomainManager().ExecDeployAndWait(ctx, tx.ID, func() error {
+		// Do the deploy - we wait for the transaction here to cover revert failures
+		switch {
+		case tx.DeployTransaction != nil && tx.InvokeTransaction == nil && tx.ChainInvokeTransaction == nil:
+			_, err = tb.execBaseLedgerDeployTransaction(ctx, tx.Signer, tx.DeployTransaction)
+		case tx.InvokeTransaction != nil && tx.DeployTransaction == nil && tx.ChainInvokeTransaction == nil:
+			_, err = tb.execBaseLedgerTransaction(ctx, tx.Signer, tx.InvokeTransaction)
+		case tx.ChainInvokeTransaction != nil && tx.DeployTransaction == nil && tx.InvokeTransaction == nil:
+			_, err = tb.execChainInvokeTransaction(ctx, tx.Signer, tx.ChainInvokeTransaction)
+		default:
+			err = fmt.Errorf("must return exactly one of: a transaction to invoke, a transaction to deploy, or a chain-neutral transaction")
+		}
+		return err
+	})
+}
+
 func (tb *testbed) rpcTestbedDeploy() rpcserver.RPCHandler {
 	return rpcserver.RPCMethod3(func(ctx context.Context,
 		domainName string,
 		from string,
 		constructorParams pldtypes.RawJSON,
 	) (*pldtypes.EthAddress, error) {
-
-		domain, err := tb.c.DomainManager().GetDomainByName(ctx, domainName)
+		psc, err := tb.deployPrivateContract(ctx, domainName, from, constructorParams)
 		if err != nil {
 			return nil, err
 		}
-
-		tx := &components.PrivateContractDeploy{
-			ID:     uuid.New(),
-			Domain: domain.Name(),
-			From:   from,
-			Inputs: constructorParams,
-		}
-		err = domain.InitDeploy(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-
-		if tx.Verifiers, err = tb.resolveVerifiers(ctx, tx.RequiredVerifiers); err != nil {
-			return nil, err
-		}
-
-		// Prepare the deployment transaction
-		err = domain.PrepareDeploy(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-
-		// Rather than just inspecting the TX - we wait for the domain to index the event, such that
-		// we know it's in the map by the time we return.
-		psc, err := tb.c.DomainManager().ExecDeployAndWait(ctx, tx.ID, func() error {
-			// Do the deploy - we wait for the transaction here to cover revert failures
-			if tx.DeployTransaction != nil && tx.InvokeTransaction == nil {
-				_, err = tb.execBaseLedgerDeployTransaction(ctx, tx.Signer, tx.DeployTransaction)
-			} else if tx.InvokeTransaction != nil && tx.DeployTransaction == nil {
-				_, err = tb.execBaseLedgerTransaction(ctx, tx.Signer, tx.InvokeTransaction)
-			} else {
-				err = fmt.Errorf("must return a transaction to invoke, or a transaction to deploy")
-			}
-			return err
-		})
-		if err != nil {
-			return nil, err
-		}
-		addr := psc.Address()
 		// rpcTestbedDeploy's return type stays *pldtypes.EthAddress (this RPC method's own public
-		// signature, unchanged) - testbed is documented EVM-only tooling, so unwrap explicitly.
-		ethAddr, err := addr.EthAddress()
+		// signature, unchanged) - testbed_deploy is documented EVM-only tooling, so unwrap
+		// explicitly. Stellar/chain-neutral domains (e.g. Sente) use testbed_deployChainNeutral.
+		ethAddr, err := psc.Address().EthAddress()
 		if err != nil {
 			return nil, err
 		}
 		return ethAddr, nil
+	})
+}
+
+// rpcTestbedDeployChainNeutral is testbed_deploy's chain-neutral counterpart - the same deploy
+// sequence, but returning the deployed contract's chain-neutral address (a Stellar strkey for a
+// Soroban domain) rather than unwrapping to an EVM address.
+func (tb *testbed) rpcTestbedDeployChainNeutral() rpcserver.RPCHandler {
+	return rpcserver.RPCMethod3(func(ctx context.Context,
+		domainName string,
+		from string,
+		constructorParams pldtypes.RawJSON,
+	) (string, error) {
+		psc, err := tb.deployPrivateContract(ctx, domainName, from, constructorParams)
+		if err != nil {
+			return "", err
+		}
+		return psc.Address().String(), nil
 	})
 }
 
@@ -266,7 +299,16 @@ func (tb *testbed) resolveTXSigner(tx *testbedTransaction) error {
 			}
 		}
 	}
-	// If there isn't an ENDORSER_MUST_SUBMIT constraint, we just use a one-time key
+	// If there isn't an ENDORSER_MUST_SUBMIT constraint, prefer the domain's own configured
+	// FixedSigningIdentity (chapter 14 §14.3's Sente integration - a fresh one-time key resolves to
+	// a brand new, unfunded account, which a chain-neutral submission's own InvokeHostFunction
+	// SourceAccount genuinely needs to be pre-existing/funded for on Stellar - channel-account
+	// pooling only funds the outer transaction envelope, not the operation's own source; EVM has no
+	// equivalent requirement, so this is a no-op there), falling back to a one-time key only if the
+	// domain has none configured either.
+	if tx.ptx.Signer == "" {
+		tx.ptx.Signer = tx.psc.Domain().FixedSigningIdentity()
+	}
 	if tx.ptx.Signer == "" {
 		tx.ptx.Signer = fmt.Sprintf("testbed.onetime.%s", uuid.New())
 	}
@@ -381,6 +423,14 @@ func (tb *testbed) execPrivateTransaction(ctx context.Context, tx *testbedTransa
 		nextTX := mapDirectlyToInternalPrivateTX(nextContract, &tx.ptx.PreparedPrivateTransaction.TransactionBase, tx.ptx.PreparedPrivateTransaction.ABI[0], tx.ptx.Intent)
 		log.L(ctx).Infof("Testbed chaining prepared private transaction to=%s domain=%s/%s", nextTX.localTx.Transaction.To, nextContract.Domain().Name(), nextContract.Address())
 		return tb.execPrivateTransaction(ctx, nextTX)
+	} else if tx.ptx.PreparedChainTransaction != nil {
+		// Chain-neutral public transaction (e.g. Sente/Soroban) - PrepareTransaction returned
+		// PreparedChainTransaction instead of the legacy EVM-only PreparedPublicTransaction.
+		if tx.ptx.Intent == prototk.TransactionSpecification_CALL {
+			return fmt.Errorf("testbed does not support CALL intent for chain-neutral transactions")
+		}
+		_, err := tb.execChainInvokeTransaction(ctx, tx.ptx.Signer, tx.ptx.PreparedChainTransaction)
+		return err
 	} else {
 		// Public transaction
 		if tx.ptx.Intent == prototk.TransactionSpecification_CALL {
@@ -457,9 +507,16 @@ func (tb *testbed) mapTransaction(ctx context.Context, tx *testbedTransaction) (
 		preparedTransaction = tx.ptx.PreparedPrivateTransaction
 	}
 
-	encodedCall, err := preparedTransaction.ABI[0].EncodeCallDataJSONCtx(ctx, preparedTransaction.Data)
-	if err != nil {
-		return nil, err
+	// A chain-neutral prepare (e.g. Sente/Soroban's PreparedChainTransaction) has no ABI-encoded
+	// call to build - EncodedCall/PreparedTransaction are inherently EVM-shaped concepts with no
+	// chain-neutral equivalent yet, so both stay empty rather than panicking on a nil ABI.
+	var encodedCall pldtypes.HexBytes
+	if preparedTransaction != nil {
+		var err error
+		encodedCall, err = preparedTransaction.ABI[0].EncodeCallDataJSONCtx(ctx, preparedTransaction.Data)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	domainReceipt, _ := tx.psc.Domain().BuildDomainReceipt(ctx, nil, tx.ptx.ID, mapStatesForReceipt(tx))

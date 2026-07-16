@@ -314,9 +314,18 @@ func (ptm *pubTxManager) ValidateTransaction(ctx context.Context, dbTX persisten
 			}
 			return err
 		}
-		factoredGasLimit := pldtypes.HexUint64(float64(*resourceEstimate.Gas) * ptm.gasEstimateFactor)
-		txi.Gas = &factoredGasLimit
-		log.L(ctx).Tracef("HandleNewTx <%s> using the estimated gas limit %d multiplied by the gas estimate factor %.f (=%s) for transaction: %+v", txType, *resourceEstimate.Gas, ptm.gasEstimateFactor, factoredGasLimit, txi)
+		// A chain-neutral (e.g. Soroban) resource estimate has no EVM-style Gas figure -
+		// resourceEstimate.Gas is nil, not zero, for a Stellar EstimateResources call
+		// (baseledger.ResourceEstimate's Gas/Soroban fields are chain-kind-exclusive). Nothing to
+		// set here in that case: the real resource footprint used at submission time comes from a
+		// fresh EstimateResources call inside buildStellarTx's own caller, not from this validation
+		// step - unconditionally dereferencing Gas here was a real EVM-only assumption baked into
+		// otherwise chain-neutral validation code.
+		if resourceEstimate.Gas != nil {
+			factoredGasLimit := pldtypes.HexUint64(float64(*resourceEstimate.Gas) * ptm.gasEstimateFactor)
+			txi.Gas = &factoredGasLimit
+			log.L(ctx).Tracef("HandleNewTx <%s> using the estimated gas limit %d multiplied by the gas estimate factor %.f (=%s) for transaction: %+v", txType, *resourceEstimate.Gas, ptm.gasEstimateFactor, factoredGasLimit, txi)
+		}
 	} else {
 		log.L(ctx).Tracef("HandleNewTx <%s> using the provided gas limit %s for transaction: %+v", txType, txi.Gas, txi)
 	}
@@ -341,10 +350,19 @@ func (ptm *pubTxManager) WriteNewTransactions(ctx context.Context, dbTX persiste
 
 	persistedTransactions := make([]*DBPublicTxn, len(transactions))
 	for i, txi := range transactions {
+		// txi.Gas stays nil for a chain-neutral (e.g. Soroban) submission - ValidateTransaction
+		// only sets it from an EVM-shaped resourceEstimate.Gas, never from a Soroban resource
+		// estimate (see ValidateTransaction's own comment). 0 is the correct persisted value there,
+		// not a real gas limit - Soroban's own resource footprint is carried in the transaction's
+		// XDR itself, not this column.
+		var gas uint64
+		if txi.Gas != nil {
+			gas = txi.Gas.Uint64()
+		}
 		persistedTransactions[i] = &DBPublicTxn{
 			From:            *txi.From, // safe because validated in ValidateTransaction
 			To:              txi.To,
-			Gas:             txi.Gas.Uint64(),
+			Gas:             gas,
 			Value:           txi.Value,
 			Data:            txi.Data,
 			PayloadKind:     txi.PayloadKind,
@@ -406,11 +424,17 @@ func (ptm *pubTxManager) WriteReceivedPublicTransactionSubmissions(ctx context.C
 
 	persistedTransactions := make([]*DBPublicTxn, 0, len(txns))
 	for _, tx := range txns {
+		// See ValidateTransaction's own comment: a chain-neutral (e.g. Soroban) submission has no
+		// EVM-style Gas figure, so tx.Gas can genuinely be nil here too.
+		var gas uint64
+		if tx.Gas != nil {
+			gas = tx.Gas.Uint64()
+		}
 		persistedTransactions = append(persistedTransactions, &DBPublicTxn{
 			From:            tx.From,
 			To:              tx.To,
 			Nonce:           (*uint64)(tx.Nonce),
-			Gas:             tx.Gas.Uint64(),
+			Gas:             gas,
 			Value:           tx.Value,
 			Data:            tx.Data,
 			PayloadKind:     tx.PayloadKind,
@@ -821,13 +845,21 @@ func (ptm *pubTxManager) UpdateTransaction(ctx context.Context, id uuid.UUID, pu
 			}
 			return err
 		}
-		tx.Gas = confutil.P(pldtypes.HexUint64(*resourceEstimate.Gas))
+		// See ValidateTransaction's own comment: a chain-neutral (e.g. Soroban) resource estimate
+		// has no EVM-style Gas figure - leave tx.Gas nil rather than dereferencing resourceEstimate.Gas.
+		if resourceEstimate.Gas != nil {
+			tx.Gas = confutil.P(pldtypes.HexUint64(*resourceEstimate.Gas))
+		}
 	}
 
+	var gas uint64
+	if tx.Gas != nil {
+		gas = tx.Gas.Uint64()
+	}
 	newPtx := &DBPublicTxn{
 		From:  *from,
 		To:    tx.To,
-		Gas:   tx.Gas.Uint64(),
+		Gas:   gas,
 		Value: tx.Value,
 		Data:  publicTxData,
 		// UpdateTransaction only changes gas/data of an already-existing pending tx, not its
