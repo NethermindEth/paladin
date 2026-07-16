@@ -1,7 +1,7 @@
 //! Shared helpers for `two_node_invoke.rs`/`divergence.rs`: build fixed `TransactionSpecification`/
 //! `AssembleTransactionRequest`/`EndorseTransactionRequest` values, and drive the `sente_step`
 //! harness binary (each call a genuinely separate OS process - see that binary's own doc comment)
-//! for the `assemble`/`endorse` steps of S2's fixed test scenario.
+//! for the `assemble`/`endorse` steps of S3's real (root-only) group transition.
 
 use assert_cmd::Command;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -34,6 +34,10 @@ pub fn fixed_transaction(transaction_id: &str) -> pb::TransactionSpecification {
     pb::TransactionSpecification {
         transaction_id: transaction_id.to_string(),
         from: "sender@node1".to_string(),
+        contract_info: Some(pb::ContractInfo {
+            contract_address: sente::fixture::contract_address(),
+            contract_config_json: "{}".to_string(),
+        }),
         base_block: 100,
         base_block_timestamp: 1_700_000_000,
         ..Default::default()
@@ -74,7 +78,15 @@ pub fn endorse_request(
         }),
         transaction: Some(fixed_transaction(transaction_id)),
         resolved_verifiers: vec![],
-        inputs: vec![],
+        // Mirrors what a real Paladin engine passes along: the exact prior state data
+        // corresponding to `assembled.input_states`' ids (here, the same genesis fixture
+        // `sente_step`'s own fake `find_available_states` served node A).
+        inputs: vec![pb::EndorsableState {
+            id: sente::fixture::GENESIS_STATE_ID.to_string(),
+            schema_id: "SenteEntry".to_string(),
+            state_data_json: serde_json::to_string(&sente::fixture::genesis_entry())
+                .expect("fixture genesis entry must serialize"),
+        }],
         reads: vec![],
         outputs: assembled
             .output_states

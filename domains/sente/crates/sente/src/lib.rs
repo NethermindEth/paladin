@@ -12,6 +12,7 @@ use saladin_plugin_rs::DomainHandler;
 use tokio::sync::oneshot;
 
 pub mod domain;
+pub mod fixture;
 pub mod info;
 
 /// Keyed by plugin_id, mirroring toolkit/go/pkg/plugintk's `PluginLibraryEntrypoint.plugins` map -

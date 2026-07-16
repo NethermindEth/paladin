@@ -1,25 +1,37 @@
-//! `SenteDomain`: Phase 2 (S2)'s `DomainHandler` implementation - wires `sente_host::SenteEntry`/
-//! `recording_invoke`/`digest` and `crate::info::InfoState` into a real (if deliberately
-//! scoped-down) assemble/endorse/prepare round trip. See
-//! `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 S2 for the full scoping rationale; the
-//! short version:
+//! `SenteDomain`: the real `DomainHandler` implementation for Sente (chapter 14 §14.3).
 //!
-//! - **Fixed test scenario, not general ABI encoding**: every `assemble_transaction`/
-//!   `endorse_transaction` call invokes the same hardcoded `factory.wasm` `register(tx_id,
-//!   instance, config)` call Phase 1 already proved deterministic, ignoring
-//!   `TransactionSpecification.function_params_json` entirely. A general JSON->`ScVal` encoder
-//!   driven by a real Soroban contract spec is separable future work.
-//! - **Fixed bootstrap contract, not real on-chain deploy/genesis**: `genesis_contract()` rebuilds
-//!   the exact same contract instance (wasm + instance ledger entries) from a fixed seed on every
-//!   call - deterministically identical on every node, so it needs no Paladin state at all and no
-//!   real `SentePrivacyGroup` deploy (that's S3). It is deliberately NOT tracked as a `SenteEntry`
-//!   (its `ContractCode`/instance ledger entries aren't `ContractData`, which is all `SenteEntry`
-//!   models) - only genuine storage mutations the `register()` call itself produces become
-//!   `SenteEntry` Paladin states.
-//! - **Digest-based endorsement, not a structural diff**: `endorse_transaction` re-executes and
-//!   compares `sente_host::digest()` output against the `result_digest` the assembler committed to
-//!   in its `InfoState` - see that struct's own doc comment for why this is sufficient.
+//! - **Phase 2 (S2)'s mechanism** - `assemble`/`endorse`/`prepare` for one arbitrary Soroban host
+//!   invocation, re-executed and digest-compared across processes - proved the cross-process
+//!   endorsement mechanism against a fixed, deterministically-reconstructible bootstrap contract
+//!   (`factory.wasm`'s `register`). That mechanism is now superseded entirely by S3's real
+//!   transition flow below, not kept alongside it.
+//! - **Phase 3 (S3)'s real transition flow, deliberately root-only for now**: a group transition
+//!   advances `SentePrivacyGroup`'s on-chain hash-chain head (`root`) with unanimous member
+//!   signatures - see `soroban/contracts/sente/src/lib.rs`. Its signature check
+//!   (`saladin_typed_data::verify`, plain application-level ed25519 verification, not Soroban's
+//!   `require_auth` framework) genuinely requires valid signatures to succeed - meaning
+//!   `assemble_transaction`/`endorse_transaction` cannot simulate a call to `transition` itself
+//!   (no member's real private key is available to the plugin at assemble time). Instead:
+//!   - `new_root` is derived deterministically from `(old_root, transaction_id)` - an opaque,
+//!     content-free commitment every party can recompute identically, not tied to any simulated
+//!     execution result (root-only transitions have no external effects to encode into it yet).
+//!   - The actual thing every member's `ENDORSE` attestation signs is
+//!     `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, external_calls=[]})` -
+//!     precisely what `transition`'s on-chain check verifies - not a separate off-chain-only
+//!     payload the way S2's `result_digest` was. `endorse_transaction` independently re-derives
+//!     and checks this digest (see its own doc comment) instead of re-executing a host invocation.
+//!   - The group's own genesis instance state (`members`/`network_passphrase`/`root=0`) must
+//!     already exist as a tracked `SenteEntry` before its first transition can be assembled -
+//!     populating that from a real on-chain deploy is Go-side indexing work, out of scope here
+//!     (see `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 S3 for the precise boundary).
+//!   - `external_calls` (the SNoto-atomicity half of S3's exit criterion) remain unwired at the
+//!     plugin level - proven only at the contract-test level
+//!     (`soroban/contracts/sente/src/test.rs`'s `transition_executes_external_call_atomically`).
+//!     Wiring them in needs both a general JSON->`ScVal` argument encoder (already flagged as
+//!     separable future work) and a way to bootstrap an external contract's own genesis state,
+//!     which - unlike the wrapper's own genesis - this domain has no way to know how to construct.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -28,30 +40,24 @@ use base64::Engine;
 use saladin_plugin_rs::{pb, DomainHandler, PaladinClient};
 use sha2::{Digest, Sha256};
 
-use soroban_env_host::e2e_testutils::{get_account_id, CreateContractData};
 use soroban_env_host::xdr::{
-    AccountId, ContractId, Hash, LedgerEntry, Limits, ScAddress, ScBytes, ScVal, ScVec, VecM,
-    WriteXdr,
+    ContractExecutable, ContractId, Hash, Limits, ReadXdr, ScAddress, ScBytes, ScContractInstance,
+    ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM, WriteXdr,
 };
-use soroban_env_host::LedgerInfo;
 
-use crate::info::{AuthParams, InfoState, InvocationSpec, SIGN_PAYLOAD_TYPE};
+use crate::info::InfoState;
 
 /// `toolkit/go/pkg/algorithms.EDDSA_ED25519` ("eddsa" + ":" + "ed25519").
 const SIGN_ALGORITHM: &str = "eddsa:ed25519";
 /// `toolkit/go/pkg/verifiers.STELLAR_ADDRESS`.
 const VERIFIER_TYPE: &str = "stellar_address";
-
-/// S2's fixed scenario: `factory.wasm`'s `register` function, matching Phase 1's spike exactly.
-const REGISTER_FUNCTION: &str = "register";
-/// Fixed seed for S2's bootstrap contract instance (see the module doc comment) - arbitrary but
-/// constant, so every node derives byte-identical `wasm_entry`/`contract_entry` ledger entries.
-const GENESIS_CONTRACT_SEED: [u8; 32] = [0x99; 32];
-/// Fixed seed for the invocation's source account - mirrors Phase 1's own hardcoded `[7; 32]`.
-const SOURCE_ACCOUNT_SEED: [u8; 32] = [7; 32];
-/// S2 ignores `function_params_json` (see module doc comment) - this is `register`'s third,
-/// otherwise-arbitrary `config` argument.
-const FIXED_CONFIG_BYTES: &[u8] = b"sente-s2-fixed-scenario";
+/// `toolkit/go/pkg/signpayloads.OPAQUE_TO_EDDSA` - the sender's own SIGN attestation's payload
+/// type (a raw digest signed with ed25519, same convention this session's Noto-Stellar work
+/// already established).
+const SIGN_PAYLOAD_TYPE: &str = "opaque:eddsa";
+/// `SALADIN_TYPED_DATA_V0`'s type name for a Sente transition (chapter 14 §14.3), matching
+/// `soroban/contracts/sente`'s own `transition`/`sign_transition` test helper exactly.
+const TRANSITION_TYPE_NAME: &str = "sente.Transition";
 
 /// S3 genesis config, supplied by the Paladin administrator as this domain's `config_json`
 /// (`ConfigureDomainRequest.config_json`) - the same "runtime config comes from the domain's own
@@ -72,7 +78,8 @@ struct SenteConfig {
     sente_wasm_hash: String,
     /// Raw network passphrase bytes, doubling as `SentePrivacyGroup::initialize`'s
     /// `network_passphrase` argument - the same "config is the raw passphrase" convention
-    /// `snoto::initialize`/`snoto-factory::deploy` already established.
+    /// `snoto::initialize`/`snoto-factory::deploy` already established, and what
+    /// `SALADIN_TYPED_DATA_V0` digests (both genesis and ordinary transitions) are computed over.
     network_passphrase: String,
 }
 
@@ -109,57 +116,10 @@ fn group_scope_lookup(member: &str, salt_hex: &str) -> String {
 
 /// Decodes a Stellar contract strkey (`"C..."`) into the XDR `ContractId` `ScAddress::Contract`
 /// wraps - the inverse of this module's own `contract_strkey`.
-fn decode_contract_address(strkey: &str) -> Result<ContractId, String> {
+pub fn decode_contract_address(strkey: &str) -> Result<ContractId, String> {
     let contract = stellar_strkey::Contract::from_string(strkey)
         .map_err(|e| format!("{strkey} is not a valid contract strkey: {e}"))?;
     Ok(ContractId(Hash(contract.0)))
-}
-
-fn factory_wasm() -> Vec<u8> {
-    std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../soroban/artifacts/factory.wasm"),
-    )
-    .expect("failed to read factory.wasm - run `./gradlew :soroban:compile` first")
-}
-
-fn genesis_contract() -> CreateContractData {
-    CreateContractData::new(GENESIS_CONTRACT_SEED, &factory_wasm())
-}
-
-fn source_account() -> AccountId {
-    get_account_id(SOURCE_ACCOUNT_SEED)
-}
-
-/// Pins `sequence_number`/`timestamp` from the real, chain-neutral `TransactionSpecification`
-/// fields every node receives identically; every other `LedgerInfo` field (protocol version, TTL
-/// floors, etc.) comes from this build's own compiled-in defaults - deriving those from live chain
-/// config is out of scope for S2 (see the determinism checklist's "coordinated plugin upgrades"
-/// note for why a compiled-in protocol version is already the right behavior, not a gap).
-fn pinned_ledger_info(transaction: &pb::TransactionSpecification) -> LedgerInfo {
-    let mut ledger_info = soroban_env_host::e2e_testutils::default_ledger_info();
-    ledger_info.sequence_number = transaction.base_block as u32;
-    ledger_info.timestamp = transaction.base_block_timestamp as u64;
-    ledger_info
-}
-
-/// The two bootstrap ledger entries (contract code + contract instance) every node reconstructs
-/// independently - see the module doc comment for why these are never `SenteEntry` Paladin states.
-fn bootstrap_snapshot_entries(
-    contract: &CreateContractData,
-    ledger_info: &LedgerInfo,
-) -> Vec<(LedgerEntry, Option<u32>)> {
-    let live_until = ledger_info.sequence_number + ledger_info.min_persistent_entry_ttl - 1;
-    vec![
-        (contract.wasm_entry.clone(), Some(live_until)),
-        (contract.contract_entry.clone(), Some(live_until)),
-    ]
-}
-
-/// A `SenteEntry` Paladin state as queried from core, paired with the state id core assigned it -
-/// `id` is needed to build `StateRef`s for `AssembledTransaction.input_states`.
-struct PriorEntry {
-    id: String,
-    entry: sente_host::SenteEntry,
 }
 
 fn contract_strkey(address: &ScAddress) -> Result<String, String> {
@@ -171,11 +131,215 @@ fn contract_strkey(address: &ScAddress) -> Result<String, String> {
     }
 }
 
+/// The `ScVal` key `soroban/contracts/sente::storage::DataKey`'s unit variants encode to - a
+/// fieldless `#[contracttype]` enum variant encodes as `ScVal::Vec(Some(ScVec([ScVal::Symbol(
+/// variant_name)])))`, empirically confirmed against the real contract crate (not assumed) via a
+/// throwaway diagnostic test against `soroban_sdk::IntoVal` during this phase's development.
+fn data_key_scval(name: &str) -> ScVal {
+    ScVal::Vec(Some(ScVec(
+        vec![ScVal::Symbol(ScSymbol(name.try_into().expect("valid symbol")))]
+            .try_into()
+            .expect("single-element vec"),
+    )))
+}
+
+/// The `ScVal::LedgerKeyContractInstance` key every Soroban contract's own "instance" storage
+/// entry is stored under - a constant, unit-variant `ScVal`, same convention `sente_host::SenteEntry`
+/// already uses (`ledger_key()`) for the `key_xdr` field of any tracked storage-slot state.
+pub fn instance_key_xdr_base64() -> String {
+    BASE64.encode(
+        ScVal::LedgerKeyContractInstance
+            .to_xdr(Limits::none())
+            .expect("LedgerKeyContractInstance always encodes"),
+    )
+}
+
+/// Builds `SentePrivacyGroup`'s genesis "instance" storage value directly - `members`/
+/// `network_passphrase`/`root=[0;32]`, matching exactly what a real on-chain
+/// `initialize(members, network_passphrase)` call produces (`soroban/contracts/sente/src/
+/// storage.rs`'s `init`). Hand-built rather than derived by actually running the constructor via
+/// `soroban-env-host`: this phase never feeds the result into a real host invocation (root-only
+/// transitions need no simulated execution at all - see the module doc comment), so the map's
+/// internal ordering has no host-side validity requirement to satisfy, only round-trip fidelity
+/// with this module's own `decode_root`/`with_updated_root` - and the three keys are already in
+/// the enum's declared (and, coincidentally, alphabetical) order.
+pub fn genesis_instance_val(
+    wasm_hash: [u8; 32],
+    member_pubkeys: &[[u8; 32]],
+    network_passphrase: &[u8],
+) -> Result<ScVal, String> {
+    let members_val = ScVal::Vec(Some(ScVec(
+        member_pubkeys
+            .iter()
+            .map(|pk| ScVal::Bytes(ScBytes(pk.to_vec().try_into().unwrap())))
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "failed to build members ScVec".to_string())?,
+    )));
+    let passphrase_val = ScVal::Bytes(ScBytes(
+        network_passphrase
+            .to_vec()
+            .try_into()
+            .map_err(|_| "network passphrase too long for ScBytes".to_string())?,
+    ));
+    let root_val = ScVal::Bytes(ScBytes([0u8; 32].to_vec().try_into().unwrap()));
+    let map = ScMap(
+        vec![
+            ScMapEntry {
+                key: data_key_scval("Members"),
+                val: members_val,
+            },
+            ScMapEntry {
+                key: data_key_scval("NetworkPassphrase"),
+                val: passphrase_val,
+            },
+            ScMapEntry {
+                key: data_key_scval("Root"),
+                val: root_val,
+            },
+        ]
+        .try_into()
+        .map_err(|_| "failed to build instance storage map".to_string())?,
+    );
+    Ok(ScVal::ContractInstance(ScContractInstance {
+        executable: ContractExecutable::Wasm(Hash(wasm_hash)),
+        storage: Some(map),
+    }))
+}
+
+/// Reads the `Root` entry out of a `SentePrivacyGroup` instance value (see `genesis_instance_val`)
+/// - the inverse half of `with_updated_root`.
+fn decode_root(instance_val: &ScVal) -> Result<[u8; 32], String> {
+    let ScVal::ContractInstance(inst) = instance_val else {
+        return Err("expected a ContractInstance value".to_string());
+    };
+    let map = inst
+        .storage
+        .as_ref()
+        .ok_or("group instance has no storage map")?;
+    let root_key = data_key_scval("Root");
+    let entry = map
+        .0
+        .iter()
+        .find(|e| e.key == root_key)
+        .ok_or("group instance storage has no Root entry")?;
+    let ScVal::Bytes(bytes) = &entry.val else {
+        return Err("Root entry is not Bytes".to_string());
+    };
+    bytes
+        .0
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Root entry is not 32 bytes".to_string())
+}
+
+/// Splices a new `Root` value into an existing, already-valid `SentePrivacyGroup` instance value -
+/// `Members`/`NetworkPassphrase` and the map's own ordering are left untouched, only the one
+/// mutable field changes, exactly what a real `transition` call would do on-chain.
+fn with_updated_root(instance_val: &ScVal, new_root: [u8; 32]) -> Result<ScVal, String> {
+    let ScVal::ContractInstance(inst) = instance_val else {
+        return Err("expected a ContractInstance value".to_string());
+    };
+    let map = inst
+        .storage
+        .as_ref()
+        .ok_or("group instance has no storage map")?;
+    let root_key = data_key_scval("Root");
+    let mut entries = map.0.to_vec();
+    let idx = entries
+        .iter()
+        .position(|e| e.key == root_key)
+        .ok_or("group instance storage has no Root entry")?;
+    entries[idx].val = ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap()));
+    Ok(ScVal::ContractInstance(ScContractInstance {
+        executable: inst.executable.clone(),
+        storage: Some(ScMap(
+            entries
+                .try_into()
+                .map_err(|_| "failed to rebuild instance storage map".to_string())?,
+        )),
+    }))
+}
+
+/// Mirrors `soroban/crates/saladin-typed-data::digest` (`SALADIN_TYPED_DATA_V0`, chapter 13 §13.1)
+/// exactly - duplicated rather than depended on: that crate is `#![no_std]` and unconditionally
+/// pulls in `soroban-sdk` even for this one pure function, and this plugin already depends on
+/// `soroban-env-host` directly - adding both risks feature/version-unification surprises for a
+/// function this small and stable. Verified byte-identical against the same shared test vectors
+/// that crate's own test uses - see `tests::saladin_typed_data_digest_matches_shared_vectors`.
+fn saladin_typed_data_digest(
+    network_passphrase: &[u8],
+    contract_id: &[u8; 32],
+    type_name: &str,
+    payload_xdr: &[u8],
+) -> [u8; 32] {
+    fn sha256(data: &[u8]) -> [u8; 32] {
+        Sha256::digest(data).into()
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"SALADIN_TYPED_DATA_V0");
+    hasher.update(sha256(network_passphrase));
+    hasher.update(contract_id);
+    hasher.update(sha256(type_name.as_bytes()));
+    hasher.update(sha256(payload_xdr));
+    hasher.finalize().into()
+}
+
+/// XDR shape of `soroban/contracts/sente::TransitionPayload(BytesN<32>, BytesN<32>,
+/// Vec<AtomOperation>)` - a tuple struct, so its `#[contracttype]` derive encodes it as a plain
+/// positional `ScVal::Vec`, matching the contract's own doc comment for choosing a tuple struct
+/// here. `external_calls` is always empty for this phase's root-only transitions (module doc
+/// comment) - an empty `Vec<AtomOperation>` encodes as `ScVal::Vec(Some(ScVec([])))` regardless of
+/// `AtomOperation`'s own shape (empirically confirmed), so no `AtomOperation` encoding is needed
+/// yet.
+fn transition_payload_xdr(old_root: [u8; 32], new_root: [u8; 32]) -> Result<Vec<u8>, String> {
+    let payload = ScVal::Vec(Some(ScVec(
+        vec![
+            ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap())),
+            ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap())),
+            ScVal::Vec(Some(ScVec(VecM::default()))),
+        ]
+        .try_into()
+        .map_err(|_| "failed to build TransitionPayload vector".to_string())?,
+    )));
+    payload
+        .to_xdr(Limits::none())
+        .map_err(|e| format!("failed to XDR-encode TransitionPayload: {e}"))
+}
+
+/// `new_root` is an opaque, content-free commitment for this phase's root-only transitions (module
+/// doc comment) - deterministically derived from `(old_root, transaction_id)` so every party
+/// (assembler and every endorser) recomputes the identical value without coordination.
+fn derive_new_root(old_root: &[u8; 32], transaction_id: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(old_root);
+    hasher.update(transaction_id.as_bytes());
+    hasher.finalize().into()
+}
+
+/// A `SenteEntry` Paladin state as queried from core, paired with the state id core assigned it -
+/// `id` is needed to build `StateRef`s for `AssembledTransaction.input_states`.
+struct PriorEntry {
+    id: String,
+    entry: sente_host::SenteEntry,
+}
+
+/// Per-group state, populated once at `InitContract` (paged in whenever a sequencer loads this
+/// privacy group into memory) and read by every later `AssembleTransaction`/`EndorseTransaction`
+/// call for the same contract - a real per-contract map, not S2's single global `members` field,
+/// since a Paladin node can host more than one Sente group at once.
+struct GroupState {
+    /// Member identity locators (`"identity"` or `"identity@node"`), from
+    /// `InitContractRequest.privacy_group.members` - used as `AttestationRequest.parties` for the
+    /// "endorsement" round, and as `NewState.distribution_list` for this group's states.
+    members: Vec<String>,
+}
+
 pub struct SenteDomain {
     client: PaladinClient,
     schema_id: Mutex<Option<String>>,
-    members: Mutex<Vec<String>>,
     config: Mutex<Option<SenteConfig>>,
+    contracts: Mutex<HashMap<String, GroupState>>,
 }
 
 impl SenteDomain {
@@ -183,8 +347,8 @@ impl SenteDomain {
         Self {
             client,
             schema_id: Mutex::new(None),
-            members: Mutex::new(Vec::new()),
             config: Mutex::new(None),
+            contracts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -204,6 +368,19 @@ impl SenteDomain {
             .unwrap()
             .clone()
             .ok_or_else(|| "sente config not set - configure_domain's config_json is missing or empty".to_string())
+    }
+
+    fn group_members(&self, contract_address: &str) -> Result<Vec<String>, String> {
+        self.contracts
+            .lock()
+            .unwrap()
+            .get(contract_address)
+            .map(|g| g.members.clone())
+            .ok_or_else(|| {
+                format!(
+                    "unknown contract {contract_address} - init_contract not yet called for this group"
+                )
+            })
     }
 
     async fn prior_entries(&self, state_query_context: &str) -> Result<Vec<PriorEntry>, String> {
@@ -226,36 +403,6 @@ impl SenteDomain {
             })
             .collect()
     }
-
-    /// Builds this scenario's fixed `register(tx_id, instance, config)` invocation - `tx_id` is
-    /// derived from the real Paladin transaction id (so distinct private transactions register
-    /// distinct records), everything else is fixed (see module doc comment).
-    fn fixed_invocation(
-        contract: &CreateContractData,
-        transaction_id: &str,
-    ) -> Result<InvocationSpec, String> {
-        let tx_id_hash: [u8; 32] = Sha256::digest(transaction_id.as_bytes()).into();
-        let args: VecM<ScVal> = vec![
-            ScVal::Bytes(ScBytes(
-                tx_id_hash
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| "failed to build tx_id ScBytes".to_string())?,
-            )),
-            ScVal::Address(contract.contract_address.clone()),
-            ScVal::Bytes(ScBytes(
-                FIXED_CONFIG_BYTES
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| "failed to build config ScBytes".to_string())?,
-            )),
-        ]
-        .try_into()
-        .map_err(|_| "failed to build args vector".to_string())?;
-
-        InvocationSpec::new(&contract.contract_address, REGISTER_FUNCTION, args)
-            .map_err(|e| e.to_string())
-    }
 }
 
 #[async_trait]
@@ -264,9 +411,9 @@ impl DomainHandler for SenteDomain {
         &self,
         req: pb::ConfigureDomainRequest,
     ) -> Result<pb::ConfigureDomainResponse, String> {
-        // Empty is tolerated (S2's own tests/harness never set config_json, and don't need to -
-        // they never call init_deploy/prepare_deploy) - genesis just fails clearly via `config()`
-        // if a deploy is actually attempted without it.
+        // Empty is tolerated (harness/tests that never call init_deploy/prepare_deploy don't need
+        // it) - genesis just fails clearly via `config()` if a deploy is actually attempted
+        // without it.
         if !req.config_json.trim().is_empty() {
             let config: SenteConfig = serde_json::from_str(&req.config_json)
                 .map_err(|e| format!("invalid Sente domain config_json: {e}"))?;
@@ -438,15 +585,17 @@ impl DomainHandler for SenteDomain {
         &self,
         req: pb::InitContractRequest,
     ) -> Result<pb::InitContractResponse, String> {
-        // S2 stand-in (see saladin-book §14.3 S2 item 1): the fixed member list Paladin's own
-        // generic `PrivacyGroup` mechanism already provides, not a Sente-specific config scheme.
-        // Real genesis/membership enforcement against an on-chain `SentePrivacyGroup` is S3.
         let members = req
             .privacy_group
             .as_ref()
             .map(|pg| pg.members.clone())
             .unwrap_or_default();
-        *self.members.lock().unwrap() = members.clone();
+        self.contracts.lock().unwrap().insert(
+            req.contract_address.clone(),
+            GroupState {
+                members: members.clone(),
+            },
+        );
         Ok(pb::InitContractResponse {
             valid: true,
             contract_config: Some(pb::ContractConfig {
@@ -477,6 +626,10 @@ impl DomainHandler for SenteDomain {
         })
     }
 
+    /// Builds a root-only group transition (module doc comment): finds the group's currently
+    /// tracked genesis/prior instance `SenteEntry`, derives `new_root`, computes the on-chain
+    /// typed-data digest every member's endorsement will actually sign, and declares the
+    /// resulting spliced-root `SenteEntry` as this transaction's one output state.
     async fn assemble_transaction(
         &self,
         req: pb::AssembleTransactionRequest,
@@ -485,111 +638,90 @@ impl DomainHandler for SenteDomain {
             .transaction
             .ok_or("assemble_transaction: transaction not set")?;
         let schema_id = self.schema_id()?;
-        let prior = self.prior_entries(&req.state_query_context).await?;
+        let contract_info = transaction
+            .contract_info
+            .clone()
+            .ok_or("assemble_transaction: contract_info not set")?;
+        let members = self.group_members(&contract_info.contract_address)?;
 
-        let contract = genesis_contract();
-        let ledger_info = pinned_ledger_info(&transaction);
-        let source_account = source_account();
-
-        let mut raw_entries = bootstrap_snapshot_entries(&contract, &ledger_info);
-        for p in &prior {
-            let live_until = sente_host::protocol_floor_live_until(p.entry.durability, &ledger_info);
-            raw_entries.push((
-                p.entry.to_ledger_entry().map_err(|e| e.to_string())?,
-                Some(live_until),
-            ));
-        }
-        let snapshot =
-            sente_host::build_snapshot_source_from_parts(raw_entries).map_err(|e| e.to_string())?;
-
-        let invocation = Self::fixed_invocation(&contract, &transaction.transaction_id)?;
-        let host_fn = invocation.to_host_function().map_err(|e| e.to_string())?;
-        let auth_params = AuthParams {
-            disable_non_root_auth: true,
-            use_address_v2: false,
-        };
-        let base_prng_seed = sente_host::seed_from_transaction_id(&transaction.transaction_id);
-
-        let invoke_result = sente_host::recording_invoke(
-            snapshot,
-            &ledger_info,
-            host_fn,
-            auth_params.to_auth_mode(),
-            &source_account,
-            base_prng_seed,
+        let contract_id = decode_contract_address(&contract_info.contract_address)?;
+        let contract_address = ScAddress::Contract(contract_id.clone());
+        let contract_id_base64 = BASE64.encode(
+            contract_address
+                .to_xdr(Limits::none())
+                .map_err(|e| e.to_string())?,
         );
-        let result = match invoke_result {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(pb::AssembleTransactionResponse {
-                    assembly_result: pb::assemble_transaction_response::Result::Revert as i32,
-                    assembled_transaction: None,
-                    attestation_plan: vec![],
-                    revert_reason: Some(e.to_string()),
-                })
-            }
+        let instance_key_base64 = instance_key_xdr_base64();
+
+        let prior = self.prior_entries(&req.state_query_context).await?;
+        let Some(prior_group_entry) = prior.iter().find(|p| {
+            p.entry.contract_id == contract_id_base64 && p.entry.key_xdr == instance_key_base64
+        }) else {
+            return Ok(pb::AssembleTransactionResponse {
+                assembly_result: pb::assemble_transaction_response::Result::Revert as i32,
+                assembled_transaction: None,
+                attestation_plan: vec![],
+                revert_reason: Some(
+                    "group genesis state not found - the group's genesis SenteEntry must be \
+                     recorded before its first transition can be assembled"
+                        .to_string(),
+                ),
+            });
         };
 
-        let result_digest = sente_host::digest(&result).map_err(|e| e.to_string())?;
+        let old_root = decode_root(&prior_group_entry.entry.val().map_err(|e| e.to_string())?)?;
+        let new_root = derive_new_root(&old_root, &transaction.transaction_id);
+        let payload_xdr = transition_payload_xdr(old_root, new_root)?;
+        let config = self.config()?;
+        let on_chain_digest = saladin_typed_data_digest(
+            config.network_passphrase.as_bytes(),
+            &contract_id.0 .0,
+            TRANSITION_TYPE_NAME,
+            &payload_xdr,
+        );
+
+        let new_instance_val = with_updated_root(
+            &prior_group_entry.entry.val().map_err(|e| e.to_string())?,
+            new_root,
+        )?;
+        let new_entry = sente_host::SenteEntry {
+            contract_id: contract_id_base64.clone(),
+            key_xdr: instance_key_base64,
+            val_xdr: BASE64.encode(
+                new_instance_val
+                    .to_xdr(Limits::none())
+                    .map_err(|e| e.to_string())?,
+            ),
+            durability: sente_host::EntryDurability::Persistent,
+            seq: prior_group_entry.entry.seq + 1,
+        };
+
         let info = InfoState::new(
             transaction.transaction_id.clone(),
-            &ledger_info,
-            base_prng_seed,
-            invocation,
-            auth_params,
-            result_digest,
+            contract_id_base64,
+            old_root,
+            new_root,
+            on_chain_digest,
         );
-
-        let members = self.members.lock().unwrap().clone();
-        let mut input_states = Vec::new();
-        let mut output_states = Vec::new();
-        for diff in &result.modified_entries {
-            if diff.state_before == diff.state_after {
-                // No real change (e.g. a read-only touch of the bootstrap wasm/instance entries) -
-                // not a mutation this private ledger needs to track as a Paladin state.
-                continue;
-            }
-            let representative = diff
-                .state_after
-                .as_ref()
-                .or(diff.state_before.as_ref())
-                .ok_or("assemble_transaction: empty ledger entry diff")?;
-            let candidate = sente_host::SenteEntry::from_ledger_entry(representative, 0)
-                .map_err(|e| e.to_string())?;
-            let prior_match = prior.iter().find(|p| {
-                p.entry.contract_id == candidate.contract_id && p.entry.key_xdr == candidate.key_xdr
-            });
-            if let Some(p) = prior_match {
-                input_states.push(pb::StateRef {
-                    id: p.id.clone(),
-                    schema_id: schema_id.clone(),
-                });
-            }
-            if let Some(after_entry) = &diff.state_after {
-                let seq = prior_match.map(|p| p.entry.seq + 1).unwrap_or(0);
-                let new_entry = sente_host::SenteEntry::from_ledger_entry(after_entry, seq)
-                    .map_err(|e| e.to_string())?;
-                let state_data_json =
-                    serde_json::to_string(&new_entry).map_err(|e| e.to_string())?;
-                output_states.push(pb::NewState {
-                    schema_id: schema_id.clone(),
-                    state_data_json,
-                    distribution_list: members.clone(),
-                    id: None,
-                    nullifier_specs: vec![],
-                });
-            }
-        }
-
         let info_json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
         let signing_payload = info.signing_payload().map_err(|e| e.to_string())?;
 
         Ok(pb::AssembleTransactionResponse {
             assembly_result: pb::assemble_transaction_response::Result::Ok as i32,
             assembled_transaction: Some(pb::AssembledTransaction {
-                input_states,
+                input_states: vec![pb::StateRef {
+                    id: prior_group_entry.id.clone(),
+                    schema_id: schema_id.clone(),
+                }],
                 read_states: vec![],
-                output_states,
+                output_states: vec![pb::NewState {
+                    schema_id: schema_id.clone(),
+                    state_data_json: serde_json::to_string(&new_entry)
+                        .map_err(|e| e.to_string())?,
+                    distribution_list: members.clone(),
+                    id: None,
+                    nullifier_specs: vec![],
+                }],
                 info_states: vec![pb::NewState {
                     schema_id: schema_id.clone(),
                     state_data_json: info_json,
@@ -625,6 +757,12 @@ impl DomainHandler for SenteDomain {
         })
     }
 
+    /// Independently re-derives and verifies the proposed transition, rather than trusting the
+    /// assembler's `InfoState` blindly: `old_root` comes from `req.inputs` (the claimed prior
+    /// state, the same "trust state via inputs, not via info" pattern S2 already used), `new_root`
+    /// is recomputed from it, and the on-chain typed-data digest is recomputed and compared against
+    /// `info.on_chain_digest`. Returns `Sign` with that digest as the payload - the exact bytes
+    /// `SentePrivacyGroup::transition` verifies on-chain, not a separate off-chain-only payload.
     async fn endorse_transaction(
         &self,
         req: pb::EndorseTransactionRequest,
@@ -636,64 +774,83 @@ impl DomainHandler for SenteDomain {
         let info: InfoState = serde_json::from_str(&info_state.state_data_json)
             .map_err(|e| format!("invalid InfoState JSON: {e}"))?;
 
-        let ledger_info: LedgerInfo = (&info.ledger_info).into();
-        let contract = genesis_contract();
-        let source_account = source_account();
+        let input = req
+            .inputs
+            .first()
+            .ok_or("endorse_transaction: no input state provided")?;
+        let prior_entry: sente_host::SenteEntry = serde_json::from_str(&input.state_data_json)
+            .map_err(|e| format!("invalid SenteEntry JSON: {e}"))?;
+        let old_root_actual =
+            decode_root(&prior_entry.val().map_err(|e| e.to_string())?)?;
 
-        let mut raw_entries = bootstrap_snapshot_entries(&contract, &ledger_info);
-        for input in req.inputs.iter().chain(req.reads.iter()) {
-            let entry: sente_host::SenteEntry = serde_json::from_str(&input.state_data_json)
-                .map_err(|e| format!("invalid SenteEntry JSON: {e}"))?;
-            let live_until = sente_host::protocol_floor_live_until(entry.durability, &ledger_info);
-            raw_entries.push((
-                entry.to_ledger_entry().map_err(|e| e.to_string())?,
-                Some(live_until),
-            ));
-        }
-        let snapshot =
-            sente_host::build_snapshot_source_from_parts(raw_entries).map_err(|e| e.to_string())?;
-
-        let host_fn = info.invocation.to_host_function().map_err(|e| e.to_string())?;
-        let invoke_result = sente_host::recording_invoke(
-            snapshot,
-            &ledger_info,
-            host_fn,
-            info.auth_params.to_auth_mode(),
-            &source_account,
-            info.base_prng_seed,
-        );
-        let result = match invoke_result {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(pb::EndorseTransactionResponse {
-                    endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
-                    payload: None,
-                    revert_reason: Some(e.to_string()),
-                })
-            }
-        };
-
-        let local_digest = sente_host::digest(&result).map_err(|e| e.to_string())?;
-        if local_digest != info.result_digest {
+        if old_root_actual != info.old_root {
             return Ok(pb::EndorseTransactionResponse {
                 endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
                 payload: None,
                 revert_reason: Some(format!(
-                    "result digest mismatch: assembler={} local={}",
-                    hex::encode(info.result_digest),
-                    hex::encode(local_digest)
+                    "old_root mismatch: claimed={} actual={}",
+                    hex::encode(info.old_root),
+                    hex::encode(old_root_actual)
                 )),
             });
         }
 
-        let payload = info.signing_payload().map_err(|e| e.to_string())?;
+        let expected_new_root = derive_new_root(&old_root_actual, &info.transaction_id);
+        if expected_new_root != info.new_root {
+            return Ok(pb::EndorseTransactionResponse {
+                endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                payload: None,
+                revert_reason: Some(format!(
+                    "new_root mismatch: expected={} claimed={}",
+                    hex::encode(expected_new_root),
+                    hex::encode(info.new_root)
+                )),
+            });
+        }
+
+        let payload_xdr = transition_payload_xdr(info.old_root, info.new_root)?;
+        let config = self.config()?;
+        let contract_id_bytes = BASE64
+            .decode(&info.contract_id)
+            .map_err(|e| format!("invalid contract_id: {e}"))
+            .and_then(|bytes| {
+                ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string())
+            })
+            .and_then(|addr| match addr {
+                ScAddress::Contract(cid) => Ok(cid.0 .0),
+                other => Err(format!("expected a contract ScAddress, got {other:?}")),
+            })?;
+        let expected_digest = saladin_typed_data_digest(
+            config.network_passphrase.as_bytes(),
+            &contract_id_bytes,
+            TRANSITION_TYPE_NAME,
+            &payload_xdr,
+        );
+
+        if expected_digest != info.on_chain_digest {
+            return Ok(pb::EndorseTransactionResponse {
+                endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                payload: None,
+                revert_reason: Some(format!(
+                    "on_chain_digest mismatch: assembler={} local={}",
+                    hex::encode(info.on_chain_digest),
+                    hex::encode(expected_digest)
+                )),
+            });
+        }
+
         Ok(pb::EndorseTransactionResponse {
             endorsement_result: pb::endorse_transaction_response::Result::Sign as i32,
-            payload: Some(payload.to_vec()),
+            payload: Some(info.on_chain_digest.to_vec()),
             revert_reason: None,
         })
     }
 
+    /// Bundles every collected member endorsement into the real, final on-chain
+    /// `transition(new_root, external_calls=[], signatures)` call - the collected
+    /// `AttestationResult`s already carry each member's resolved verifier (public key) and the raw
+    /// ed25519 signature it produced over `endorse_transaction`'s returned payload (the on-chain
+    /// digest itself), so no separate signature-collection mechanism is needed here.
     async fn prepare_transaction(
         &self,
         req: pb::PrepareTransactionRequest,
@@ -705,11 +862,73 @@ impl DomainHandler for SenteDomain {
         let info: InfoState = serde_json::from_str(&info_state.state_data_json)
             .map_err(|e| format!("invalid InfoState JSON: {e}"))?;
 
-        let contract_address = info.invocation.contract().map_err(|e| e.to_string())?;
+        let mut signature_pairs = Vec::new();
+        for result in &req.attestation_result {
+            if result.name != "endorsement"
+                || result.attestation_type != pb::AttestationType::Endorse as i32
+            {
+                continue;
+            }
+            let verifier = result
+                .verifier
+                .as_ref()
+                .ok_or("endorsement attestation result missing verifier")?;
+            let public_key = stellar_strkey::ed25519::PublicKey::from_string(&verifier.verifier)
+                .map_err(|e| {
+                    format!(
+                        "endorsing verifier {} is not a valid Stellar ed25519 address: {e}",
+                        verifier.verifier
+                    )
+                })?;
+            let signature_bytes = result
+                .payload
+                .clone()
+                .ok_or("endorsement attestation result missing payload (signature)")?;
+            let signature: [u8; 64] = signature_bytes
+                .try_into()
+                .map_err(|_| "endorsement signature is not 64 bytes".to_string())?;
+            signature_pairs.push((public_key.0, signature));
+        }
+        if signature_pairs.is_empty() {
+            return Err("prepare_transaction: no endorsement signatures collected".to_string());
+        }
+
+        let signatures_val = ScVal::Vec(Some(ScVec(
+            signature_pairs
+                .iter()
+                .map(|(pk, sig)| {
+                    ScVal::Vec(Some(ScVec(
+                        vec![
+                            ScVal::Bytes(ScBytes(pk.to_vec().try_into().unwrap())),
+                            ScVal::Bytes(ScBytes(sig.to_vec().try_into().unwrap())),
+                        ]
+                        .try_into()
+                        .unwrap(),
+                    )))
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "failed to build signatures ScVec".to_string())?,
+        )));
+
+        let args: VecM<ScVal> = vec![
+            ScVal::Bytes(ScBytes(info.new_root.to_vec().try_into().unwrap())),
+            ScVal::Vec(Some(ScVec(VecM::default()))),
+            signatures_val,
+        ]
+        .try_into()
+        .map_err(|_| "failed to build transition args vector".to_string())?;
+        let args_bytes = args
+            .to_xdr(Limits::none())
+            .map_err(|e| format!("failed to XDR-encode transition args: {e}"))?;
+
+        let contract_address = BASE64
+            .decode(&info.contract_id)
+            .map_err(|e| format!("invalid contract_id: {e}"))
+            .and_then(|bytes| {
+                ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string())
+            })?;
         let contract_id = contract_strkey(&contract_address)?;
-        let args_bytes = BASE64
-            .decode(&info.invocation.args_xdr)
-            .map_err(|e| format!("invalid args_xdr: {e}"))?;
 
         Ok(pb::PrepareTransactionResponse {
             transaction: Some(pb::PreparedTransaction {
@@ -726,7 +945,7 @@ impl DomainHandler for SenteDomain {
                 payload: Some(pb::prepared_chain_transaction::Payload::Soroban(
                     pb::SorobanInvoke {
                         contract_id,
-                        function_name: info.invocation.function_name.clone(),
+                        function_name: "transition".to_string(),
                         args_xdr: args_bytes,
                         args_json: String::new(),
                         auth_entries_xdr: vec![],
@@ -735,5 +954,150 @@ impl DomainHandler for SenteDomain {
                 )),
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saladin_typed_data_digest_matches_shared_vectors() {
+        #[derive(serde::Deserialize)]
+        struct Vector {
+            name: String,
+            network_passphrase: String,
+            contract_id: String,
+            type_name: String,
+            payload_scval_xdr_base64: String,
+            digest_hex: String,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../testdata/saladin/saladin_typed_data_v0_vectors.json");
+        let vectors: Vec<Vector> =
+            serde_json::from_slice(&std::fs::read(path).expect("vectors file must exist"))
+                .expect("vectors file must be valid JSON");
+        assert!(!vectors.is_empty(), "expected at least one shared vector");
+        for vector in vectors {
+            let contract = stellar_strkey::Contract::from_string(&vector.contract_id).unwrap();
+            let payload = BASE64.decode(vector.payload_scval_xdr_base64).unwrap();
+            assert_eq!(
+                hex::encode(saladin_typed_data_digest(
+                    vector.network_passphrase.as_bytes(),
+                    &contract.0,
+                    &vector.type_name,
+                    &payload,
+                )),
+                vector.digest_hex,
+                "{}",
+                vector.name
+            );
+        }
+    }
+
+    #[test]
+    fn genesis_instance_round_trips_root() {
+        let val = genesis_instance_val([9u8; 32], &[[1u8; 32], [2u8; 32]], b"passphrase").unwrap();
+        assert_eq!(decode_root(&val).unwrap(), [0u8; 32]);
+
+        let updated = with_updated_root(&val, [7u8; 32]).unwrap();
+        assert_eq!(decode_root(&updated).unwrap(), [7u8; 32]);
+
+        // Members/NetworkPassphrase survive untouched.
+        let ScVal::ContractInstance(inst) = &updated else {
+            unreachable!()
+        };
+        let map = inst.storage.as_ref().unwrap();
+        assert_eq!(map.0.len(), 3);
+    }
+
+    #[test]
+    fn derive_new_root_is_deterministic_and_content_sensitive() {
+        let old_root = [0u8; 32];
+        let a = derive_new_root(&old_root, "tx-1");
+        let b = derive_new_root(&old_root, "tx-1");
+        let c = derive_new_root(&old_root, "tx-2");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    /// `prepare_transaction` never cryptographically verifies a signature itself (that's the
+    /// on-chain contract's job) - it just decodes each endorsement's resolved verifier strkey and
+    /// repackages whatever bytes it was given, so a synthetic (not genuinely-signed) payload is
+    /// enough to prove the XDR bundling itself is correct: real `new_root`/empty `external_calls`/
+    /// the exact `(pubkey, signature)` pairs, in `transition`'s real positional argument order.
+    #[tokio::test]
+    async fn prepare_transaction_bundles_signatures_into_transition_args() {
+        let (client, _to_core_rx) = PaladinClient::new_test("prepare-test");
+        let domain = SenteDomain::new(client);
+
+        let new_root = [7u8; 32];
+        let contract_id_base64 = BASE64.encode(
+            ScAddress::Contract(ContractId(Hash([0x11; 32])))
+                .to_xdr(Limits::none())
+                .unwrap(),
+        );
+        let info = InfoState::new(
+            "tx-1".to_string(),
+            contract_id_base64,
+            [0u8; 32],
+            new_root,
+            [3u8; 32],
+        );
+
+        let public_key = [5u8; 32];
+        let signature = [9u8; 64];
+        let req = pb::PrepareTransactionRequest {
+            info_states: vec![pb::EndorsableState {
+                id: "info-0".to_string(),
+                schema_id: "SenteEntry".to_string(),
+                state_data_json: serde_json::to_string(&info).unwrap(),
+            }],
+            attestation_result: vec![pb::AttestationResult {
+                name: "endorsement".to_string(),
+                attestation_type: pb::AttestationType::Endorse as i32,
+                verifier: Some(pb::ResolvedVerifier {
+                    lookup: "endorser@node2".to_string(),
+                    algorithm: SIGN_ALGORITHM.to_string(),
+                    verifier_type: VERIFIER_TYPE.to_string(),
+                    verifier: stellar_strkey::ed25519::PublicKey(public_key).to_string(),
+                }),
+                payload_type: None,
+                payload: Some(signature.to_vec()),
+                constraints: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let response = domain.prepare_transaction(req).await.unwrap();
+        let chain_tx = response.chain_transaction.unwrap();
+        let Some(pb::prepared_chain_transaction::Payload::Soroban(invoke)) = chain_tx.payload
+        else {
+            panic!("expected a Soroban invoke payload");
+        };
+        assert_eq!(invoke.function_name, "transition");
+
+        let args = VecM::<ScVal>::from_xdr(invoke.args_xdr, Limits::none()).unwrap();
+        assert_eq!(args.len(), 3);
+        assert_eq!(
+            args[0],
+            ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap()))
+        );
+        assert_eq!(args[1], ScVal::Vec(Some(ScVec(VecM::default()))));
+        let ScVal::Vec(Some(sigs)) = &args[2] else {
+            panic!("expected a Vec of signature pairs");
+        };
+        assert_eq!(sigs.len(), 1);
+        let ScVal::Vec(Some(pair)) = &sigs[0] else {
+            panic!("expected a (pubkey, signature) pair");
+        };
+        assert_eq!(
+            pair[0],
+            ScVal::Bytes(ScBytes(public_key.to_vec().try_into().unwrap()))
+        );
+        assert_eq!(
+            pair[1],
+            ScVal::Bytes(ScBytes(signature.to_vec().try_into().unwrap()))
+        );
     }
 }
