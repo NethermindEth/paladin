@@ -1,101 +1,28 @@
-//! Sente Phase 1 spike (chapter 14 §14.3, S1): embeds `soroban-env-host`/`soroban-simulation`
-//! directly and proves deterministic recording-mode re-execution across two genuinely separate OS
-//! processes - the exit criterion for this phase, learning directly from the gap in Pente's own
-//! test suite (single-JVM multi-identity tests can't exercise real cross-process divergence).
+//! Sente Phase 1 spike (chapter 14 §14.3, S1) CLI wrapper: exercises `sente_host::recording_invoke`
+//! against `soroban/contracts/factory`'s real, already-built `factory.wasm` (`register`, chosen
+//! because it needs no proof/auth setup - the simplest real invocation available in this repo)
+//! and prints a `sente_host::digest` of the result to stdout. Run this binary twice as two
+//! separate processes (see `tests/determinism.rs`) and a matching digest is Phase 1's proof.
 //!
-//! Invokes `soroban/contracts/factory`'s real, already-built `factory.wasm` (`register`, chosen
-//! because it needs no proof/auth setup - the simplest real invocation available in this repo),
-//! against an in-memory snapshot (no live network needed), with every determinism-sensitive input
-//! pinned explicitly: `LedgerInfo{sequence_number, timestamp, protocol_version}` and the base PRNG
-//! seed. Prints a SHA-256 digest of the invocation's XDR-encoded outputs (return value, modified
-//! ledger entries, auth entries, contract events, and the raw CPU/memory instruction counts) to
-//! stdout - run this binary twice as two separate processes (see `tests/determinism.rs`) and a
-//! matching digest is the proof this phase needs.
+//! The recording-mode invoke/digest logic itself now lives in `lib.rs` (refactored for Phase 2,
+//! which needs the same code from the real domain plugin) - this binary is just Phase 1's own
+//! fixed scenario wired up to it.
 
 use std::rc::Rc;
 
 use anyhow::{bail, Context, Result};
-use sha2::{Digest, Sha256};
 
 use soroban_env_host::e2e_invoke::RecordingInvocationAuthMode;
 use soroban_env_host::e2e_testutils::{
     account_entry, default_ledger_info, get_account_id, CreateContractData,
 };
-use soroban_env_host::xdr::{HostFunction, InvokeContractArgs, ScBytes, ScSymbol, ScVal, WriteXdr};
-use soroban_simulation::simulation::{
-    simulate_invoke_host_function_op, SimulationAdjustmentConfig, SimulationAdjustmentFactor,
-};
+use soroban_env_host::xdr::{HostFunction, InvokeContractArgs, ScBytes, ScSymbol, ScVal};
 use soroban_simulation::testutils::MockSnapshotSource;
-use soroban_simulation::NetworkConfig;
 
 /// A fixed, deterministic seed - in real Sente use this would be derived from the private
 /// transaction ID (per the book's determinism checklist); here it's just pinned to a constant so
 /// two independent process runs use the identical value.
 const BASE_PRNG_SEED: [u8; 32] = [0x42; 32];
-
-fn adjustment_config() -> SimulationAdjustmentConfig {
-    SimulationAdjustmentConfig {
-        instructions: SimulationAdjustmentFactor::new(1.0, 0),
-        read_bytes: SimulationAdjustmentFactor::new(1.0, 0),
-        write_bytes: SimulationAdjustmentFactor::new(1.0, 0),
-        tx_size: SimulationAdjustmentFactor::new(1.0, 0),
-        refundable_fee: SimulationAdjustmentFactor::new(1.0, 0),
-    }
-}
-
-/// Mirrors `soroban-simulation`'s own `test::simulation::default_network_config` fixture - the
-/// crate doesn't expose one publicly (it's test-only), so this is hand-built from the same
-/// pattern rather than depended on directly.
-fn network_config(ledger_info: &soroban_env_host::LedgerInfo) -> NetworkConfig {
-    use soroban_env_host::fees::{FeeConfiguration, RentFeeConfiguration};
-    use soroban_env_host::xdr::{
-        ContractCostParamEntry, ContractCostParams, ContractCostType, ExtensionPoint,
-    };
-
-    let mut cpu_cost_params = vec![
-        ContractCostParamEntry {
-            ext: ExtensionPoint::V0,
-            const_term: 0,
-            linear_term: 0,
-        };
-        ContractCostType::variants().len()
-    ];
-    let mut mem_cost_params = cpu_cost_params.clone();
-    for i in 0..ContractCostType::variants().len() {
-        let v = i as i64;
-        cpu_cost_params[i].const_term = (v + 1) * 1000;
-        cpu_cost_params[i].linear_term = v << 7;
-        mem_cost_params[i].const_term = (v + 1) * 500;
-        mem_cost_params[i].linear_term = v << 6;
-    }
-
-    NetworkConfig {
-        fee_configuration: FeeConfiguration {
-            fee_per_instruction_increment: 10,
-            fee_per_disk_read_entry: 20,
-            fee_per_write_entry: 30,
-            fee_per_disk_read_1kb: 40,
-            fee_per_write_1kb: 50,
-            fee_per_historical_1kb: 60,
-            fee_per_contract_event_1kb: 70,
-            fee_per_transaction_size_1kb: 80,
-        },
-        rent_fee_configuration: RentFeeConfiguration {
-            fee_per_rent_1kb: 100,
-            fee_per_write_1kb: 50,
-            fee_per_write_entry: 30,
-            persistent_rent_rate_denominator: 100,
-            temporary_rent_rate_denominator: 1000,
-        },
-        tx_max_instructions: 100_000_000,
-        tx_memory_limit: 40_000_000,
-        cpu_cost_params: ContractCostParams(cpu_cost_params.try_into().unwrap()),
-        memory_cost_params: ContractCostParams(mem_cost_params.try_into().unwrap()),
-        min_temp_entry_ttl: ledger_info.min_temp_entry_ttl,
-        min_persistent_entry_ttl: ledger_info.min_persistent_entry_ttl,
-        max_entry_ttl: ledger_info.max_entry_ttl,
-    }
-}
 
 fn run() -> Result<String> {
     let wasm = std::fs::read(
@@ -148,12 +75,8 @@ fn run() -> Result<String> {
         .unwrap(),
     });
 
-    let network_config = network_config(&ledger_info);
-
-    let result = simulate_invoke_host_function_op(
+    let result = sente_host::recording_invoke(
         snapshot_source,
-        &network_config,
-        &adjustment_config(),
         &ledger_info,
         host_fn,
         RecordingInvocationAuthMode::Recording(
@@ -161,36 +84,12 @@ fn run() -> Result<String> {
         ),
         &source_account,
         BASE_PRNG_SEED,
-        true,
     )?;
 
     let invoke_result = result
         .invoke_result
+        .as_ref()
         .map_err(|e| anyhow::anyhow!("invocation failed: {e:?}"))?;
-
-    // Digest every determinism-sensitive output field, XDR-encoded (the canonical, deterministic
-    // wire format every part of this repo already uses) - not a `Debug`-formatted string, which
-    // would tie this spike's result to Rust's own (unstable-across-versions) Debug output instead
-    // of the real, load-bearing wire format.
-    let mut hasher = Sha256::new();
-    hasher.update(invoke_result.to_xdr(soroban_env_host::xdr::Limits::none())?);
-    for diff in &result.modified_entries {
-        if let Some(e) = &diff.state_before {
-            hasher.update(e.to_xdr(soroban_env_host::xdr::Limits::none())?);
-        }
-        if let Some(e) = &diff.state_after {
-            hasher.update(e.to_xdr(soroban_env_host::xdr::Limits::none())?);
-        }
-    }
-    for auth in &result.auth {
-        hasher.update(auth.to_xdr(soroban_env_host::xdr::Limits::none())?);
-    }
-    for event in &result.contract_events {
-        hasher.update(event.to_xdr(soroban_env_host::xdr::Limits::none())?);
-    }
-    hasher.update(result.simulated_instructions.to_le_bytes());
-    hasher.update(result.simulated_memory.to_le_bytes());
-
     eprintln!(
         "invoke_result={invoke_result:?} modified_entries={} auth={} events={} instructions={} memory={}",
         result.modified_entries.len(),
@@ -200,7 +99,7 @@ fn run() -> Result<String> {
         result.simulated_memory,
     );
 
-    Ok(hex::encode(hasher.finalize()))
+    Ok(hex::encode(sente_host::digest(&result)?))
 }
 
 fn main() -> Result<()> {

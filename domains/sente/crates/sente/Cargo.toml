@@ -3,14 +3,34 @@ name = "sente"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Sente domain plugin - Phase 0: hello-world only (ConfigureDomain/InitDomain), proving the Rust-cdylib-via-JNA loading path before any soroban-env-host embedding work starts."
+description = "Sente domain plugin: Phase 0's hello-world (ConfigureDomain/InitDomain) proved the Rust-cdylib-via-JNA loading path; Phase 2 (S2) adds a deliberately scoped-down real assemble/endorse/prepare round trip on top of sente-host's recording-mode invoke/digest and SenteEntry state model."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 saladin-plugin-rs = { path = "../saladin-plugin-rs" }
+sente-host = { path = "../sente-host" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+hex = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+stellar-strkey = "0.0.13"
+# Only for encoding/decoding pb request/response types across the process boundary in
+# tests/two_node_invoke.rs's/divergence.rs's `sente_step` harness binary (src/bin/sente_step.rs) -
+# the `pb` types themselves come from `saladin_plugin_rs::pb`, but calling their
+# `prost::Message::{encode_to_vec,decode}` methods needs the trait itself in scope.
+prost = "0.14"
+# `testutils` is a main (not dev) dependency: S2's `SenteDomain` deliberately bootstraps a fixed,
+# deterministically-reconstructible contract instance via `e2e_testutils::CreateContractData`
+# instead of a real on-chain deploy (deploy/genesis is S3) - see `domain.rs`'s own doc comment.
+soroban-env-host = { version = "=27.0.0", features = ["testutils"] }
+
+[dev-dependencies]
+assert_cmd = "2"

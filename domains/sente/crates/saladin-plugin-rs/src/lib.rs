@@ -5,9 +5,10 @@
 //! `toolkit/go/pkg/plugintk`'s `instance.go`/`plugin_base.go` handshake exactly, reusable for any
 //! future Rust plugin (not just Sente).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::Request;
@@ -18,9 +19,105 @@ pub mod pb {
     tonic::include_proto!("io.kaleido.paladin.toolkit");
 }
 
+use pb::domain_message::{RequestFromDomain, ResponseToDomain};
 use pb::header::{ErrorType, MessageType};
 use pb::plugin_controller_client::PluginControllerClient;
 use pb::{DomainMessage, Header};
+
+type PendingReplies =
+    Arc<Mutex<HashMap<String, oneshot::Sender<Result<ResponseToDomain, String>>>>>;
+
+/// Lets `DomainHandler` implementations call back into Paladin core (`request_from_domain` in
+/// `service.proto` - `FindAvailableStates`, `GetStatesByID`, etc.), correlated by `message_id` the
+/// same way core's own `REQUEST_TO_PLUGIN` calls are correlated, just in the opposite direction.
+/// Cloneable and cheap to clone (an `mpsc::Sender` + a shared pending-replies map) - handlers can
+/// hold their own copy for the lifetime of the plugin.
+#[derive(Clone)]
+pub struct PaladinClient {
+    plugin_id: String,
+    to_core_tx: mpsc::Sender<DomainMessage>,
+    pending: PendingReplies,
+}
+
+impl PaladinClient {
+    pub async fn find_available_states(
+        &self,
+        req: pb::FindAvailableStatesRequest,
+    ) -> Result<pb::FindAvailableStatesResponse, String> {
+        match self
+            .call(RequestFromDomain::FindAvailableStates(req))
+            .await?
+        {
+            ResponseToDomain::FindAvailableStatesRes(res) => Ok(res),
+            other => Err(format!("unexpected response_to_domain variant: {other:?}")),
+        }
+    }
+
+    pub async fn get_states_by_id(
+        &self,
+        req: pb::GetStatesByIdRequest,
+    ) -> Result<pb::GetStatesByIdResponse, String> {
+        match self.call(RequestFromDomain::GetStatesById(req)).await? {
+            ResponseToDomain::GetStatesByIdRes(res) => Ok(res),
+            other => Err(format!("unexpected response_to_domain variant: {other:?}")),
+        }
+    }
+
+    async fn call(&self, request: RequestFromDomain) -> Result<ResponseToDomain, String> {
+        let message_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(message_id.clone(), tx);
+
+        let msg = DomainMessage {
+            header: Some(Header {
+                plugin_id: self.plugin_id.clone(),
+                message_id: message_id.clone(),
+                correlation_id: None,
+                error_message: None,
+                message_type: MessageType::RequestFromPlugin as i32,
+                error_type: ErrorType::Unknown as i32,
+            }),
+            request_from_domain: Some(request),
+            ..Default::default()
+        };
+        if self.to_core_tx.send(msg).await.is_err() {
+            self.pending.lock().unwrap().remove(&message_id);
+            return Err("failed to send request_from_domain: stream closed".to_string());
+        }
+        rx.await
+            .map_err(|_| "core dropped the response channel".to_string())?
+    }
+
+    /// Test/harness-only: builds a `PaladinClient` wired to a fresh channel pair instead of a real
+    /// `ConnectDomain` stream, returning the receiving end so a test can drive its own fake "core"
+    /// loop - reading each outgoing `DomainMessage`'s `request_from_domain` and answering via
+    /// [`resolve_test`](Self::resolve_test). Real production code always gets its `PaladinClient`
+    /// from [`run`]'s `build_handler` callback instead; this exists so a `DomainHandler`
+    /// implementation's own logic (e.g. Sente's `assemble_transaction`/`endorse_transaction`) can
+    /// be exercised as a genuinely separate OS process (see `domains/sente/crates/sente/tests/`)
+    /// without needing a real Paladin core or gRPC connection.
+    pub fn new_test(plugin_id: &str) -> (Self, mpsc::Receiver<DomainMessage>) {
+        let (to_core_tx, to_core_rx) = mpsc::channel(16);
+        (
+            Self {
+                plugin_id: plugin_id.to_string(),
+                to_core_tx,
+                pending: Arc::new(Mutex::new(HashMap::new())),
+            },
+            to_core_rx,
+        )
+    }
+
+    /// Test/harness-only: resolves a pending `call()` by `message_id`, the same way `run()`'s own
+    /// dispatch loop resolves a real `RESPONSE_TO_PLUGIN`/`ERROR_RESPONSE` reply - lets a fake
+    /// "core" loop (driven from [`new_test`](Self::new_test)) answer calls without reimplementing
+    /// the correlation bookkeeping `call()` already does.
+    pub fn resolve_test(&self, message_id: &str, response: Result<ResponseToDomain, String>) {
+        if let Some(tx) = self.pending.lock().unwrap().remove(message_id) {
+            let _ = tx.send(response);
+        }
+    }
+}
 
 /// Implemented by the actual domain plugin logic; `saladin-plugin-rs` owns the gRPC/handshake
 /// plumbing, this trait owns the business logic. Every method defaults to "not implemented" so a
@@ -41,6 +138,41 @@ pub trait DomainHandler: Send + Sync + 'static {
         _req: pb::InitDomainRequest,
     ) -> Result<pb::InitDomainResponse, String> {
         Err("init_domain not implemented".to_string())
+    }
+
+    async fn init_contract(
+        &self,
+        _req: pb::InitContractRequest,
+    ) -> Result<pb::InitContractResponse, String> {
+        Err("init_contract not implemented".to_string())
+    }
+
+    async fn init_transaction(
+        &self,
+        _req: pb::InitTransactionRequest,
+    ) -> Result<pb::InitTransactionResponse, String> {
+        Err("init_transaction not implemented".to_string())
+    }
+
+    async fn assemble_transaction(
+        &self,
+        _req: pb::AssembleTransactionRequest,
+    ) -> Result<pb::AssembleTransactionResponse, String> {
+        Err("assemble_transaction not implemented".to_string())
+    }
+
+    async fn endorse_transaction(
+        &self,
+        _req: pb::EndorseTransactionRequest,
+    ) -> Result<pb::EndorseTransactionResponse, String> {
+        Err("endorse_transaction not implemented".to_string())
+    }
+
+    async fn prepare_transaction(
+        &self,
+        _req: pb::PrepareTransactionRequest,
+    ) -> Result<pb::PrepareTransactionResponse, String> {
+        Err("prepare_transaction not implemented".to_string())
     }
 }
 
@@ -83,11 +215,16 @@ async fn dial(grpc_target: &str) -> Result<Channel, tonic::transport::Error> {
 /// `CompletableFuture.runAsync(..., Executors.newSingleThreadExecutor())`). Returns `Ok(())` on a
 /// clean stream close, `Err` otherwise - the caller (a `cdylib`'s exported `Run`) is responsible
 /// for converting that into the C-ABI return code and for panic-catching around this call.
-pub async fn run(
-    grpc_target: &str,
-    plugin_id: &str,
-    handler: Arc<dyn DomainHandler>,
-) -> Result<(), String> {
+///
+/// `build_handler` is called once, after the REGISTER handshake frame is queued but before the
+/// request loop starts, with a `PaladinClient` already wired to this connection - so a handler
+/// that needs to call back into core (e.g. Sente's `AssembleTransaction` querying prior
+/// `SenteEntry` states) can stash its own clone at construction time, instead of every
+/// `DomainHandler` trait method needing a client parameter threaded through it.
+pub async fn run<F>(grpc_target: &str, plugin_id: &str, build_handler: F) -> Result<(), String>
+where
+    F: FnOnce(PaladinClient) -> Arc<dyn DomainHandler>,
+{
     let channel = dial(grpc_target)
         .await
         .map_err(|e| format!("failed to dial {grpc_target}: {e}"))?;
@@ -119,6 +256,14 @@ pub async fn run(
         .map_err(|e| format!("ConnectDomain failed: {e}"))?;
     let mut inbound = response.into_inner();
 
+    let pending: PendingReplies = Arc::new(Mutex::new(HashMap::new()));
+    let paladin_client = PaladinClient {
+        plugin_id: plugin_id.to_string(),
+        to_core_tx: to_core_tx.clone(),
+        pending: pending.clone(),
+    };
+    let handler = build_handler(paladin_client);
+
     loop {
         let msg = match inbound.message().await {
             Ok(Some(msg)) => msg,
@@ -139,11 +284,33 @@ pub async fn run(
             tracing::warn!("received DomainMessage with no header, dropping");
             continue;
         };
+        // RESPONSE_TO_PLUGIN and ERROR_RESPONSE are replies to our own `PaladinClient` calls
+        // (REQUEST_FROM_PLUGIN) - correlate by `correlation_id` and resolve the matching pending
+        // oneshot. An ERROR_RESPONSE whose correlation_id isn't in `pending` is a reply to some
+        // other exchange (or a message type this loop doesn't otherwise expect) - dropped, not
+        // treated as a protocol error, since the correlation map is the only ownership signal we
+        // have for "is this ours to resolve".
+        if header.message_type == MessageType::ResponseToPlugin as i32 {
+            if let Some(correlation_id) = &header.correlation_id {
+                if let Some(tx) = pending.lock().unwrap().remove(correlation_id) {
+                    let _ = tx.send(msg.response_to_domain.ok_or_else(|| {
+                        "RESPONSE_TO_PLUGIN with no response_to_domain set".to_string()
+                    }));
+                }
+            }
+            continue;
+        }
+        if header.message_type == MessageType::ErrorResponse as i32 {
+            if let Some(correlation_id) = &header.correlation_id {
+                if let Some(tx) = pending.lock().unwrap().remove(correlation_id) {
+                    let _ = tx.send(Err(header.error_message.clone().unwrap_or_else(|| {
+                        "core returned ERROR_RESPONSE with no message".to_string()
+                    })));
+                }
+            }
+            continue;
+        }
         if header.message_type != MessageType::RequestToPlugin as i32 {
-            // Only REQUEST_TO_PLUGIN is handled by this minimal loop today - RESPONSE_TO_PLUGIN/
-            // ERROR_RESPONSE correlation for plugin-initiated callbacks (REQUEST_FROM_PLUGIN,
-            // e.g. FindAvailableStates) is not needed by Phase 0's hello-world and is left for
-            // whichever later phase first needs to call back into Paladin.
             continue;
         }
 
@@ -182,10 +349,12 @@ pub async fn run(
 }
 
 /// Dispatches one `request_to_domain` oneof variant to the handler, returning the matching
-/// `response_from_domain` oneof variant. Only `ConfigureDomain`/`InitDomain` are wired for
-/// Phase 0 - every other request type errors cleanly rather than panicking, so a hello-world
-/// plugin fails loudly (and correctly, via `ERROR_RESPONSE`) if core ever asks it to do more than
-/// it's built for yet.
+/// `response_from_domain` oneof variant. `ConfigureDomain`/`InitDomain` (Phase 0) plus
+/// `InitContract`/`InitTransaction`/`AssembleTransaction`/`EndorseTransaction`/
+/// `PrepareTransaction` (Phase 2/S2 - the chain needed for one private invoke to go from
+/// submitted to endorsed and prepared) are wired - every other request type errors cleanly rather
+/// than panicking, so a plugin fails loudly (and correctly, via `ERROR_RESPONSE`) if core ever
+/// asks it to do more than it's built for yet.
 async fn dispatch(
     handler: Arc<dyn DomainHandler>,
     request: Option<pb::domain_message::RequestToDomain>,
@@ -200,6 +369,26 @@ async fn dispatch(
             .init_domain(req)
             .await
             .map(|res| Some(ResponseFromDomain::InitDomainRes(res))),
+        Some(RequestToDomain::InitContract(req)) => handler
+            .init_contract(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::InitContractRes(res))),
+        Some(RequestToDomain::InitTransaction(req)) => handler
+            .init_transaction(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::InitTransactionRes(res))),
+        Some(RequestToDomain::AssembleTransaction(req)) => handler
+            .assemble_transaction(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::AssembleTransactionRes(res))),
+        Some(RequestToDomain::EndorseTransaction(req)) => handler
+            .endorse_transaction(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::EndorseTransactionRes(res))),
+        Some(RequestToDomain::PrepareTransaction(req)) => handler
+            .prepare_transaction(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::PrepareTransactionRes(res))),
         Some(other) => Err(format!("unhandled request_to_domain variant: {other:?}")),
         None => Err("request_to_domain not set".to_string()),
     }

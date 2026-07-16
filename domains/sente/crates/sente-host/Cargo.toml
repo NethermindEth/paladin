@@ -3,7 +3,7 @@ name = "sente-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Sente Phase 1 spike: embeds soroban-env-host/soroban-simulation directly, proves recording-mode invocation and cross-process deterministic re-execution before any real domain-plugin logic is built."
+description = "Embeds soroban-env-host/soroban-simulation directly: deterministic recording-mode invocation, digesting, and the SenteEntry state model, reused by both the Phase 1 CLI spike and the real domain plugin (crates/sente)."
 
 [dependencies]
 soroban-env-host = { version = "=27.0.0", features = ["testutils"] }
@@ -11,6 +11,9 @@ soroban-simulation = { version = "=27.0.0", features = ["testutils"] }
 anyhow = "1"
 sha2 = "0.10"
 hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 assert_cmd = "2"
