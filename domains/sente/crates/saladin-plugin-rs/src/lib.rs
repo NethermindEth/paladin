@@ -140,6 +140,20 @@ pub trait DomainHandler: Send + Sync + 'static {
         Err("init_domain not implemented".to_string())
     }
 
+    async fn init_deploy(
+        &self,
+        _req: pb::InitDeployRequest,
+    ) -> Result<pb::InitDeployResponse, String> {
+        Err("init_deploy not implemented".to_string())
+    }
+
+    async fn prepare_deploy(
+        &self,
+        _req: pb::PrepareDeployRequest,
+    ) -> Result<pb::PrepareDeployResponse, String> {
+        Err("prepare_deploy not implemented".to_string())
+    }
+
     async fn init_contract(
         &self,
         _req: pb::InitContractRequest,
@@ -349,12 +363,15 @@ where
 }
 
 /// Dispatches one `request_to_domain` oneof variant to the handler, returning the matching
-/// `response_from_domain` oneof variant. `ConfigureDomain`/`InitDomain` (Phase 0) plus
+/// `response_from_domain` oneof variant. `ConfigureDomain`/`InitDomain` (Phase 0),
 /// `InitContract`/`InitTransaction`/`AssembleTransaction`/`EndorseTransaction`/
 /// `PrepareTransaction` (Phase 2/S2 - the chain needed for one private invoke to go from
-/// submitted to endorsed and prepared) are wired - every other request type errors cleanly rather
-/// than panicking, so a plugin fails loudly (and correctly, via `ERROR_RESPONSE`) if core ever
-/// asks it to do more than it's built for yet.
+/// submitted to endorsed and prepared), and `InitDeploy`/`PrepareDeploy` (Phase 3/S3 - genesis: a
+/// new privacy group's on-chain deploy, declarative verifier resolution the same
+/// `required_verifiers`/`resolved_verifiers` shape `InitTransaction`/`AssembleTransaction` already
+/// use) are wired - every other request type errors cleanly rather than panicking, so a plugin
+/// fails loudly (and correctly, via `ERROR_RESPONSE`) if core ever asks it to do more than it's
+/// built for yet.
 async fn dispatch(
     handler: Arc<dyn DomainHandler>,
     request: Option<pb::domain_message::RequestToDomain>,
@@ -369,6 +386,14 @@ async fn dispatch(
             .init_domain(req)
             .await
             .map(|res| Some(ResponseFromDomain::InitDomainRes(res))),
+        Some(RequestToDomain::InitDeploy(req)) => handler
+            .init_deploy(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::InitDeployRes(res))),
+        Some(RequestToDomain::PrepareDeploy(req)) => handler
+            .prepare_deploy(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::PrepareDeployRes(res))),
         Some(RequestToDomain::InitContract(req)) => handler
             .init_contract(req)
             .await

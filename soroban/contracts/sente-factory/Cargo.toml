@@ -1,5 +1,5 @@
 [package]
-name = "satom"
+name = "sente-factory"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,8 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
-atom-operation = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { workspace = true, features = ["testutils", "alloc"] }
-snoto = { path = "../snoto" }
-saladin-typed-data = { workspace = true }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+factory = { path = "../factory" }
+sente = { path = "../sente" }

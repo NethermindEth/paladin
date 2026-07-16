@@ -2,12 +2,15 @@
 resolver = "3"
 members = [
     "crates/saladin-typed-data",
+    "crates/atom-operation",
     "contracts/factory",
     "contracts/snoto",
     "contracts/szeto",
     "contracts/satom",
     "contracts/satom-factory",
     "contracts/snoto-factory",
+    "contracts/sente",
+    "contracts/sente-factory",
     "contracts/identity-registry",
 ]
 
@@ -21,6 +24,7 @@ publish = false
 [workspace.dependencies]
 soroban-sdk = "27.0.0"
 saladin-typed-data = { path = "crates/saladin-typed-data" }
+atom-operation = { path = "crates/atom-operation" }
 
 [profile.release]
 opt-level = "z"

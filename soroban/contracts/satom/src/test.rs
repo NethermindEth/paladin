@@ -7,7 +7,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Bytes, BytesN, IntoVal};
+use soroban_sdk::{Bytes, BytesN, IntoVal, Symbol};
 
 const NETWORK_PASSPHRASE: &[u8] = b"Test SDF Network ; September 2015";
 

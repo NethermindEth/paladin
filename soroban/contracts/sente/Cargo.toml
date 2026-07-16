@@ -1,5 +1,5 @@
 [package]
-name = "satom"
+name = "sente"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,10 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+saladin-typed-data = { workspace = true }
 atom-operation = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils", "alloc"] }
 snoto = { path = "../snoto" }
-saladin-typed-data = { workspace = true }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["rand_core"] }

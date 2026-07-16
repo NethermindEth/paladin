@@ -40,21 +40,9 @@
 
 mod storage;
 
-use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, Address, Env, Symbol, Val, Vec,
-};
+pub use atom_operation::AtomOperation;
+use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, Val, Vec};
 use storage::Status;
-
-/// One settlement leg - a single cross-contract call. `args`' shape (`Vec<Val>`) matches
-/// `env.invoke_contract`'s own signature directly, confirmed against `soroban-sdk`'s real
-/// `Env::invoke_contract<T>(contract_address: &Address, func: &Symbol, args: Vec<Val>) -> T`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtomOperation {
-    pub contract: Address,
-    pub function: Symbol,
-    pub args: Vec<Val>,
-}
 
 #[contractevent(topics = ["executed"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]

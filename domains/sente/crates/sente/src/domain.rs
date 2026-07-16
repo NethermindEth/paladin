@@ -29,7 +29,10 @@ use saladin_plugin_rs::{pb, DomainHandler, PaladinClient};
 use sha2::{Digest, Sha256};
 
 use soroban_env_host::e2e_testutils::{get_account_id, CreateContractData};
-use soroban_env_host::xdr::{AccountId, LedgerEntry, ScAddress, ScBytes, ScVal, VecM};
+use soroban_env_host::xdr::{
+    AccountId, ContractId, Hash, LedgerEntry, Limits, ScAddress, ScBytes, ScVal, ScVec, VecM,
+    WriteXdr,
+};
 use soroban_env_host::LedgerInfo;
 
 use crate::info::{AuthParams, InfoState, InvocationSpec, SIGN_PAYLOAD_TYPE};
@@ -49,6 +52,68 @@ const SOURCE_ACCOUNT_SEED: [u8; 32] = [7; 32];
 /// S2 ignores `function_params_json` (see module doc comment) - this is `register`'s third,
 /// otherwise-arbitrary `config` argument.
 const FIXED_CONFIG_BYTES: &[u8] = b"sente-s2-fixed-scenario";
+
+/// S3 genesis config, supplied by the Paladin administrator as this domain's `config_json`
+/// (`ConfigureDomainRequest.config_json`) - the same "runtime config comes from the domain's own
+/// config block, not a compiled-in constant" convention Noto's Stellar `chainIO` config already
+/// uses (`domains/noto/pkg/types/config.go`'s `StellarSnotoFactoryAddress`/`StellarSnotoWasmHash`),
+/// since a factory's deployed address is only known once `deploy-stellar-fixtures.sh` has actually
+/// run against a real network - it can never be a compile-time constant.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SenteConfig {
+    /// The pre-deployed `SenteFactory` contract's address (`soroban/contracts/sente-factory`).
+    sente_factory_address: String,
+    /// The pre-deployed `SaladinFactory` registry contract's address (`soroban/contracts/factory`).
+    saladin_factory_address: String,
+    /// Hex-encoded Wasm hash of the `SentePrivacyGroup` contract (`soroban/contracts/sente`),
+    /// uploaded (not deployed) once, the same way `snotoWasmHash` is - see
+    /// `deploy-stellar-fixtures.sh`.
+    sente_wasm_hash: String,
+    /// Raw network passphrase bytes, doubling as `SentePrivacyGroup::initialize`'s
+    /// `network_passphrase` argument - the same "config is the raw passphrase" convention
+    /// `snoto::initialize`/`snoto-factory::deploy` already established.
+    network_passphrase: String,
+}
+
+/// The constructor params a genesis deploy transaction supplies (`DeployTransactionSpecification.
+/// constructor_params_json`) - `group.salt`/`group.members` mirrors Pente's own
+/// `PrivacyGroupConstructorParamsJSON` shape (`PenteTransaction.java`), reused here rather than
+/// invented fresh since it's the same "group genesis" concept being translated.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeployConstructorParams {
+    group: DeployGroupParams,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeployGroupParams {
+    /// Hex string (with or without a `0x` prefix) - salts each member's per-group identity lookup
+    /// below. Chosen by whoever submits the genesis transaction; every node must derive the same
+    /// lookups from it, so it travels as plain constructor data, not something this plugin invents.
+    salt: String,
+    /// Raw member locators (`"identity"` or `"identity@node"`), before per-group salting.
+    members: Vec<String>,
+}
+
+/// Pente's own per-group identity scoping (`PenteTransaction.buildGroupScopeIdentityLookups`),
+/// translated verbatim: splice the group's salt hex in before any `@node` suffix, so the same
+/// person's identity resolves to a distinct verifier in every privacy group they belong to,
+/// instead of reusing one signing key across every group. `salt_hex` has already had any `0x`
+/// prefix stripped by the caller.
+fn group_scope_lookup(member: &str, salt_hex: &str) -> String {
+    match member.split_once('@') {
+        Some((identity, node)) => format!("{identity}.{salt_hex}@{node}"),
+        None => format!("{member}.{salt_hex}"),
+    }
+}
+
+/// Decodes a Stellar contract strkey (`"C..."`) into the XDR `ContractId` `ScAddress::Contract`
+/// wraps - the inverse of this module's own `contract_strkey`.
+fn decode_contract_address(strkey: &str) -> Result<ContractId, String> {
+    let contract = stellar_strkey::Contract::from_string(strkey)
+        .map_err(|e| format!("{strkey} is not a valid contract strkey: {e}"))?;
+    Ok(ContractId(Hash(contract.0)))
+}
 
 fn factory_wasm() -> Vec<u8> {
     std::fs::read(
@@ -110,6 +175,7 @@ pub struct SenteDomain {
     client: PaladinClient,
     schema_id: Mutex<Option<String>>,
     members: Mutex<Vec<String>>,
+    config: Mutex<Option<SenteConfig>>,
 }
 
 impl SenteDomain {
@@ -118,6 +184,7 @@ impl SenteDomain {
             client,
             schema_id: Mutex::new(None),
             members: Mutex::new(Vec::new()),
+            config: Mutex::new(None),
         }
     }
 
@@ -127,6 +194,16 @@ impl SenteDomain {
             .unwrap()
             .clone()
             .ok_or_else(|| "schema_id not set - init_domain not yet called".to_string())
+    }
+
+    /// S3 genesis needs this domain's `SenteConfig` (factory addresses, wasm hash, network
+    /// passphrase) - set once from `ConfigureDomainRequest.config_json` and required from then on.
+    fn config(&self) -> Result<SenteConfig, String> {
+        self.config
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "sente config not set - configure_domain's config_json is missing or empty".to_string())
     }
 
     async fn prior_entries(&self, state_query_context: &str) -> Result<Vec<PriorEntry>, String> {
@@ -185,8 +262,16 @@ impl SenteDomain {
 impl DomainHandler for SenteDomain {
     async fn configure_domain(
         &self,
-        _req: pb::ConfigureDomainRequest,
+        req: pb::ConfigureDomainRequest,
     ) -> Result<pb::ConfigureDomainResponse, String> {
+        // Empty is tolerated (S2's own tests/harness never set config_json, and don't need to -
+        // they never call init_deploy/prepare_deploy) - genesis just fails clearly via `config()`
+        // if a deploy is actually attempted without it.
+        if !req.config_json.trim().is_empty() {
+            let config: SenteConfig = serde_json::from_str(&req.config_json)
+                .map_err(|e| format!("invalid Sente domain config_json: {e}"))?;
+            *self.config.lock().unwrap() = Some(config);
+        }
         Ok(pb::ConfigureDomainResponse {
             domain_config: Some(pb::DomainConfig {
                 custom_hash_function: false,
@@ -211,6 +296,142 @@ impl DomainHandler for SenteDomain {
             .ok_or("init_domain: expected the SenteEntry schema to be registered")?;
         *self.schema_id.lock().unwrap() = Some(schema.id.clone());
         Ok(pb::InitDomainResponse {})
+    }
+
+    /// S3 genesis, step 1: declares which verifiers need resolving before the deploy can be
+    /// prepared - purely declarative (`InitDeployResponse.required_verifiers`), the same
+    /// `required_verifiers`/`resolved_verifiers` round trip `init_transaction`/
+    /// `assemble_transaction` already use, no new synchronous call needed. Mirrors Pente's
+    /// `initDeploy`/`buildGroupScopeIdentityLookups` exactly, translated to ed25519/Stellar.
+    async fn init_deploy(
+        &self,
+        req: pb::InitDeployRequest,
+    ) -> Result<pb::InitDeployResponse, String> {
+        let transaction = req.transaction.ok_or("init_deploy: transaction not set")?;
+        let params: DeployConstructorParams =
+            serde_json::from_str(&transaction.constructor_params_json)
+                .map_err(|e| format!("invalid deploy constructor_params_json: {e}"))?;
+        let salt_hex = params.group.salt.trim_start_matches("0x");
+
+        Ok(pb::InitDeployResponse {
+            required_verifiers: params
+                .group
+                .members
+                .iter()
+                .map(|member| pb::ResolveVerifierRequest {
+                    lookup: group_scope_lookup(member, salt_hex),
+                    algorithm: SIGN_ALGORITHM.to_string(),
+                    verifier_type: VERIFIER_TYPE.to_string(),
+                })
+                .collect(),
+        })
+    }
+
+    /// S3 genesis, step 2: builds the real on-chain deploy - a `SorobanInvoke` against the
+    /// pre-deployed `SenteFactory`'s `deploy_group`, the same "the plugin only ever invokes an
+    /// already-deployed factory, never builds contract-creation XDR itself" pattern Noto's
+    /// `stellarPrepareDeploy` already established (`domains/noto/internal/noto/deploy_stellar.go`).
+    /// No assemble/endorse round trip here - a genesis deploy isn't privately coordinated the way
+    /// a regular transaction is, matching Pente's `prepareDeploy` returning a prepared transaction
+    /// directly.
+    async fn prepare_deploy(
+        &self,
+        req: pb::PrepareDeployRequest,
+    ) -> Result<pb::PrepareDeployResponse, String> {
+        let transaction = req.transaction.ok_or("prepare_deploy: transaction not set")?;
+        let config = self.config()?;
+        let params: DeployConstructorParams =
+            serde_json::from_str(&transaction.constructor_params_json)
+                .map_err(|e| format!("invalid deploy constructor_params_json: {e}"))?;
+        let salt_hex = params.group.salt.trim_start_matches("0x");
+
+        // Re-derives the same lookups `init_deploy` requested, and matches each one back to its
+        // resolved verifier by lookup+algorithm+verifier_type equality - the same matching
+        // `PenteDomain.getResolvedEndorsers` does against `PrepareDeployRequest.resolved_verifiers`.
+        let mut members_scval = Vec::with_capacity(params.group.members.len());
+        for member in &params.group.members {
+            let lookup = group_scope_lookup(member, salt_hex);
+            let resolved = req
+                .resolved_verifiers
+                .iter()
+                .find(|v| {
+                    v.lookup == lookup
+                        && v.algorithm == SIGN_ALGORITHM
+                        && v.verifier_type == VERIFIER_TYPE
+                })
+                .ok_or_else(|| format!("prepare_deploy: no resolved verifier for {lookup}"))?;
+            let public_key = stellar_strkey::ed25519::PublicKey::from_string(&resolved.verifier)
+                .map_err(|e| {
+                    format!(
+                        "resolved verifier {} is not a valid Stellar ed25519 address: {e}",
+                        resolved.verifier
+                    )
+                })?;
+            members_scval.push(ScVal::Bytes(ScBytes(
+                public_key
+                    .0
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| "failed to build member ScBytes".to_string())?,
+            )));
+        }
+
+        let wasm_hash_bytes = hex::decode(&config.sente_wasm_hash)
+            .map_err(|e| format!("invalid senteWasmHash config: {e}"))?;
+        let saladin_factory = decode_contract_address(&config.saladin_factory_address)?;
+        let tx_id_hash: [u8; 32] = Sha256::digest(transaction.transaction_id.as_bytes()).into();
+
+        // Argument order must match `sente-factory`'s real Rust signature exactly:
+        // `deploy_group(wasm_hash, members, config, saladin_factory, tx_id)`.
+        let args: VecM<ScVal> = vec![
+            ScVal::Bytes(ScBytes(wasm_hash_bytes.try_into().map_err(|_| {
+                "senteWasmHash config must decode to exactly 32 bytes".to_string()
+            })?)),
+            ScVal::Vec(Some(ScVec(members_scval.try_into().map_err(|_| {
+                "failed to build members ScVec".to_string()
+            })?))),
+            ScVal::Bytes(ScBytes(
+                config
+                    .network_passphrase
+                    .as_bytes()
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| "network passphrase too long for ScBytes".to_string())?,
+            )),
+            ScVal::Address(ScAddress::Contract(saladin_factory)),
+            ScVal::Bytes(ScBytes(
+                tx_id_hash
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| "failed to build tx_id ScBytes".to_string())?,
+            )),
+        ]
+        .try_into()
+        .map_err(|_| "failed to build deploy args vector".to_string())?;
+        let args_bytes = args
+            .to_xdr(Limits::none())
+            .map_err(|e| format!("failed to XDR-encode deploy args: {e}"))?;
+
+        Ok(pb::PrepareDeployResponse {
+            signer: None,
+            transaction: None,
+            deploy: None,
+            chain_transaction: Some(pb::PreparedChainTransaction {
+                r#type: pb::prepared_chain_transaction::TransactionType::Public as i32,
+                required_signer: None,
+                payload: Some(pb::prepared_chain_transaction::Payload::Soroban(
+                    pb::SorobanInvoke {
+                        contract_id: config.sente_factory_address.clone(),
+                        function_name: "deploy_group".to_string(),
+                        args_xdr: args_bytes,
+                        args_json: String::new(),
+                        auth_entries_xdr: vec![],
+                        read_footprint_hints: vec![],
+                    },
+                )),
+            }),
+            soroban_deploy: None,
+        })
     }
 
     async fn init_contract(

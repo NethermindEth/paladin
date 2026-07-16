@@ -181,6 +181,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "atom-operation"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1191,6 +1198,7 @@ dependencies = [
 name = "satom"
 version = "0.0.0"
 dependencies = [
+ "atom-operation",
  "saladin-typed-data",
  "snoto",
  "soroban-sdk",
@@ -1258,6 +1266,26 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+
+[[package]]
+name = "sente"
+version = "0.0.0"
+dependencies = [
+ "atom-operation",
+ "ed25519-dalek",
+ "saladin-typed-data",
+ "snoto",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "sente-factory"
+version = "0.0.0"
+dependencies = [
+ "factory",
+ "sente",
+ "soroban-sdk",
+]
 
 [[package]]
 name = "serde"

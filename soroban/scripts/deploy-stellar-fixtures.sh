@@ -3,17 +3,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Deploys the shared Soroban infrastructure contracts (SaladinFactory + SNotoFactory) to the local
-# stellar/quickstart standalone network (testinfra/docker-compose-test.yml), and uploads the SNoto
-# Wasm - so core/go/noderuntests/componenttest's Stellar acceptance test (chapter 14 step 6) can
-# register a real SNoto instance against them.
+# Deploys the shared Soroban infrastructure contracts (SaladinFactory + SNotoFactory + SenteFactory)
+# to the local stellar/quickstart standalone network (testinfra/docker-compose-test.yml), and
+# uploads the SNoto/Sente Wasm - so core/go/noderuntests/componenttest's Stellar acceptance test
+# (chapter 14 step 6) can register real instances against them.
 #
 # This runs at the Gradle/build layer, not inside the Go test itself: this repo's existing
 # convention is that Gradle/docker-compose provisions infrastructure and Go tests assume it's
 # ready (testinfra:startTestInfra), rather than a Go test shelling out to external tools itself
 # (no precedent for that anywhere in this repo's test suite).
 #
-# Writes artifacts/stellar-fixtures.json: {"saladinFactoryAddress", "snotoFactoryAddress", "snotoWasmHash"}
+# Sente's own instances (one `SentePrivacyGroup` per group) are deployed per-genesis, the same way
+# SNoto instances are - so, like `snotoWasmHash`, only the *hash* is uploaded here, not an instance.
+#
+# Writes artifacts/stellar-fixtures.json:
+# {"saladinFactoryAddress", "snotoFactoryAddress", "snotoWasmHash", "senteFactoryAddress", "senteWasmHash"}
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -34,12 +38,16 @@ stellar keys generate "$deployer" --network "$network" --fund --overwrite >/dev/
 saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/snoto_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/snoto.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+sente_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/sente_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+sente_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/sente.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 
 cat > "$fixtures_file" <<JSON
 {
   "saladinFactoryAddress": "$saladin_factory_address",
   "snotoFactoryAddress": "$snoto_factory_address",
-  "snotoWasmHash": "$snoto_wasm_hash"
+  "snotoWasmHash": "$snoto_wasm_hash",
+  "senteFactoryAddress": "$sente_factory_address",
+  "senteWasmHash": "$sente_wasm_hash"
 }
 JSON
 
