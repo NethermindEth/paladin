@@ -195,6 +195,20 @@ pub trait DomainHandler: Send + Sync + 'static {
     ) -> Result<pb::HandleEventBatchResponse, String> {
         Err("handle_event_batch not implemented".to_string())
     }
+
+    async fn configure_privacy_group(
+        &self,
+        _req: pb::ConfigurePrivacyGroupRequest,
+    ) -> Result<pb::ConfigurePrivacyGroupResponse, String> {
+        Err("configure_privacy_group not implemented".to_string())
+    }
+
+    async fn init_privacy_group(
+        &self,
+        _req: pb::InitPrivacyGroupRequest,
+    ) -> Result<pb::InitPrivacyGroupResponse, String> {
+        Err("init_privacy_group not implemented".to_string())
+    }
 }
 
 /// Parses the `grpc_target` string Paladin's loader passes to `Run` - `"unix:<path>"` for a Unix
@@ -426,6 +440,14 @@ async fn dispatch(
             .handle_event_batch(req)
             .await
             .map(|res| Some(ResponseFromDomain::HandleEventBatchRes(res))),
+        Some(RequestToDomain::ConfigurePrivacyGroup(req)) => handler
+            .configure_privacy_group(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::ConfigurePrivacyGroupRes(res))),
+        Some(RequestToDomain::InitPrivacyGroup(req)) => handler
+            .init_privacy_group(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::InitPrivacyGroupRes(res))),
         Some(other) => Err(format!("unhandled request_to_domain variant: {other:?}")),
         None => Err("request_to_domain not set".to_string()),
     }

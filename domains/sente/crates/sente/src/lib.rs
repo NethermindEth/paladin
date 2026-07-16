@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 pub mod domain;
 pub mod fixture;
 pub mod info;
+pub mod scval_json;
 
 /// Keyed by plugin_id, mirroring toolkit/go/pkg/plugintk's `PluginLibraryEntrypoint.plugins` map -
 /// lets `Stop` signal the matching `Run` call's loop to shut down cleanly.

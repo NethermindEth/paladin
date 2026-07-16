@@ -210,7 +210,7 @@ func TestPrivacyGroupRPCLifecycleRealDB(t *testing.T) {
 	fullGroup, err := pgroupRPC.GetGroupById(ctx, "domain1", groupID)
 	require.NoError(t, err)
 	require.NotNil(t, fullGroup)
-	require.Equal(t, contractAddr, fullGroup.ContractAddress)
+	require.Equal(t, contractAddr.ChainAddress(), *fullGroup.ContractAddress)
 
 	// Get it by address
 	group, err := pgroupRPC.GetGroupByAddress(ctx, *contractAddr)
@@ -226,7 +226,7 @@ func TestPrivacyGroupRPCLifecycleRealDB(t *testing.T) {
 	groups, err = pgroupRPC.QueryGroups(ctx, query.NewQueryBuilder().Equal("name", "secret.things").Limit(1).Query())
 	require.NoError(t, err)
 	require.Len(t, groups, 1)
-	require.Equal(t, contractAddr, groups[0].ContractAddress)
+	require.Equal(t, contractAddr.ChainAddress(), *groups[0].ContractAddress)
 	require.Equal(t, "domain1", groups[0].Domain)
 	require.Equal(t, groupID, groups[0].ID)
 	require.Equal(t, []string{"me@node1", "you@node2"}, groups[0].Members)

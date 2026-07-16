@@ -36,7 +36,7 @@ type PrivacyGroup struct {
 	GenesisSalt        pldtypes.Bytes32     `docstruct:"PrivacyGroup" json:"genesisSalt"`
 	GenesisSchema      pldtypes.Bytes32     `docstruct:"PrivacyGroup" json:"genesisSchema"`
 	GenesisTransaction uuid.UUID            `docstruct:"PrivacyGroup" json:"genesisTransaction"`
-	ContractAddress    *pldtypes.EthAddress `docstruct:"PrivacyGroup" json:"contractAddress"`
+	ContractAddress    *pldtypes.ChainAddress `docstruct:"PrivacyGroup" json:"contractAddress"`
 }
 
 type PrivacyGroupTXOptions struct {

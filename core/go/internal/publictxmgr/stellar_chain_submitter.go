@@ -287,31 +287,59 @@ func envelopeSigningAddress(ptx *DBPublicTxn) pldtypes.ChainAddress {
 // needs the public StrKey to compute the signature hint) and returns the wire-ready raw bytes and
 // the network-ID-qualified signature hash. Shared by PrepareSubmission and PrepareRestore - both
 // build a txnbuild.Transaction sourced from the same account and need identical signing.
-func (s *stellarChainSubmitter) signAndSerializeStellarTx(ctx context.Context, from pldtypes.ChainAddress, tx *txnbuild.Transaction) ([]byte, pldtypes.Bytes32, error) {
+//
+// Stellar requires a signature from every distinct operation-level source account, not just the
+// envelope's own account (chapter 12 §12.2's channel-account pooling routinely creates this split:
+// the envelope is sourced from the channel account, but buildStellarTx's InvokeHostFunction op is
+// still sourced from the business identity in ptx.From, since that's what a contract's
+// require_auth checks against) - stellar-core rejects the operation with opBadAuth otherwise. So
+// envelopeSigner always signs, plus any additional operation source accounts found on tx.
+func (s *stellarChainSubmitter) signAndSerializeStellarTx(ctx context.Context, envelopeSigner pldtypes.ChainAddress, tx *txnbuild.Transaction) ([]byte, pldtypes.Bytes32, error) {
 	networkPassphrase := s.ptm.baseLedger.ChainInfo().NetworkID
 	hash, err := tx.Hash(networkPassphrase)
 	if err != nil {
 		return nil, pldtypes.Bytes32{}, err
 	}
 
-	resolvedKey, err := s.ptm.keymgr.ReverseKeyLookup(ctx, s.ptm.p.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, from.String())
-	if err != nil {
-		log.L(ctx).Errorf("signing failed to resolve key %s for signing: %s", from, err)
-		return nil, pldtypes.Bytes32{}, err
+	signers := []string{envelopeSigner.String()}
+	for _, op := range tx.Operations() {
+		opSource := op.GetSourceAccount()
+		if opSource == "" || opSource == signers[0] {
+			continue
+		}
+		alreadyIncluded := false
+		for _, existing := range signers {
+			if existing == opSource {
+				alreadyIncluded = true
+				break
+			}
+		}
+		if !alreadyIncluded {
+			signers = append(signers, opSource)
+		}
 	}
-	signature, err := s.ptm.keymgr.Sign(ctx, resolvedKey, signpayloads.OPAQUE_TO_EDDSA, pldtypes.HexBytes(hash[:]))
-	if err != nil {
-		log.L(ctx).Errorf("signing failed with keyHandle %s (addr=%s): %s", resolvedKey.KeyHandle, resolvedKey.Verifier.Verifier, err)
-		return nil, pldtypes.Bytes32{}, err
+
+	for _, signer := range signers {
+		resolvedKey, err := s.ptm.keymgr.ReverseKeyLookup(ctx, s.ptm.p.NOTX(), algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, signer)
+		if err != nil {
+			log.L(ctx).Errorf("signing failed to resolve key %s for signing: %s", signer, err)
+			return nil, pldtypes.Bytes32{}, err
+		}
+		signature, err := s.ptm.keymgr.Sign(ctx, resolvedKey, signpayloads.OPAQUE_TO_EDDSA, pldtypes.HexBytes(hash[:]))
+		if err != nil {
+			log.L(ctx).Errorf("signing failed with keyHandle %s (addr=%s): %s", resolvedKey.KeyHandle, resolvedKey.Verifier.Verifier, err)
+			return nil, pldtypes.Bytes32{}, err
+		}
+		signerAddr, err := keypair.ParseAddress(signer)
+		if err != nil {
+			return nil, pldtypes.Bytes32{}, err
+		}
+		tx, err = tx.AddSignatureDecorated(xdr.NewDecoratedSignature(signature, signerAddr.Hint()))
+		if err != nil {
+			return nil, pldtypes.Bytes32{}, err
+		}
 	}
-	fromAddr, err := keypair.ParseAddress(from.String())
-	if err != nil {
-		return nil, pldtypes.Bytes32{}, err
-	}
-	tx, err = tx.AddSignatureDecorated(xdr.NewDecoratedSignature(signature, fromAddr.Hint()))
-	if err != nil {
-		return nil, pldtypes.Bytes32{}, err
-	}
+
 	rawTransaction, err := tx.MarshalBinary()
 	if err != nil {
 		return nil, pldtypes.Bytes32{}, err

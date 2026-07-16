@@ -16,7 +16,7 @@
 //!     content-free commitment every party can recompute identically, not tied to any simulated
 //!     execution result (root-only transitions have no external effects to encode into it yet).
 //!   - The actual thing every member's `ENDORSE` attestation signs is
-//!     `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, external_calls=[]})` -
+//!     `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, external_calls})` -
 //!     precisely what `transition`'s on-chain check verifies - not a separate off-chain-only
 //!     payload the way S2's `result_digest` was. `endorse_transaction` independently re-derives
 //!     and checks this digest (see its own doc comment) instead of re-executing a host invocation.
@@ -24,12 +24,15 @@
 //!     already exist as a tracked `SenteEntry` before its first transition can be assembled -
 //!     populating that from a real on-chain deploy is Go-side indexing work, out of scope here
 //!     (see `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 S3 for the precise boundary).
-//!   - `external_calls` (the SNoto-atomicity half of S3's exit criterion) remain unwired at the
-//!     plugin level - proven only at the contract-test level
-//!     (`soroban/contracts/sente/src/test.rs`'s `transition_executes_external_call_atomically`).
-//!     Wiring them in needs both a general JSON->`ScVal` argument encoder (already flagged as
-//!     separable future work) and a way to bootstrap an external contract's own genesis state,
-//!     which - unlike the wrapper's own genesis - this domain has no way to know how to construct.
+//!   - `external_calls` (the SNoto-atomicity half of S3's exit criterion) are now wired at the
+//!     plugin level too: a transition's `function_params_json` may declare
+//!     `{"externalCalls": [{"contract, function, args}, ...]}` (`ExternalCallJson`), encoded to the
+//!     exact on-chain `AtomOperation` `ScVal::Map` shape by `encode_atom_operation` (see
+//!     `scval_json.rs` for the general JSON->`ScVal` argument encoder this needed, previously
+//!     flagged as separable future work). The caller is trusted to supply meaningful, already-valid
+//!     args for whatever external contract it names - this domain has no way to independently
+//!     bootstrap or understand an *external* contract's own genesis/business state the way it does
+//!     its own `SenteEntry`.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -45,7 +48,7 @@ use soroban_env_host::xdr::{
     ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM, WriteXdr,
 };
 
-use crate::info::InfoState;
+use crate::info::{InfoState, INFO_STATE_ABI_SCHEMA_JSON};
 
 /// `toolkit/go/pkg/algorithms.EDDSA_ED25519` ("eddsa" + ":" + "ed25519").
 const SIGN_ALGORITHM: &str = "eddsa:ed25519";
@@ -119,12 +122,16 @@ struct SenteConfig {
 /// constructor_params_json`) - `group.salt`/`group.members` mirrors Pente's own
 /// `PrivacyGroupConstructorParamsJSON` shape (`PenteTransaction.java`), reused here rather than
 /// invented fresh since it's the same "group genesis" concept being translated.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// `Serialize` is needed alongside `Deserialize` because `init_privacy_group` (below) builds one
+/// of these to hand back to core as `PreparedTransaction.params_json` - the same shape `init_deploy`/
+/// `prepare_deploy` parse right back out of `constructor_params_json` once core submits it, so a
+/// `pgroup_createGroup`-initiated deploy reaches this plugin's genesis-deploy code unchanged.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct DeployConstructorParams {
     group: DeployGroupParams,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct DeployGroupParams {
     /// Hex string (with or without a `0x` prefix) - salts each member's per-group identity lookup
     /// below. Chosen by whoever submits the genesis transaction; every node must derive the same
@@ -133,6 +140,26 @@ struct DeployGroupParams {
     /// Raw member locators (`"identity"` or `"identity@node"`), before per-group salting.
     members: Vec<String>,
 }
+
+/// `init_privacy_group`'s constructor ABI (below) - `salt`/`members` typed as plain
+/// `string`/`string[]`, not `bytes32`/anything numeric, so core's ABI-typed JSON round trip (deploy
+/// params in, `constructor_params_json` out) is representationally a no-op - the same
+/// `uint256`-gets-stringified class of gotcha this session already hit once with `SenteEntry.seq`,
+/// sidestepped here by not giving core a numeric type to normalize in the first place.
+const PRIVACY_GROUP_DEPLOY_ABI_JSON: &str = r#"{
+  "type": "constructor",
+  "inputs": [
+    {
+      "name": "group",
+      "type": "tuple",
+      "internalType": "struct Group",
+      "components": [
+        {"name": "salt", "type": "string"},
+        {"name": "members", "type": "string[]"}
+      ]
+    }
+  ]
+}"#;
 
 /// Pente's own per-group identity scoping (`PenteTransaction.buildGroupScopeIdentityLookups`),
 /// translated verbatim: splice the group's salt hex in before any `@node` suffix, so the same
@@ -396,21 +423,21 @@ fn tx_id_bytes(transaction_id: &str) -> Result<[u8; 32], String> {
 /// XDR shape of `soroban/contracts/sente::TransitionPayload(BytesN<32>, BytesN<32>, BytesN<32>,
 /// Vec<AtomOperation>)` - a tuple struct, so its `#[contracttype]` derive encodes it as a plain
 /// positional `ScVal::Vec`, matching the contract's own doc comment for choosing a tuple struct
-/// here. `external_calls` is always empty for this phase's root-only transitions (module doc
-/// comment) - an empty `Vec<AtomOperation>` encodes as `ScVal::Vec(Some(ScVec([])))` regardless of
-/// `AtomOperation`'s own shape (empirically confirmed), so no `AtomOperation` encoding is needed
-/// yet.
+/// here. `external_calls_scval` is the already-encoded `ScVal::Vec` of `AtomOperation`s (see
+/// `encode_external_calls`) - empty for a root-only transition, matching `ScVal::Vec(Some(ScVec([])))`
+/// regardless of `AtomOperation`'s own shape.
 fn transition_payload_xdr(
     tx_id: [u8; 32],
     old_root: [u8; 32],
     new_root: [u8; 32],
+    external_calls_scval: ScVal,
 ) -> Result<Vec<u8>, String> {
     let payload = ScVal::Vec(Some(ScVec(
         vec![
             ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap())),
-            ScVal::Vec(Some(ScVec(VecM::default()))),
+            external_calls_scval,
         ]
         .try_into()
         .map_err(|_| "failed to build TransitionPayload vector".to_string())?,
@@ -418,6 +445,74 @@ fn transition_payload_xdr(
     payload
         .to_xdr(Limits::none())
         .map_err(|e| format!("failed to XDR-encode TransitionPayload: {e}"))
+}
+
+/// One `external_calls` leg, as accepted in a transition transaction's own `function_params_json`
+/// (`{"externalCalls": [{"contract": "C...", "function": "...", "args": [...]}]}`) - matches
+/// `soroban/crates/atom-operation::AtomOperation`'s shape.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+struct ExternalCallJson {
+    contract: String,
+    function: String,
+    #[serde(default)]
+    args: Vec<serde_json::Value>,
+}
+
+/// A transition transaction's own `function_params_json` - `external_calls` defaults to empty so
+/// existing root-only callers (with `{}` or blank params) are unaffected.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+struct TransitionParamsJson {
+    #[serde(rename = "externalCalls", default)]
+    external_calls: Vec<ExternalCallJson>,
+}
+
+/// Encodes one `ExternalCallJson` to the exact `ScVal::Map` shape `soroban_sdk`'s own
+/// `#[contracttype]` derive produces for `AtomOperation{contract, function, args}` - a named-field
+/// struct, so Soroban encodes it as a map with entries sorted alphabetically by field name (`args`
+/// < `contract` < `function`), each key an `ScVal::Symbol` - confirmed empirically against a real
+/// `soroban_sdk`-built `AtomOperation`'s own `.to_xdr()` output, not just inferred from the SDK's
+/// docs.
+fn encode_atom_operation(call: &ExternalCallJson) -> Result<ScVal, String> {
+    let contract_id = decode_contract_address(&call.contract)?;
+    let args = call
+        .args
+        .iter()
+        .map(crate::scval_json::encode_scval)
+        .collect::<Result<Vec<_>, _>>()?;
+    let entries = vec![
+        ScMapEntry {
+            key: ScVal::Symbol(ScSymbol("args".try_into().unwrap())),
+            val: ScVal::Vec(Some(ScVec(args.try_into().map_err(|_| {
+                "failed to build AtomOperation.args ScVec".to_string()
+            })?))),
+        },
+        ScMapEntry {
+            key: ScVal::Symbol(ScSymbol("contract".try_into().unwrap())),
+            val: ScVal::Address(ScAddress::Contract(contract_id)),
+        },
+        ScMapEntry {
+            key: ScVal::Symbol(ScSymbol("function".try_into().unwrap())),
+            val: ScVal::Symbol(ScSymbol(call.function.as_str().try_into().map_err(
+                |_| format!("\"{}\" is not a valid Soroban symbol", call.function),
+            )?)),
+        },
+    ];
+    Ok(ScVal::Map(Some(ScMap(VecM::try_from(entries).map_err(
+        |_| "failed to build AtomOperation ScMap".to_string(),
+    )?))))
+}
+
+/// Builds the `ScVal::Vec<AtomOperation>` `transition_payload_xdr`/`prepare_transaction`'s own
+/// `transition(...)` call both need - empty when `calls` is empty, matching every existing
+/// root-only transition unchanged.
+fn encode_external_calls(calls: &[ExternalCallJson]) -> Result<ScVal, String> {
+    let encoded = calls
+        .iter()
+        .map(encode_atom_operation)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ScVal::Vec(Some(ScVec(VecM::try_from(encoded).map_err(
+        |_| "failed to build external_calls ScVec".to_string(),
+    )?))))
 }
 
 /// `new_root` is an opaque, content-free commitment for this phase's root-only transitions (module
@@ -443,14 +538,24 @@ struct PriorEntry {
 /// since a Paladin node can host more than one Sente group at once.
 struct GroupState {
     /// Member identity locators (`"identity"` or `"identity@node"`), from
-    /// `InitContractRequest.privacy_group.members` - used as `AttestationRequest.parties` for the
-    /// "endorsement" round, and as `NewState.distribution_list` for this group's states.
+    /// `InitContractRequest.privacy_group.members` - the raw, un-scoped form, used as
+    /// `NewState.distribution_list` for this group's states. `assemble_transaction`'s "endorsement"
+    /// parties must NOT use these directly - see `salt`'s own doc comment.
     members: Vec<String>,
+    /// `InitContractRequest.privacy_group.genesis_salt` - genesis (`init_deploy`/`prepare_deploy`)
+    /// resolves every member's verifier via `group_scope_lookup(member, salt_hex)`, so the resulting
+    /// on-chain `members: Vec<BytesN<32>>` only recognizes each member's *group-scoped* key, not
+    /// their raw identity's key. `assemble_transaction` must derive the exact same group-scoped
+    /// lookups for the "endorsement" attestation's parties, or core resolves/signs with the wrong
+    /// (unscoped) key entirely - one that was never registered as a member on-chain - and
+    /// `transition`'s `saladin_typed_data::verify` traps.
+    salt: String,
 }
 
 pub struct SenteDomain {
     client: PaladinClient,
     schema_id: Mutex<Option<String>>,
+    info_schema_id: Mutex<Option<String>>,
     config: Mutex<Option<SenteConfig>>,
     contracts: Mutex<HashMap<String, GroupState>>,
     fixed_signing_identity: Mutex<String>,
@@ -461,6 +566,7 @@ impl SenteDomain {
         Self {
             client,
             schema_id: Mutex::new(None),
+            info_schema_id: Mutex::new(None),
             config: Mutex::new(None),
             contracts: Mutex::new(HashMap::new()),
             fixed_signing_identity: Mutex::new(String::new()),
@@ -475,6 +581,16 @@ impl SenteDomain {
             .ok_or_else(|| "schema_id not set - init_domain not yet called".to_string())
     }
 
+    /// SenteInfo's own schema_id (see `INFO_STATE_ABI_SCHEMA_JSON`'s doc comment for why
+    /// `info_states` can't reuse SenteEntry's).
+    fn info_schema_id(&self) -> Result<String, String> {
+        self.info_schema_id
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "info_schema_id not set - init_domain not yet called".to_string())
+    }
+
     /// S3 genesis needs this domain's `SenteConfig` (factory addresses, wasm hash, network
     /// passphrase) - set once from `ConfigureDomainRequest.config_json` and required from then on.
     fn config(&self) -> Result<SenteConfig, String> {
@@ -485,17 +601,22 @@ impl SenteDomain {
             .ok_or_else(|| "sente config not set - configure_domain's config_json is missing or empty".to_string())
     }
 
-    fn group_members(&self, contract_address: &str) -> Result<Vec<String>, String> {
-        self.contracts
-            .lock()
-            .unwrap()
-            .get(contract_address)
-            .map(|g| g.members.clone())
-            .ok_or_else(|| {
-                format!(
-                    "unknown contract {contract_address} - init_contract not yet called for this group"
-                )
-            })
+    /// Returns each member's raw (un-scoped) identity locator alongside the group-scoped verifier
+    /// lookup genesis actually registered on-chain for them (`group_scope_lookup(member, salt)`) -
+    /// callers that need to resolve/sign as a member (e.g. `assemble_transaction`'s "endorsement"
+    /// parties) must use the scoped lookup, not the raw locator (see `GroupState::salt`'s doc
+    /// comment for why).
+    fn group_members(&self, contract_address: &str) -> Result<Vec<(String, String)>, String> {
+        let contracts = self.contracts.lock().unwrap();
+        let group = contracts.get(contract_address).ok_or_else(|| {
+            format!("unknown contract {contract_address} - init_contract not yet called for this group")
+        })?;
+        let salt_hex = group.salt.trim_start_matches("0x");
+        Ok(group
+            .members
+            .iter()
+            .map(|member| (member.clone(), group_scope_lookup(member, salt_hex)))
+            .collect())
     }
 
     async fn prior_entries(&self, state_query_context: &str) -> Result<Vec<PriorEntry>, String> {
@@ -538,7 +659,10 @@ impl DomainHandler for SenteDomain {
         Ok(pb::ConfigureDomainResponse {
             domain_config: Some(pb::DomainConfig {
                 custom_hash_function: false,
-                abi_state_schemas_json: vec![sente_host::SENTE_ENTRY_ABI_SCHEMA_JSON.to_string()],
+                abi_state_schemas_json: vec![
+                    sente_host::SENTE_ENTRY_ABI_SCHEMA_JSON.to_string(),
+                    INFO_STATE_ABI_SCHEMA_JSON.to_string(),
+                ],
                 abi_events_json: SENTE_EVENTS_ABI_JSON.to_string(),
                 signing_algorithms: Default::default(),
                 full_state_availablity_required: false,
@@ -558,6 +682,11 @@ impl DomainHandler for SenteDomain {
             .first()
             .ok_or("init_domain: expected the SenteEntry schema to be registered")?;
         *self.schema_id.lock().unwrap() = Some(schema.id.clone());
+        let info_schema = req
+            .abi_state_schemas
+            .get(1)
+            .ok_or("init_domain: expected the SenteInfo schema to be registered")?;
+        *self.info_schema_id.lock().unwrap() = Some(info_schema.id.clone());
         Ok(pb::InitDomainResponse {})
     }
 
@@ -726,10 +855,16 @@ impl DomainHandler for SenteDomain {
             .as_ref()
             .map(|pg| pg.members.clone())
             .unwrap_or_default();
+        let salt = req
+            .privacy_group
+            .as_ref()
+            .map(|pg| pg.genesis_salt.clone())
+            .unwrap_or_default();
         self.contracts.lock().unwrap().insert(
             req.contract_address.clone(),
             GroupState {
                 members: members.clone(),
+                salt,
             },
         );
         Ok(pb::InitContractResponse {
@@ -779,6 +914,12 @@ impl DomainHandler for SenteDomain {
             .clone()
             .ok_or("assemble_transaction: contract_info not set")?;
         let members = self.group_members(&contract_info.contract_address)?;
+        // distribution_list only needs node-routing (the raw locator's "@node" suffix); the
+        // "endorsement" attestation's parties must resolve/sign as the exact group-scoped identity
+        // genesis registered on-chain for each member - see `group_members`'s own doc comment.
+        let raw_members: Vec<String> = members.iter().map(|(raw, _)| raw.clone()).collect();
+        let endorsement_parties: Vec<String> =
+            members.iter().map(|(_, scoped)| scoped.clone()).collect();
 
         let contract_id = decode_contract_address(&contract_info.contract_address)?;
         let contract_address = ScAddress::Contract(contract_id.clone());
@@ -808,7 +949,16 @@ impl DomainHandler for SenteDomain {
         let old_root = decode_root(&prior_group_entry.entry.val().map_err(|e| e.to_string())?)?;
         let new_root = derive_new_root(&old_root, &transaction.transaction_id);
         let tx_id = tx_id_bytes(&transaction.transaction_id)?;
-        let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root)?;
+        let params: TransitionParamsJson = if transaction.function_params_json.trim().is_empty() {
+            TransitionParamsJson::default()
+        } else {
+            serde_json::from_str(&transaction.function_params_json)
+                .map_err(|e| format!("invalid transition function_params_json: {e}"))?
+        };
+        let external_calls_json =
+            serde_json::to_string(&params.external_calls).map_err(|e| e.to_string())?;
+        let external_calls_scval = encode_external_calls(&params.external_calls)?;
+        let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root, external_calls_scval)?;
         let config = self.config()?;
         let on_chain_digest = saladin_typed_data_digest(
             config.network_passphrase.as_bytes(),
@@ -839,6 +989,7 @@ impl DomainHandler for SenteDomain {
             old_root,
             new_root,
             on_chain_digest,
+            external_calls_json,
         );
         let info_json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
         let signing_payload = info.signing_payload().map_err(|e| e.to_string())?;
@@ -855,14 +1006,14 @@ impl DomainHandler for SenteDomain {
                     schema_id: schema_id.clone(),
                     state_data_json: serde_json::to_string(&new_entry)
                         .map_err(|e| e.to_string())?,
-                    distribution_list: members.clone(),
+                    distribution_list: raw_members.clone(),
                     id: None,
                     nullifier_specs: vec![],
                 }],
                 info_states: vec![pb::NewState {
-                    schema_id: schema_id.clone(),
+                    schema_id: self.info_schema_id()?,
                     state_data_json: info_json,
-                    distribution_list: members.clone(),
+                    distribution_list: raw_members.clone(),
                     id: None,
                     nullifier_specs: vec![],
                 }],
@@ -885,8 +1036,14 @@ impl DomainHandler for SenteDomain {
                     algorithm: SIGN_ALGORITHM.to_string(),
                     verifier_type: VERIFIER_TYPE.to_string(),
                     payload: vec![],
-                    payload_type: String::new(),
-                    parties: members,
+                    // Endorsers sign whatever raw digest endorse_transaction returns (the on-chain
+                    // typed-data digest) with a plain opaque ed25519 signature - the same
+                    // SIGN_PAYLOAD_TYPE the sender-signature request above already uses. This request
+                    // never actually reached a signer until parties was populated (see
+                    // init_privacy_group's own doc comment), so an empty payload_type here was
+                    // dormant/undetected until then.
+                    payload_type: SIGN_PAYLOAD_TYPE.to_string(),
+                    parties: endorsement_parties,
                     threshold: None,
                 },
             ],
@@ -946,7 +1103,11 @@ impl DomainHandler for SenteDomain {
         }
 
         let tx_id = tx_id_bytes(&info.transaction_id)?;
-        let payload_xdr = transition_payload_xdr(tx_id, info.old_root, info.new_root)?;
+        let external_calls: Vec<ExternalCallJson> = serde_json::from_str(&info.external_calls_json)
+            .map_err(|e| format!("invalid InfoState.externalCallsJson: {e}"))?;
+        let external_calls_scval = encode_external_calls(&external_calls)?;
+        let payload_xdr =
+            transition_payload_xdr(tx_id, info.old_root, info.new_root, external_calls_scval)?;
         let config = self.config()?;
         let contract_id_bytes = BASE64
             .decode(&info.contract_id)
@@ -985,7 +1146,7 @@ impl DomainHandler for SenteDomain {
     }
 
     /// Bundles every collected member endorsement into the real, final on-chain
-    /// `transition(new_root, external_calls=[], signatures)` call - the collected
+    /// `transition(new_root, external_calls, signatures)` call - the collected
     /// `AttestationResult`s already carry each member's resolved verifier (public key) and the raw
     /// ed25519 signature it produced over `endorse_transaction`'s returned payload (the on-chain
     /// digest itself), so no separate signature-collection mechanism is needed here.
@@ -1050,12 +1211,15 @@ impl DomainHandler for SenteDomain {
         )));
 
         let tx_id = tx_id_bytes(&info.transaction_id)?;
+        let external_calls: Vec<ExternalCallJson> = serde_json::from_str(&info.external_calls_json)
+            .map_err(|e| format!("invalid InfoState.externalCallsJson: {e}"))?;
+        let external_calls_scval = encode_external_calls(&external_calls)?;
         // Argument order must match `sente`'s real Rust signature exactly:
         // `transition(tx_id, new_root, external_calls, signatures)`.
         let args: VecM<ScVal> = vec![
             ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(info.new_root.to_vec().try_into().unwrap())),
-            ScVal::Vec(Some(ScVec(VecM::default()))),
+            external_calls_scval,
             signatures_val,
         ]
         .try_into()
@@ -1263,6 +1427,62 @@ impl DomainHandler for SenteDomain {
             new_states,
         })
     }
+
+    /// No group-level configuration options exist yet (chapter 14 §14.3) - any input is rejected
+    /// rather than silently ignored, matching Pente's own `configurePrivacyGroup`'s strict
+    /// unknown-key handling.
+    async fn configure_privacy_group(
+        &self,
+        req: pb::ConfigurePrivacyGroupRequest,
+    ) -> Result<pb::ConfigurePrivacyGroupResponse, String> {
+        if let Some(key) = req.input_configuration.keys().next() {
+            return Err(format!(
+                "configure_privacy_group: unknown configuration option '{key}' - Sente has no \
+                 configurable privacy group options yet"
+            ));
+        }
+        Ok(pb::ConfigurePrivacyGroupResponse {
+            configuration: Default::default(),
+        })
+    }
+
+    /// Lets a group be created via `pgroup_createGroup` instead of only via `testbed_deployChainNeutral`
+    /// - re-packages the `PrivacyGroup` Paladin's groupmgr already validated/persisted (identity
+    /// locators and all) as the exact same `DeployConstructorParams` JSON shape `init_deploy`/
+    /// `prepare_deploy` already parse, so the resulting deploy transaction reaches this plugin's
+    /// existing, already-proven genesis-deploy code unchanged. This is the mechanism that makes
+    /// `req.privacy_group.members` non-empty in `init_contract` (chapter 14 §14.3 S3's Go-integration
+    /// section) - going through groupmgr, rather than a raw chain-neutral deploy, is what persists the
+    /// member identity locators `assemble_transaction`'s "endorsement" attestation needs for routing,
+    /// since the on-chain `Genesis` event only ever carries raw pubkeys, not locators.
+    async fn init_privacy_group(
+        &self,
+        req: pb::InitPrivacyGroupRequest,
+    ) -> Result<pb::InitPrivacyGroupResponse, String> {
+        let privacy_group = req
+            .privacy_group
+            .ok_or("init_privacy_group: privacy_group not set")?;
+        if privacy_group.members.is_empty() {
+            return Err(
+                "init_privacy_group: a privacy group needs at least one member".to_string(),
+            );
+        }
+        let params = DeployConstructorParams {
+            group: DeployGroupParams {
+                salt: privacy_group.genesis_salt,
+                members: privacy_group.members,
+            },
+        };
+        Ok(pb::InitPrivacyGroupResponse {
+            transaction: Some(pb::PreparedTransaction {
+                function_abi_json: PRIVACY_GROUP_DEPLOY_ABI_JSON.to_string(),
+                params_json: serde_json::to_string(&params).map_err(|e| e.to_string())?,
+                contract_address: None,
+                r#type: pb::prepared_transaction::TransactionType::Private as i32,
+                required_signer: None,
+            }),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1353,6 +1573,7 @@ mod tests {
             [0u8; 32],
             new_root,
             [3u8; 32],
+            "[]".to_string(),
         );
 
         let public_key = [5u8; 32];
@@ -1412,6 +1633,110 @@ mod tests {
         assert_eq!(
             pair[1],
             ScVal::Bytes(ScBytes(signature.to_vec().try_into().unwrap()))
+        );
+    }
+
+    /// Same shape as the empty-external_calls test above, but with one real
+    /// `{"contract","function","args"}` leg in `InfoState.externalCallsJson` - proves
+    /// `prepare_transaction` decodes and re-encodes it to the exact `ScVal::Map` shape
+    /// `soroban_sdk`'s own `AtomOperation` derive produces (verified byte-for-byte against a real
+    /// `soroban_sdk`-built value in `scval_json.rs`'s own tests), not just an empty vec.
+    #[tokio::test]
+    async fn prepare_transaction_bundles_a_real_external_call() {
+        let (client, _to_core_rx) = PaladinClient::new_test("prepare-external-call-test");
+        let domain = SenteDomain::new(client);
+
+        let transaction_id = format!("0x{}", hex::encode([0x01u8; 32]));
+        let new_root = [7u8; 32];
+        let contract_id_base64 = BASE64.encode(
+            ScAddress::Contract(ContractId(Hash([0x11; 32])))
+                .to_xdr(Limits::none())
+                .unwrap(),
+        );
+        let target_contract = stellar_strkey::Contract([0x22; 32]).to_string();
+        let external_calls_json = serde_json::to_string(&serde_json::json!([{
+            "contract": target_contract,
+            "function": "keepalive",
+            "args": [{"type": "vec", "value": []}],
+        }]))
+        .unwrap();
+        let info = InfoState::new(
+            transaction_id.clone(),
+            contract_id_base64,
+            [0u8; 32],
+            new_root,
+            [3u8; 32],
+            external_calls_json,
+        );
+
+        let public_key = [5u8; 32];
+        let signature = [9u8; 64];
+        let req = pb::PrepareTransactionRequest {
+            info_states: vec![pb::EndorsableState {
+                id: "info-0".to_string(),
+                schema_id: "SenteEntry".to_string(),
+                state_data_json: serde_json::to_string(&info).unwrap(),
+            }],
+            attestation_result: vec![pb::AttestationResult {
+                name: "endorsement".to_string(),
+                attestation_type: pb::AttestationType::Endorse as i32,
+                verifier: Some(pb::ResolvedVerifier {
+                    lookup: "endorser@node2".to_string(),
+                    algorithm: SIGN_ALGORITHM.to_string(),
+                    verifier_type: VERIFIER_TYPE.to_string(),
+                    verifier: stellar_strkey::ed25519::PublicKey(public_key).to_string(),
+                }),
+                payload_type: None,
+                payload: Some(signature.to_vec()),
+                constraints: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let response = domain.prepare_transaction(req).await.unwrap();
+        let chain_tx = response.chain_transaction.unwrap();
+        let Some(pb::prepared_chain_transaction::Payload::Soroban(invoke)) = chain_tx.payload
+        else {
+            panic!("expected a Soroban invoke payload");
+        };
+        let args = VecM::<ScVal>::from_xdr(invoke.args_xdr, Limits::none()).unwrap();
+        let ScVal::Vec(Some(external_calls)) = &args[2] else {
+            panic!("expected a Vec of AtomOperations");
+        };
+        assert_eq!(external_calls.len(), 1);
+        let ScVal::Map(Some(op)) = &external_calls[0] else {
+            panic!("expected an AtomOperation ScMap");
+        };
+        assert_eq!(op.len(), 3, "AtomOperation must have exactly args/contract/function");
+        assert_eq!(
+            op[0].key,
+            ScVal::Symbol(ScSymbol("args".try_into().unwrap()))
+        );
+        // One arg (matching `keepalive(state_ids: Vec<BytesN<32>>)`'s own signature) - itself an
+        // empty vec, i.e. an empty `state_ids` list.
+        assert_eq!(
+            op[0].val,
+            ScVal::Vec(Some(ScVec(
+                vec![ScVal::Vec(Some(ScVec(VecM::default())))]
+                    .try_into()
+                    .unwrap()
+            )))
+        );
+        assert_eq!(
+            op[1].key,
+            ScVal::Symbol(ScSymbol("contract".try_into().unwrap()))
+        );
+        assert_eq!(
+            op[1].val,
+            ScVal::Address(ScAddress::Contract(ContractId(Hash([0x22; 32]))))
+        );
+        assert_eq!(
+            op[2].key,
+            ScVal::Symbol(ScSymbol("function".try_into().unwrap()))
+        );
+        assert_eq!(
+            op[2].val,
+            ScVal::Symbol(ScSymbol("keepalive".try_into().unwrap()))
         );
     }
 
@@ -1483,10 +1808,16 @@ mod tests {
             .unwrap();
         domain
             .init_domain(pb::InitDomainRequest {
-                abi_state_schemas: vec![pb::StateSchema {
-                    id: "SenteEntry".to_string(),
-                    signature: "SenteEntry".to_string(),
-                }],
+                abi_state_schemas: vec![
+                    pb::StateSchema {
+                        id: "SenteEntry".to_string(),
+                        signature: "SenteEntry".to_string(),
+                    },
+                    pb::StateSchema {
+                        id: "SenteInfo".to_string(),
+                        signature: "SenteInfo".to_string(),
+                    },
+                ],
             })
             .await
             .unwrap();
@@ -1579,10 +1910,16 @@ mod tests {
         let domain = SenteDomain::new(client);
         domain
             .init_domain(pb::InitDomainRequest {
-                abi_state_schemas: vec![pb::StateSchema {
-                    id: "SenteEntry".to_string(),
-                    signature: "SenteEntry".to_string(),
-                }],
+                abi_state_schemas: vec![
+                    pb::StateSchema {
+                        id: "SenteEntry".to_string(),
+                        signature: "SenteEntry".to_string(),
+                    },
+                    pb::StateSchema {
+                        id: "SenteInfo".to_string(),
+                        signature: "SenteInfo".to_string(),
+                    },
+                ],
             })
             .await
             .unwrap();

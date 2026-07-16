@@ -731,13 +731,15 @@ func (it *inFlightTransactionStageController) TriggerStatusUpdate(ctx context.Co
 func (it *inFlightTransactionStageController) TriggerSignTx(ctx context.Context) error {
 	generation := it.stateManager.GetCurrentGeneration(ctx)
 	ptx := &DBPublicTxn{
-		PublicTxnID: it.stateManager.GetPubTxnID(),
-		From:        it.stateManager.GetFrom(),
-		To:          it.stateManager.GetTo(),
-		Nonce:       confutil.P(it.stateManager.GetNonce()),
-		Gas:         it.stateManager.GetGasLimit(),
-		Value:       it.stateManager.GetValue(),
-		Data:        it.stateManager.GetData(),
+		PublicTxnID:    it.stateManager.GetPubTxnID(),
+		From:           it.stateManager.GetFrom(),
+		To:             it.stateManager.GetTo(),
+		Nonce:          confutil.P(it.stateManager.GetNonce()),
+		Gas:            it.stateManager.GetGasLimit(),
+		Value:          it.stateManager.GetValue(),
+		Data:           it.stateManager.GetData(),
+		ChannelAccount: it.stateManager.GetChannelAccount(),
+		PayloadKind:    it.stateManager.GetPayloadKind(),
 	}
 	resourceEstimate := &baseledger.ResourceEstimate{GasPricing: it.stateManager.GetGasPriceObject()}
 	it.executeAsync(func() {
@@ -783,9 +785,10 @@ func (it *inFlightTransactionStageController) TriggerSubmitTx(ctx context.Contex
 func (it *inFlightTransactionStageController) TriggerRestoreTx(ctx context.Context, soroban *baseledger.SorobanResources) error {
 	generation := it.stateManager.GetCurrentGeneration(ctx)
 	ptx := &DBPublicTxn{
-		PublicTxnID: it.stateManager.GetPubTxnID(),
-		From:        it.stateManager.GetFrom(),
-		Nonce:       confutil.P(it.stateManager.GetNonce()),
+		PublicTxnID:    it.stateManager.GetPubTxnID(),
+		From:           it.stateManager.GetFrom(),
+		Nonce:          confutil.P(it.stateManager.GetNonce()),
+		ChannelAccount: it.stateManager.GetChannelAccount(),
 	}
 	it.executeAsync(func() {
 		txHash, err := it.restoreTX(ctx, ptx, soroban, generation.IsCancelled)

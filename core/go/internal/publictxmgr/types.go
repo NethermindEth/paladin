@@ -259,6 +259,11 @@ type InMemoryTxStateReadOnly interface {
 	GetTo() *pldtypes.ChainAddress
 	GetData() pldtypes.HexBytes
 	GetValue() *pldtypes.HexUint256
+	// GetChannelAccount is Stellar only (chapter 12 §12.2) - the channel-account pool member
+	// allocateNonces assigned this transaction's envelope to, nil for EVM and for Stellar before
+	// channel-account pooling resolved one.
+	GetChannelAccount() *pldtypes.ChainAddress
+	GetPayloadKind() pldtypes.Enum[pldapi.PublicTxPayloadKind]
 	BuildEthTX() *ethsigner.Transaction
 	GetGasPriceObject() *pldapi.PublicTxGasPricing
 	GetTransactionFixedGasPrice() *pldapi.PublicTxGasPricing

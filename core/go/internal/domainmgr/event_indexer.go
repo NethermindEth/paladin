@@ -170,22 +170,30 @@ func (dm *domainManager) notifyWaiters(txCompletions txCompletionsOrdered) {
 	}
 }
 
-func (d *domain) batchEventsByAddress(ctx context.Context, dbTX persistence.DBTX, batchID string, events []*pldapi.EventWithData) (map[pldtypes.EthAddress]*pscEventBatch, error) {
+func (d *domain) batchEventsByAddress(ctx context.Context, dbTX persistence.DBTX, batchID string, events []*pldapi.EventWithData) (map[pldtypes.ChainAddress]*pscEventBatch, error) {
 
-	batches := make(map[pldtypes.EthAddress]*pscEventBatch)
+	batches := make(map[pldtypes.ChainAddress]*pscEventBatch)
 
 	for _, ev := range events {
-		batch := batches[ev.Address]
+		// ev.AddressChain is set for a Stellar-sourced event (ev.Address, the EVM-typed field, is
+		// always zero there) - see convertLedgerUnit's own doc comment on why the EVM-only
+		// fixed-width columns are left nil for Stellar. Fall back to ev.Address for EVM events,
+		// which don't populate AddressChain.
+		addrChain := ev.Address.ChainAddress()
+		if ev.AddressChain != nil {
+			addrChain = *ev.AddressChain
+		}
+		batch := batches[addrChain]
 		if batch == nil {
 			// Note: hits will be cached, but events from unrecognized contracts will always
 			// result in a cache miss and a database lookup
 			// TODO: revisit if we should optimize this
-			_, psc, err := d.dm.getSmartContractCached(ctx, dbTX, ev.Address.ChainAddress())
+			_, psc, err := d.dm.getSmartContractCached(ctx, dbTX, addrChain)
 			if err != nil {
 				return nil, err
 			}
 			if psc == nil {
-				log.L(ctx).Debugf("Discarding %s event for unregistered address %s", ev.SoliditySignature, ev.Address)
+				log.L(ctx).Debugf("Discarding %s event for unregistered address %s", ev.SoliditySignature, addrChain)
 				continue
 			}
 			batch = &pscEventBatch{
@@ -198,7 +206,7 @@ func (d *domain) batchEventsByAddress(ctx context.Context, dbTX persistence.DBTX
 					},
 				},
 			}
-			batches[ev.Address] = batch
+			batches[addrChain] = batch
 		}
 		batch.Events = append(batch.Events, &prototk.OnChainEvent{
 			Location: &prototk.OnChainEventLocation{
@@ -229,8 +237,7 @@ func (d *domain) handleEventBatch(ctx context.Context, dbTX persistence.DBTX, ba
 	if err != nil {
 		return err
 	}
-	for addr, batch := range batchesByAddress {
-		addrChain := addr.ChainAddress()
+	for addrChain, batch := range batchesByAddress {
 		res, err := d.handleEventBatchForContract(ctx, dbTX, addrChain, batch)
 		if err != nil {
 			return err
@@ -246,6 +253,13 @@ func (d *domain) handleEventBatch(ctx context.Context, dbTX persistence.DBTX, ba
 			}
 			log.L(ctx).Infof("Domain transaction completion: %s", txID)
 
+			// Source is EVM-only (OnChainLocation.Source is not yet chain-neutral - see
+			// newRegisteredContract's own doc comment on this same, pre-existing gap) - nil for a
+			// Stellar-sourced completion rather than a wrong/zero EVM address.
+			var source *pldtypes.EthAddress
+			if ethAddr, ethErr := addrChain.EthAddress(); ethErr == nil {
+				source = ethAddr
+			}
 			completion := &components.TxCompletion{
 				PSC: batch.psc,
 				ReceiptInput: components.ReceiptInput{
@@ -258,7 +272,7 @@ func (d *domain) handleEventBatch(ctx context.Context, dbTX persistence.DBTX, ba
 						BlockNumber:      txCompletionEvent.Location.BlockNumber,
 						TransactionIndex: txCompletionEvent.Location.TransactionIndex,
 						LogIndex:         txCompletionEvent.Location.LogIndex,
-						Source:           &addr,
+						Source:           source,
 					},
 				},
 			}
@@ -375,6 +389,7 @@ func (d *domain) handleEventBatchForContract(ctx context.Context, dbTX persisten
 	}
 
 	newStates := make([]*components.StateUpsertOutsideContext, 0)
+	newStateTxIDs := make([]uuid.UUID, 0)
 	for _, state := range res.NewStates {
 		var id pldtypes.HexBytes
 		if state.Id != nil {
@@ -397,17 +412,22 @@ func (d *domain) handleEventBatchForContract(ctx context.Context, dbTX persisten
 			ContractAddress: &addr,
 			Data:            pldtypes.RawJSON(state.StateDataJson),
 		})
-
-		// These have implicit confirmations
-		stateConfirms = append(stateConfirms, &pldapi.StateConfirmRecord{DomainName: d.name, State: id, Transaction: *txUUID})
+		newStateTxIDs = append(newStateTxIDs, *txUUID)
 	}
 
 	// Write any new states first
 	if len(newStates) > 0 {
 		// These states are trusted as they come from the domain on our local node (no need to go back round VerifyStateHashes for customer hash functions)
-		_, err = d.dm.stateStore.WritePreVerifiedStates(ctx, dbTX, d.name, newStates)
+		written, err := d.dm.stateStore.WritePreVerifiedStates(ctx, dbTX, d.name, newStates)
 		if err != nil {
 			return nil, err
+		}
+		// These have implicit confirmations - use the ID WritePreVerifiedStates actually persisted
+		// (processInsertStates computes one via the schema's hash function whenever the domain
+		// omitted state.Id, e.g. Sente's genesis SenteEntry), not the possibly-still-empty one we
+		// sent in, or the confirm record write below fails its NOT NULL constraint on state.
+		for i, ws := range written {
+			stateConfirms = append(stateConfirms, &pldapi.StateConfirmRecord{DomainName: d.name, State: ws.ID, Transaction: newStateTxIDs[i]})
 		}
 	}
 

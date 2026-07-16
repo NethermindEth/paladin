@@ -43,13 +43,14 @@ import (
 )
 
 var groupDBOnlyFilters = filters.FieldMap{
-	"id":              filters.HexBytesField("id"),
-	"name":            filters.StringField("name"),
-	"created":         filters.TimestampField("created"),
-	"domain":          filters.StringField(`"privacy_groups"."domain"`),
-	"contractAddress": filters.HexBytesField(`"Receipt"."contract_address"`),
-	"genesisSalt":     filters.HexBytesField("genesis_salt"),
-	"genesisSchema":   filters.HexBytesField("genesis_schema"),
+	"id":                 filters.HexBytesField("id"),
+	"name":               filters.StringField("name"),
+	"created":            filters.TimestampField("created"),
+	"domain":             filters.StringField(`"privacy_groups"."domain"`),
+	"contractAddress":    filters.ChainAddressField(`"Receipt"."contract_address"`),
+	"genesisSalt":        filters.HexBytesField("genesis_salt"),
+	"genesisSchema":      filters.HexBytesField("genesis_schema"),
+	"genesisTransaction": filters.UUIDField("genesis_tx"),
 }
 
 type groupManager struct {
@@ -77,8 +78,8 @@ type groupManager struct {
 }
 
 type referencedReceipt struct {
-	Transaction     uuid.UUID            `gorm:"column:transaction;primaryKey"`
-	ContractAddress *pldtypes.EthAddress `gorm:"column:contract_address"`
+	Transaction     uuid.UUID              `gorm:"column:transaction;primaryKey"`
+	ContractAddress *pldtypes.ChainAddress `gorm:"column:contract_address"`
 }
 
 func (rr referencedReceipt) TableName() string {
@@ -562,7 +563,7 @@ func (gm *groupManager) resolvePrivateContract(ctx context.Context, dbTX persist
 	if pg.ContractAddress == nil {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgPGroupsNotReady, groupID, pg.GenesisTransaction)
 	}
-	psc, err := gm.domainManager.GetSmartContractByAddress(ctx, dbTX, pg.ContractAddress.ChainAddress())
+	psc, err := gm.domainManager.GetSmartContractByAddress(ctx, dbTX, *pg.ContractAddress)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -577,7 +578,7 @@ func (gm *groupManager) invokeRPC(ctx context.Context, dbTX persistence.DBTX, do
 	if stateQualifier != "" && stateQualifier != pldapi.StateStatusAvailable {
 		return nil, i18n.NewError(ctx, msgs.MsgDomainUnsupportedStateQualifier, stateQualifier)
 	}
-	dCtx := gm.stateManager.NewDomainContext(ctx, psc.Domain(), pg.ContractAddress.ChainAddress())
+	dCtx := gm.stateManager.NewDomainContext(ctx, psc.Domain(), *pg.ContractAddress)
 	defer dCtx.Close()
 	return psc.InvokeRPC(ctx, dCtx, dbTX, rpcCall)
 }

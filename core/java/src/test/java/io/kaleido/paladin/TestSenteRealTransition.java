@@ -88,23 +88,149 @@ public class TestSenteRealTransition {
                         "root")
         );
         try {
-            // Genesis: deploy a one-member group. init_deploy/prepare_deploy (S3) resolve
-            // "member1"'s group-scoped verifier and build a real SenteFactory.deploy_group
-            // SorobanInvoke.
-            String groupAddress = testbed.getRpcClient().request("testbed_deployChainNeutral",
-                    "sente", "member1",
+            // Genesis: create the group via groupmgr's own pgroup_createGroup (not
+            // testbed_deployChainNeutral directly) - this is what makes core persist "member1" as
+            // this group's identity locator (InitContractRequest.privacy_group.members), which
+            // SenteDomain.configure_privacy_group/init_privacy_group (domain.rs) turn into a real
+            // SenteFactory.deploy_group deploy underneath, reusing S3's already-proven genesis-deploy
+            // code unchanged. Without going through groupmgr, "member1" is only ever known
+            // transiently to this deploy transaction, and assemble_transaction's "endorsement"
+            // attestation has no member identity locator to route to - see 14-domain-ports.md §14.3
+            // S3's "no endorsement signatures collected" section.
+            Map<?, ?> createdGroup = testbed.getRpcClient().request("pgroup_createGroup",
                     new HashMap<>() {{
-                        put("group", new HashMap<>() {{
-                            put("salt", "0x0101010101010101010101010101010101010101010101010101010101010101");
-                            put("members", List.of("member1"));
-                        }});
+                        put("domain", "sente");
+                        put("name", "sente-real-transition-test");
+                        // groupmgr requires every member locator to be fully node-qualified
+                        // (PD020017) - "node1" is Testbed's own fixed local node name
+                        // (Testbed.java's nodeName: node1 in its generated config).
+                        put("members", List.of("member1@node1"));
                     }});
+            assertNotNull(createdGroup);
+            String groupID = (String) createdGroup.get("id");
+            assertNotNull(groupID);
+
+            // pgroup_createGroup only submits the genesis deploy transaction - it doesn't wait for
+            // on-chain confirmation the way testbed_deployChainNeutral's caller-visible return did, so
+            // poll pgroup_getGroupById until the deploy confirms and the group's real on-chain
+            // contract address is indexed (mirrors deployPrivateContract's own ExecDeployAndWait on
+            // the Go side, just driven from the JVM side here since pgroup_createGroup has no
+            // synchronous-wait equivalent).
+            String groupAddress = null;
+            for (int i = 0; i < 60 && groupAddress == null; i++) {
+                Map<?, ?> group = testbed.getRpcClient().request("pgroup_getGroupById", "sente", groupID);
+                Object contractAddress = group != null ? group.get("contractAddress") : null;
+                if (contractAddress != null) {
+                    groupAddress = (String) contractAddress;
+                } else {
+                    Thread.sleep(500);
+                }
+            }
+            assertNotNull(groupAddress, "group deploy did not confirm within timeout");
             assertFalse(groupAddress.isBlank());
 
             // One root-only transition (chapter 14 §14.3's module doc comment): assemble_transaction
             // ignores function_params_json entirely for this phase, so the ABI/inputs here are a
             // placeholder satisfying testbed's own "an ABI is required" check, not a real business
             // payload.
+            JsonABI transitionABI = new JsonABI();
+            transitionABI.add(JsonABI.newFunction("transition", new JsonABI.Parameters(), new JsonABI.Parameters()));
+
+            Map<?, ?> result = testbed.getRpcClient().request("testbed_invoke",
+                    new Testbed.TransactionInput(
+                            "private",
+                            "sente",
+                            "member1",
+                            groupAddress,
+                            new HashMap<>(),
+                            transitionABI,
+                            "transition"
+                    ),
+                    true);
+            assertNotNull(result);
+        } finally {
+            testbed.close();
+        }
+    }
+
+    // Same flow as deployGroupAndSubmitTransition, but with a genuinely multi-member group (two
+    // distinct signers, not one member endorsing itself) - proves the group-scoped endorsement
+    // parties fix (14-domain-ports.md §14.3 S3) generalizes past N=1, and that the on-chain
+    // `transition`'s unanimous-signature check (`signatures.len() != members.len()`) is satisfied by
+    // two independently-collected, independently-verified ed25519 signatures rather than one.
+    @Test
+    void deployMultiMemberGroupAndSubmitTransition() throws Exception {
+        StellarFixtures fixtures = loadStellarFixtures();
+
+        Testbed testbed = new Testbed(
+                new Testbed.Setup("../go/db/migrations/sqlite", "build/test.java-sente-multi-member-transition.txt", 15000),
+                Testbed.BaseLedger.STELLAR,
+                new Testbed.ConfigDomain(
+                        "sente",
+                        fixtures.saladinFactoryAddress(),
+                        new Testbed.ConfigPlugin("c-shared", "sente", ""),
+                        new HashMap<>() {{
+                            put("senteFactoryAddress", fixtures.senteFactoryAddress());
+                            put("saladinFactoryAddress", fixtures.saladinFactoryAddress());
+                            put("senteWasmHash", fixtures.senteWasmHash());
+                            put("networkPassphrase", "Standalone Network ; February 2017");
+                        }},
+                        "root")
+        );
+        try {
+            // "root"'s own resolved verifier is allocation-order-dependent: Paladin's key resolver
+            // (core/go/internal/keymanager/key_resolver.go) allocates a sequential HD index per
+            // *parent* scope, and every top-level identity - "root", "member1", "member2" - shares
+            // the same (empty) parent, regardless of which named wallet's keySelector regex
+            // eventually matches it. So "root"'s resolved key depends on how many *other* distinct
+            // top-level identities were resolved before it, which depends on group size - it isn't
+            // actually pinned to the network's genesis account by identity alone, only
+            // coincidentally so in the single-member test (exactly one prior allocation,
+            // "member1", happens to land "root" on the same index the quickstart network's own
+            // genesis account uses). Rather than depend on that coincidence for every future group
+            // size, resolve "root" up front and fund whatever it actually resolves to directly via
+            // the quickstart network's friendbot - this makes the test correct independent of
+            // however many members the group has.
+            String rootVerifier = testbed.getRpcClient().request("testbed_resolveVerifier", "root", "eddsa:ed25519", "stellar_address");
+            assertNotNull(rootVerifier);
+            var friendbotResponse = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:8000/friendbot?addr=" + rootVerifier)).GET().build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            // The chain itself persists across test runs (only the sqlite DB behind key
+            // resolution is fresh each run), so a prior run funding this same resolved index is a
+            // real, expected outcome here, not a failure.
+            boolean alreadyFunded = friendbotResponse.statusCode() == 400
+                    && friendbotResponse.body().contains("already funded");
+            if (friendbotResponse.statusCode() != 200 && !alreadyFunded) {
+                fail("failed to fund root verifier %s via friendbot: HTTP %d: %s".formatted(rootVerifier, friendbotResponse.statusCode(), friendbotResponse.body()));
+            }
+
+            Map<?, ?> createdGroup = testbed.getRpcClient().request("pgroup_createGroup",
+                    new HashMap<>() {{
+                        put("domain", "sente");
+                        put("name", "sente-multi-member-transition-test");
+                        put("members", List.of("member1@node1", "member2@node1"));
+                    }});
+            assertNotNull(createdGroup);
+            String groupID = (String) createdGroup.get("id");
+            assertNotNull(groupID);
+
+            // Longer timeout than the single-member test: root was only just funded above (rather
+            // than long since established), so this run also pays the one-time cost of creating and
+            // funding the channel-account pool (8 accounts) before the deploy itself can submit.
+            String groupAddress = null;
+            for (int i = 0; i < 180 && groupAddress == null; i++) {
+                Map<?, ?> group = testbed.getRpcClient().request("pgroup_getGroupById", "sente", groupID);
+                Object contractAddress = group != null ? group.get("contractAddress") : null;
+                if (contractAddress != null) {
+                    groupAddress = (String) contractAddress;
+                } else {
+                    Thread.sleep(500);
+                }
+            }
+            assertNotNull(groupAddress, "group deploy did not confirm within timeout");
+            assertFalse(groupAddress.isBlank());
+
             JsonABI transitionABI = new JsonABI();
             transitionABI.add(JsonABI.newFunction("transition", new JsonABI.Parameters(), new JsonABI.Parameters()));
 

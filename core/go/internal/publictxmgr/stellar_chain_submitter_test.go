@@ -265,12 +265,19 @@ func TestStellarPrepareSubmissionWithChannelAccount(t *testing.T) {
 		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.channel.0", KeyHandle: "m/44'/148'/1'"}},
 		Verifier:           &pldapi.KeyVerifier{Verifier: channelAddr},
 	}
+	businessKeyMapping := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: "stellar.key.business", KeyHandle: "m/44'/148'/0'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: testStellarAccount},
+	}
 	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
-	// Signing must resolve the CHANNEL ACCOUNT's key, not the business identity's - the channel
-	// account is the transaction's envelope source (sequence + fee payer), while the business
-	// identity remains only the InvokeHostFunction operation's own source (for require_auth).
+	// Signing must resolve BOTH the channel account's key (the transaction's envelope source -
+	// sequence + fee payer) AND the business identity's key (the InvokeHostFunction operation's
+	// own, distinct source account) - stellar-core rejects the operation with opBadAuth if the
+	// business identity's signature is missing.
 	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, channelAddr).Return(channelKeyMapping, nil).Once()
 	mockKeyManager.On("Sign", mock.Anything, channelKeyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, testStellarAccount).Return(businessKeyMapping, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, businessKeyMapping, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"), nil).Once()
 
 	prepared, err := submitter.PrepareSubmission(ctx, ptx, &baseledger.ResourceEstimate{})
 	require.NoError(t, err)
@@ -292,12 +299,16 @@ func TestStellarPrepareSubmissionWithChannelAccount(t *testing.T) {
 	businessSourceAddr, err := xdr.AddressToMuxedAccount(testStellarAccount)
 	require.NoError(t, err)
 	assert.Equal(t, businessSourceAddr, *ops[0].SourceAccount)
-	// and the signature hint matches the channel account's key, not the business identity's
+	// and the envelope carries a signature for both the channel account and the business identity
 	channelKeypair, err := keypair.ParseAddress(channelAddr)
 	require.NoError(t, err)
+	businessKeypair, err := keypair.ParseAddress(testStellarAccount)
+	require.NoError(t, err)
 	signatures := envelope.Signatures()
-	require.Len(t, signatures, 1)
-	assert.Equal(t, xdr.SignatureHint(channelKeypair.Hint()), signatures[0].Hint)
+	require.Len(t, signatures, 2)
+	hints := []xdr.SignatureHint{signatures[0].Hint, signatures[1].Hint}
+	assert.Contains(t, hints, xdr.SignatureHint(channelKeypair.Hint()))
+	assert.Contains(t, hints, xdr.SignatureHint(businessKeypair.Hint()))
 }
 
 func TestStellarPrepareSubmissionInvalidPayload(t *testing.T) {

@@ -31,6 +31,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/core/internal/plugins"
 	"github.com/LFDT-Paladin/paladin/core/pkg/baseledger"
+	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/google/uuid"
@@ -214,7 +215,21 @@ func (d *domain) processDomainConfig(dbTX persistence.DBTX, confRes *prototk.Con
 		if err := json.Unmarshal([]byte(d.config.AbiEventsJson), &eventsABI); err != nil {
 			return nil, i18n.WrapError(d.ctx, err, msgs.MsgDomainInvalidEvents)
 		}
-		stream.Sources = append(stream.Sources, blockindexer.EventStreamSource{ABI: eventsABI})
+		eventsSource := blockindexer.EventStreamSource{ABI: eventsABI}
+		if chainKind == baseledger.ChainKindStellar {
+			// eventMatchesSource's own doc comment is explicit: a Stellar source with no Selectors
+			// "contributes nothing" (there is no ABI to decode) - so an ABI-only source here would
+			// silently match zero events, exactly the same non-ABI gap registrySource above already
+			// works around. Compute each event's selector the same way the domain's own Rust plugin
+			// does (stellar_event_selector) so genesis/transition (and any other domain-defined
+			// event) are actually fetched by queryMatchingEvents, not just filtered for later.
+			for _, event := range eventsABI {
+				if event.Type == abi.Event {
+					eventsSource.Selectors = append(eventsSource.Selectors, baseledgerstellar.ComputeEventSelector(event.Name))
+				}
+			}
+		}
+		stream.Sources = append(stream.Sources, eventsSource)
 
 		_, err := d.dm.txManager.UpsertABI(d.ctx, dbTX, eventsABI)
 		if err != nil {

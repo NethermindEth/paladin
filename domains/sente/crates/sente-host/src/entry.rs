@@ -73,7 +73,29 @@ pub struct SenteEntry {
     #[serde(rename = "valXdr")]
     pub val_xdr: String,
     pub durability: EntryDurability,
+    #[serde(deserialize_with = "deserialize_u64_or_string")]
     pub seq: u64,
+}
+
+/// `seq`'s ABI schema type is `uint256` (see SENTE_ENTRY_ABI_SCHEMA_JSON's own doc comment on why),
+/// and Paladin's schema-driven state storage normalizes every `uint*`-typed field to a JSON string
+/// on write - so a state read back after a round-trip through core has `seq` as e.g. `"0"`, not
+/// `0`, even though this struct's own `Serialize` impl (used when a domain builds a *new* state
+/// itself, e.g. handle_event_batch's genesis SenteEntry) writes a plain number. Accept either.
+fn deserialize_u64_or_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum U64OrString {
+        U64(u64),
+        String(String),
+    }
+    match U64OrString::deserialize(deserializer)? {
+        U64OrString::U64(v) => Ok(v),
+        U64OrString::String(s) => s.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 /// The ABI parameter schema registered via

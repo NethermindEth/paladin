@@ -273,7 +273,9 @@ func TestHandleEventBatch(t *testing.T) {
 				ContractAddress: confutil.P(contract2.ChainAddress()),
 				SchemaID:        fakeSchema,
 			},
-		}).Return(nil, nil)
+		}).Return([]*pldapi.State{
+			{StateBase: pldapi.StateBase{ID: pldtypes.MustParseHexBytes(fakeHash1)}},
+		}, nil)
 
 		mc.txManager.On("FinalizeTransactions", mock.Anything, mock.Anything, mock.MatchedBy(func(receipts []*components.ReceiptInput) bool {
 			// Note first contract is unrecognized, second is recognized

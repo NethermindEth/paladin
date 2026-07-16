@@ -69,8 +69,16 @@ func (d *domain) initSmartContract(ctx context.Context, dbTX persistence.DBTX, d
 		api:  d.api,
 		info: def,
 	}
+	// Matched by genesis transaction, not contractAddress - a privacy group's persisted_group row
+	// is written synchronously by pgroup_createGroup, long before its genesis deploy confirms
+	// on-chain and gets a transaction_receipts row, but this contract's own InitContract call
+	// happens as soon as the deploy is indexed/registered - which can race ahead of that receipt
+	// being written. genesisTransaction has no such dependency: it's set on persisted_group from
+	// the moment the group is created, so matching on it (rather than a contractAddress filter
+	// that joins through the not-yet-written receipt) finds the group deterministically regardless
+	// of that ordering.
 	var privacyGroup *prototk.PrivacyGroup
-	pg, err := d.dm.groupManager.QueryGroups(ctx, dbTX, query.NewQueryBuilder().Equal("domain", d.name).Equal("contractAddress", &def.Address).Limit(1).Query())
+	pg, err := d.dm.groupManager.QueryGroups(ctx, dbTX, query.NewQueryBuilder().Equal("domain", d.name).Equal("genesisTransaction", def.DeployTX).Limit(1).Query())
 	if err != nil {
 		return pscInitError, nil, err
 	}
@@ -106,17 +114,32 @@ func (dc *domainContract) buildTransactionSpecification(ctx context.Context, loc
 		return nil, i18n.NewError(ctx, msgs.MsgDomainTxnInputDefinitionInvalid)
 	}
 
-	// blockIndexer (the full EVM-shaped interface) is nil on a Stellar-configured node - see
-	// domainManager's own doc comment on the field. Fail with a clear, actionable error here
-	// rather than a nil-pointer panic; implementing this lookup for non-EVM chain kinds is a
-	// separate, later piece of work (chapter 14).
-	if dc.dm.blockIndexer == nil {
-		kind := dc.dm.allComponents.BaseLedger().ChainInfo().Kind
-		return nil, i18n.NewError(ctx, msgs.MsgDomainBlockIndexerUnavailableForChain, kind)
-	}
-	latestConfirmedBlock, err := dc.dm.blockIndexer.GetLatestConfirmedBlockMetadata(ctx)
-	if err != nil {
-		return nil, err
+	// blockIndexer (the full EVM-shaped interface, with its transaction-by-hash/nonce lookups,
+	// event decoding, etc.) is nil on a Stellar-configured node - see domainManager's own doc
+	// comment on the field, and implementing all of it for non-EVM chain kinds remains separate,
+	// later work (chapter 14). But the one piece buildTransactionSpecification actually needs -
+	// the latest confirmed block/ledger's number and close time, for BaseBlock/BaseBlockTimestamp -
+	// is available chain-neutrally: the Stellar ledger indexer (internal/ledgerindexer/stellar)
+	// writes to the exact same "indexed_blocks" table EVM's blockIndexer reads from (see
+	// convertLedgerUnit's doc comment), so querying it directly here avoids needing the rest of
+	// the EVM-shaped interface just for this.
+	var baseBlockNumber, baseBlockTimestamp int64
+	if dc.dm.blockIndexer != nil {
+		latestConfirmedBlock, err := dc.dm.blockIndexer.GetLatestConfirmedBlockMetadata(ctx)
+		if err != nil {
+			return nil, err
+		}
+		baseBlockNumber, baseBlockTimestamp = latestConfirmedBlock.Number, latestConfirmedBlock.Timestamp
+	} else {
+		var blocks []*pldapi.IndexedBlock
+		err := dc.dm.persistence.NOTX().DB().WithContext(ctx).Table("indexed_blocks").Order("number DESC").Limit(1).Find(&blocks).Error
+		if err != nil {
+			return nil, err
+		}
+		if len(blocks) == 0 {
+			return nil, i18n.NewError(ctx, msgs.MsgBlockIndexerNoBlocksIndexed)
+		}
+		baseBlockNumber, baseBlockTimestamp = blocks[0].Number, blocks[0].Timestamp.Time().Unix()
 	}
 
 	var abiJSON []byte
@@ -143,9 +166,9 @@ func (dc *domainContract) buildTransactionSpecification(ctx context.Context, loc
 		FunctionAbiJson:    string(abiJSON),
 		FunctionParamsJson: string(paramsJSON),
 		FunctionSignature:  fnDef.SolString(), // we use the proprietary "Solidity inspired" form that is very specific, including param names and nested struct defs
-		BaseBlock:          latestConfirmedBlock.Number,
+		BaseBlock:          baseBlockNumber,
 		Intent:             intent,
-		BaseBlockTimestamp: latestConfirmedBlock.Timestamp,
+		BaseBlockTimestamp: baseBlockTimestamp,
 	}, nil
 }
 

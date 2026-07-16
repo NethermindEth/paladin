@@ -196,6 +196,7 @@ var (
 	MsgFiltersValueInvalidHexBytes32      = pde("PD010719", "Failed to parse value as 32 byte hex string (parsedBytes=%d)")
 	MsgFiltersValueInvalidUUID            = pde("PD010720", "Failed to parse value as UUID: %v")
 	MsgFiltersQueryLimitRequired          = pde("PD010721", "limit is required on all queries")
+	MsgFiltersValueInvalidChainAddress    = pde("PD010722", "Failed to parse value as a chain address: %v")
 
 	// Plugin controller PD0112XX
 	MsgPluginLoaderUUIDError   = pde("PD011200", "Plugin loader UUID incorrect")
@@ -317,7 +318,6 @@ var (
 	MsgDomainXDRSCValEncodingFail             = pde("PD011672", "XDR_SCVAL encoding request failed")
 	MsgDomainXDRSCValDecodingInvalid          = pde("PD011673", "XDR_SCVAL decoding request invalid")
 	MsgDomainXDRSCValDecodingFail             = pde("PD011674", "XDR_SCVAL decoding request failed")
-	MsgDomainBlockIndexerUnavailableForChain  = pde("PD011675", "Block indexer metadata lookup is not yet supported for base ledger kind '%s'")
 
 	// Entrypoint PD0117XX
 	MsgEntrypointUnknownRunMode = pde("PD011700", "Unknown run mode '%s'")

@@ -214,6 +214,14 @@ func (imtxs *inMemoryTxState) GetValue() *pldtypes.HexUint256 {
 	return imtxs.mtx.ptx.Value
 }
 
+func (imtxs *inMemoryTxState) GetChannelAccount() *pldtypes.ChainAddress {
+	return imtxs.mtx.ptx.ChannelAccount
+}
+
+func (imtxs *inMemoryTxState) GetPayloadKind() pldtypes.Enum[pldapi.PublicTxPayloadKind] {
+	return imtxs.mtx.ptx.PayloadKind
+}
+
 // BuildEthTX is only meaningful for EVM public transactions - it returns nil if this transaction's
 // from/to addresses are not EVM addresses (there is no current caller of this method; kept as part
 // of the InMemoryTxStateReadOnly contract for future EVM-specific tooling).

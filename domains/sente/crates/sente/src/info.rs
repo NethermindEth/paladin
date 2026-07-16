@@ -48,8 +48,40 @@ pub struct InfoState {
     pub new_root: [u8; 32],
     #[serde(rename = "onChainDigest", with = "hex::serde")]
     pub on_chain_digest: [u8; 32],
+    /// JSON array of `domain::ExternalCallJson` (`"[]"` for a root-only transition with none) -
+    /// carried here, not just implied by `on_chain_digest`, so `endorse_transaction`/
+    /// `prepare_transaction` can independently re-derive the exact same `AtomOperation`s the
+    /// assembler used, rather than trusting the digest alone.
+    #[serde(rename = "externalCallsJson", default = "empty_external_calls_json")]
+    pub external_calls_json: String,
     pub signature: Option<SenderSignature>,
 }
+
+fn empty_external_calls_json() -> String {
+    "[]".to_string()
+}
+
+/// The ABI schema registered alongside `SENTE_ENTRY_ABI_SCHEMA_JSON` for `info_states` -
+/// `InfoState` is a genuinely different shape (no `keyXdr`/`valXdr`/`durability`/`seq`), so reusing
+/// SenteEntry's schema_id for it fails core's schema-driven state processing with "Input map
+/// missing key 'keyXdr'" the first time an info state is actually round-tripped through core (as
+/// opposed to just unit-tested against a mock). `signature` is deliberately omitted here: it's
+/// always `None`/JSON `null` at the point `assemble_transaction` writes this state (see `new`'s own
+/// doc comment - nothing in this crate ever populates it), and extra JSON keys not declared in the
+/// schema are simply ignored by core's ABI-tuple parsing, so there's no need to model it.
+pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
+  "name": "SenteInfo",
+  "type": "tuple",
+  "internalType": "struct SenteInfo",
+  "components": [
+    {"name": "transaction_id", "type": "string"},
+    {"name": "contractId", "type": "string"},
+    {"name": "oldRoot", "type": "string"},
+    {"name": "newRoot", "type": "string"},
+    {"name": "onChainDigest", "type": "string"},
+    {"name": "externalCallsJson", "type": "string"}
+  ]
+}"#;
 
 impl InfoState {
     pub fn new(
@@ -58,6 +90,7 @@ impl InfoState {
         old_root: [u8; 32],
         new_root: [u8; 32],
         on_chain_digest: [u8; 32],
+        external_calls_json: String,
     ) -> Self {
         Self {
             transaction_id,
@@ -65,6 +98,7 @@ impl InfoState {
             old_root,
             new_root,
             on_chain_digest,
+            external_calls_json,
             signature: None,
         }
     }
@@ -72,8 +106,8 @@ impl InfoState {
     /// The digest the sender's own `AttestationType.SIGN` request asks it to sign - Sente's
     /// off-chain integrity commitment (distinct from `on_chain_digest`, which endorsers sign
     /// instead - see the module doc comment for why they must differ). Covers `on_chain_digest`
-    /// itself so a digest tampered with after the sender signs invalidates that signature, the
-    /// same reasoning `sente_host::digest`-based endorsement used in S2.
+    /// and `external_calls_json` too, so tampering with either after the sender signs invalidates
+    /// that signature, the same reasoning `sente_host::digest`-based endorsement used in S2.
     pub fn signing_payload(&self) -> Result<[u8; 32]> {
         let canonical = serde_json::to_vec(&(
             &self.transaction_id,
@@ -81,6 +115,7 @@ impl InfoState {
             hex::encode(self.old_root),
             hex::encode(self.new_root),
             hex::encode(self.on_chain_digest),
+            &self.external_calls_json,
         ))
         .context("failed to canonicalize info state for signing")?;
         Ok(Sha256::digest(canonical).into())
@@ -98,6 +133,7 @@ mod tests {
             old_root,
             new_root,
             digest,
+            "[]".to_string(),
         )
     }
 
@@ -133,6 +169,20 @@ mod tests {
             base.signing_payload().unwrap(),
             tampered_digest.signing_payload().unwrap(),
             "a tampered on_chain_digest must invalidate the signing payload"
+        );
+    }
+
+    #[test]
+    fn signing_payload_changes_if_external_calls_json_changes() {
+        let mut base = info([0u8; 32], [1u8; 32], [2u8; 32]);
+        base.external_calls_json = "[]".to_string();
+        let mut tampered = base.clone();
+        tampered.external_calls_json =
+            r#"[{"contract":"C123","function":"keepalive","args":[]}]"#.to_string();
+        assert_ne!(
+            base.signing_payload().unwrap(),
+            tampered.signing_payload().unwrap(),
+            "a tampered external_calls_json must invalidate the signing payload"
         );
     }
 }

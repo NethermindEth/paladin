@@ -44,7 +44,7 @@ var transactionFilters = filters.FieldMap{
 	"functionName":   filters.StringField("fn_name"),
 	"domain":         filters.StringField(`"transactions"."domain"`),
 	"from":           filters.StringField(`"from"`),
-	"to":             filters.HexBytesField(`"to"`),
+	"to":             filters.ChainAddressField(`"to"`),
 	"type":           filters.StringField(`"type"`),
 }
 
