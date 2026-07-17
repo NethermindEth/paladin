@@ -458,12 +458,31 @@ struct ExternalCallJson {
     args: Vec<serde_json::Value>,
 }
 
-/// A transition transaction's own `function_params_json` - `external_calls` defaults to empty so
-/// existing root-only callers (with `{}` or blank params) are unaffected.
+/// A transition transaction's own `function_params_json`. `external_calls` is a JSON-*encoded
+/// string* of `Vec<ExternalCallJson>`, not a nested JSON array directly: `function_params_json`
+/// round-trips through core's generic ABI parameter parser/serializer
+/// (`domainmgr.buildTransactionSpecification`'s `fnDef.Inputs.ParseJSONCtx`/
+/// `StandardABISerializer().SerializeJSONCtx`), which only carries through keys the calling
+/// transaction's ABI actually *declares* as parameters (`abi.ParameterArray.walkTupleInput` looks
+/// up each declared field by name and silently ignores anything else in the input map) - and
+/// `args`' own tagged-union shape (`scval_json.rs`) has no natural fixed ABI type. Declaring
+/// `externalCalls` as a single ABI `string` parameter sidesteps that entirely: the caller supplies
+/// an already-JSON-encoded string, which core's ABI layer passes through unchanged (no
+/// hex/numeric-normalization gotcha a `string` type could introduce), and this crate parses the
+/// nested JSON itself. Defaults to empty so existing root-only callers (with `{}` or blank params)
+/// are unaffected.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct TransitionParamsJson {
     #[serde(rename = "externalCalls", default)]
-    external_calls: Vec<ExternalCallJson>,
+    external_calls: String,
+}
+
+fn parse_external_calls(external_calls_json: &str) -> Result<Vec<ExternalCallJson>, String> {
+    if external_calls_json.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    serde_json::from_str(external_calls_json)
+        .map_err(|e| format!("invalid externalCalls JSON: {e}"))
 }
 
 /// Encodes one `ExternalCallJson` to the exact `ScVal::Map` shape `soroban_sdk`'s own
@@ -955,9 +974,10 @@ impl DomainHandler for SenteDomain {
             serde_json::from_str(&transaction.function_params_json)
                 .map_err(|e| format!("invalid transition function_params_json: {e}"))?
         };
+        let external_calls = parse_external_calls(&params.external_calls)?;
         let external_calls_json =
-            serde_json::to_string(&params.external_calls).map_err(|e| e.to_string())?;
-        let external_calls_scval = encode_external_calls(&params.external_calls)?;
+            serde_json::to_string(&external_calls).map_err(|e| e.to_string())?;
+        let external_calls_scval = encode_external_calls(&external_calls)?;
         let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root, external_calls_scval)?;
         let config = self.config()?;
         let on_chain_digest = saladin_typed_data_digest(

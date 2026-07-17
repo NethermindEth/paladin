@@ -76,7 +76,7 @@ test {
         }
     }
     useJUnitPlatform()
-    systemProperty "jna.library.path", file("${rootDir}/core/go/build/libs").absolutePath + ":" + file("${rootDir}/toolkit/go/build/libs").absolutePath + ":" + file("${rootDir}/domains/sente/target/release").absolutePath
+    systemProperty "jna.library.path", file("${rootDir}/core/go/build/libs").absolutePath + ":" + file("${rootDir}/toolkit/go/build/libs").absolutePath + ":" + file("${rootDir}/domains/sente/target/release").absolutePath + ":" + file("${project(':domains:noto').buildDir}/libs").absolutePath
 }
 
 configurations {
@@ -94,6 +94,10 @@ configurations {
         canBeResolved = true
     }
     libsente {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+    libnoto {
         canBeConsumed = false
         canBeResolved = true
     }
@@ -117,6 +121,7 @@ dependencies {
     testImplementation project(path: ":core:go", configuration: "libcore")
     testImplementation project(path: ":toolkit:go", configuration: "libstarter")
     testImplementation project(path: ":domains:sente", configuration: "libsente")
+    testImplementation project(path: ":domains:noto", configuration: "libnoto")
     testImplementation project(path: ":solidity", configuration: "compiledContracts")
 
     implementation 'net.java.dev.jna:jna-platform:5.14+'

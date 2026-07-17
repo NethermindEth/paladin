@@ -44,7 +44,9 @@ public class TestSenteRealTransition {
     private record StellarFixtures(
             @JsonProperty String saladinFactoryAddress,
             @JsonProperty String senteFactoryAddress,
-            @JsonProperty String senteWasmHash
+            @JsonProperty String senteWasmHash,
+            @JsonProperty String snotoFactoryAddress,
+            @JsonProperty String snotoWasmHash
     ) {
     }
 
@@ -60,6 +62,8 @@ public class TestSenteRealTransition {
         assertNotNull(fixtures.saladinFactoryAddress());
         assertNotNull(fixtures.senteFactoryAddress());
         assertNotNull(fixtures.senteWasmHash());
+        assertNotNull(fixtures.snotoFactoryAddress());
+        assertNotNull(fixtures.snotoWasmHash());
         return fixtures;
     }
 
@@ -241,6 +245,127 @@ public class TestSenteRealTransition {
                             "member1",
                             groupAddress,
                             new HashMap<>(),
+                            transitionABI,
+                            "transition"
+                    ),
+                    true);
+            assertNotNull(result);
+        } finally {
+            testbed.close();
+        }
+    }
+
+    // The full combined proof (chapter 14 §14.3 S3's exit criterion, "group transition anchored on
+    // testnet with an external SNoto call"): deploys a real SNoto instance via Paladin's own "noto"
+    // domain (not Sente's), then submits a Sente transition whose function_params_json declares an
+    // externalCalls leg targeting that instance's real keepalive(state_ids) function - proving the
+    // external_calls wiring (domain.rs's ExternalCallJson/encode_atom_operation, scval_json.rs's
+    // general JSON->ScVal encoder) actually reaches a live, independent contract on-chain, not just
+    // an empty-vec no-op through the same code path.
+    @Test
+    void deployGroupAndSubmitTransitionWithExternalSnotoCall() throws Exception {
+        StellarFixtures fixtures = loadStellarFixtures();
+
+        Testbed testbed = new Testbed(
+                new Testbed.Setup("../go/db/migrations/sqlite", "build/test.java-sente-external-call-transition.txt", 15000),
+                Testbed.BaseLedger.STELLAR,
+                new Testbed.ConfigDomain(
+                        "sente",
+                        fixtures.saladinFactoryAddress(),
+                        new Testbed.ConfigPlugin("c-shared", "sente", ""),
+                        new HashMap<>() {{
+                            put("senteFactoryAddress", fixtures.senteFactoryAddress());
+                            put("saladinFactoryAddress", fixtures.saladinFactoryAddress());
+                            put("senteWasmHash", fixtures.senteWasmHash());
+                            put("networkPassphrase", "Standalone Network ; February 2017");
+                        }},
+                        "root"),
+                // stellarSacAddress deliberately omitted: SNoto's own stellarPrepareDeploy falls
+                // back to the resolved notary's own chain address as a harmless inert placeholder
+                // (domains/noto/pkg/types/config.go's own doc comment) - deposit/withdraw are
+                // unreachable without shield/unshield, which this test never calls.
+                new Testbed.ConfigDomain(
+                        "noto",
+                        fixtures.saladinFactoryAddress(),
+                        new Testbed.ConfigPlugin("c-shared", "noto", ""),
+                        new HashMap<>() {{
+                            put("stellarSnotoFactoryAddress", fixtures.snotoFactoryAddress());
+                            put("stellarSnotoWasmHash", fixtures.snotoWasmHash());
+                        }},
+                        "root")
+        );
+        try {
+            // Deploy a real SNoto instance via Paladin's own "noto" domain (SNotoFactory.deploy ->
+            // SaladinFactory.register, the same real flow core/go/noderuntests/componenttest/
+            // stellar_component_test.go's TestStellarComponentTest already proves) -
+            // testbed_deployChainNeutral (not pgroup_createGroup) is enough here since this test
+            // doesn't need Noto's own group/endorsement machinery, only a real, callable, deployed
+            // contract address to target from Sente's own transition.
+            Map<String, Object> notoConstructorParams = new HashMap<>() {{
+                put("notary", "notary@node1");
+                put("notaryMode", "basic");
+            }};
+            String snotoAddress = testbed.getRpcClient().request("testbed_deployChainNeutral",
+                    "noto", "notary", notoConstructorParams);
+            assertNotNull(snotoAddress);
+            assertFalse(snotoAddress.isBlank());
+
+            // Genesis: same single-member Sente group flow as deployGroupAndSubmitTransition.
+            Map<?, ?> createdGroup = testbed.getRpcClient().request("pgroup_createGroup",
+                    new HashMap<>() {{
+                        put("domain", "sente");
+                        put("name", "sente-external-call-transition-test");
+                        put("members", List.of("member1@node1"));
+                    }});
+            assertNotNull(createdGroup);
+            String groupID = (String) createdGroup.get("id");
+            assertNotNull(groupID);
+
+            String groupAddress = null;
+            for (int i = 0; i < 60 && groupAddress == null; i++) {
+                Map<?, ?> group = testbed.getRpcClient().request("pgroup_getGroupById", "sente", groupID);
+                Object contractAddress = group != null ? group.get("contractAddress") : null;
+                if (contractAddress != null) {
+                    groupAddress = (String) contractAddress;
+                } else {
+                    Thread.sleep(500);
+                }
+            }
+            assertNotNull(groupAddress, "group deploy did not confirm within timeout");
+            assertFalse(groupAddress.isBlank());
+
+            // The transition's own function_params_json must declare "externalCalls" as a real ABI
+            // parameter to survive core's generic ABI round trip (buildTransactionSpecification's
+            // ParseJSONCtx/SerializeJSONCtx only carries through keys the ABI actually declares -
+            // an undeclared key is silently dropped, not an error) - a plain "string" parameter
+            // carrying an already-JSON-encoded array sidesteps needing a fixed ABI shape for
+            // ExternalCallJson.args' own tagged-union values (domain.rs's TransitionParamsJson doc
+            // comment covers this in full).
+            String externalCallsJson = new ObjectMapper().writeValueAsString(List.of(
+                    new HashMap<>() {{
+                        put("contract", snotoAddress);
+                        put("function", "keepalive");
+                        put("args", List.of(new HashMap<>() {{
+                            put("type", "vec");
+                            put("value", List.of());
+                        }}));
+                    }}
+            ));
+
+            JsonABI transitionABI = new JsonABI();
+            transitionABI.add(JsonABI.newFunction("transition",
+                    JsonABI.newParameters(JsonABI.newParameter("externalCalls", "string")),
+                    new JsonABI.Parameters()));
+
+            Map<?, ?> result = testbed.getRpcClient().request("testbed_invoke",
+                    new Testbed.TransactionInput(
+                            "private",
+                            "sente",
+                            "member1",
+                            groupAddress,
+                            new HashMap<>() {{
+                                put("externalCalls", externalCallsJson);
+                            }},
                             transitionABI,
                             "transition"
                     ),
