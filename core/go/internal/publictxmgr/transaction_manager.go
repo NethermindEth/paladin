@@ -298,6 +298,14 @@ func (ptm *pubTxManager) ValidateTransaction(ctx context.Context, dbTX persisten
 	var txType InFlightTxOperation
 
 	if txi.Gas == nil || *txi.Gas == 0 {
+		// Stellar's EstimateResources simulates against txi.From as the transaction's own source
+		// account (not yet the channel account AssignOrderingKeys will later substitute in) - a
+		// brand new identity's first ever transaction needs that account to exist on chain before
+		// stellar-rpc's simulateTransaction can LoadAccount it, which is otherwise only guaranteed
+		// for channel sub-keys, not the business identity itself. No-op for EVM.
+		if err := ptm.chainSubmitter.EnsureFromAccountFunded(ctx, *txi.From); err != nil {
+			return err
+		}
 		resourceEstimate, err := ptm.baseLedger.EstimateResources(ctx, publicTxToUnsignedChainTx(*txi.From, txi.To, txi.Data, txi.PayloadKind))
 		if err != nil {
 			log.L(ctx).Errorf("HandleNewTx <%s> error estimating gas for transaction: %+v, request: (%+v)", txType, err, txi)

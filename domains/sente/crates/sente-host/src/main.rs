@@ -16,7 +16,7 @@ use soroban_env_host::e2e_invoke::RecordingInvocationAuthMode;
 use soroban_env_host::e2e_testutils::{
     account_entry, default_ledger_info, get_account_id, CreateContractData,
 };
-use soroban_env_host::xdr::{HostFunction, InvokeContractArgs, ScBytes, ScSymbol, ScVal};
+use soroban_env_host::xdr::{HostFunction, InvokeContractArgs, ScBytes, ScString, ScSymbol, ScVal};
 use soroban_simulation::testutils::MockSnapshotSource;
 
 /// A fixed, deterministic seed - in real Sente use this would be derived from the private
@@ -56,9 +56,10 @@ fn run() -> Result<String> {
         .map_err(|e| anyhow::anyhow!("{e}"))?,
     );
 
-    // `register(tx_id, instance, config)` - chosen because it needs no proof and isn't
-    // `require_auth`-gated (soroban/contracts/factory/src/lib.rs), so this harness can prove host
-    // determinism without also needing to construct a signed auth entry.
+    // `register(tx_id, instance, config, identity_lookup)` - chosen because it needs no proof and
+    // isn't `require_auth`-gated (soroban/contracts/factory/src/lib.rs), so this harness can prove
+    // host determinism without also needing to construct a signed auth entry. `identity_lookup` is
+    // left empty - this spike only cares about host determinism, not the identity-registration path.
     let tx_id = [0x11u8; 32];
     let instance_address = contract.contract_address.clone();
     let config_bytes = ScBytes(b"phase-1-determinism-spike".to_vec().try_into().unwrap());
@@ -70,6 +71,7 @@ fn run() -> Result<String> {
             ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Address(instance_address),
             ScVal::Bytes(config_bytes),
+            ScVal::String(ScString(Default::default())),
         ]
         .try_into()
         .unwrap(),

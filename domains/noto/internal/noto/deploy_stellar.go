@@ -37,7 +37,7 @@ import (
 // than branching inside the EVM-ABI-shaped code. No auth_entries_xdr/read_footprint_hints, for the
 // same reason mint's stellarBaseLedgerInvoke leaves them empty: that's Paladin's core signing/
 // submission pipeline's job, not this domain plugin's.
-func (n *Noto) stellarPrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequest, params *types.ConstructorParams, notary *identityPair) (*prototk.PrepareDeployResponse, error) {
+func (n *Noto) stellarPrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequest, params *types.ConstructorParams, notary *identityPair, notaryLookup string) (*prototk.PrepareDeployResponse, error) {
 	if n.config.StellarSnotoFactoryAddress == "" {
 		return nil, i18n.NewError(ctx, msgs.MsgParameterRequired, "stellarSnotoFactoryAddress")
 	}
@@ -69,7 +69,7 @@ func (n *Noto) stellarPrepareDeploy(ctx context.Context, req *prototk.PrepareDep
 	// saladin_factory is the domain's own registry (RegistryContractAddress, ConfigureDomain) -
 	// the per-domain SaladinFactory instance domainmgr's step 5 event-stream trusts - NOT
 	// StellarSnotoFactoryAddress (that's the contract being invoked below, a different instance).
-	argsXDR, argsJSON, err := encodeSNotoFactoryDeployArgs(wasmHash, notary.chainAddress.String(), config, sacAddress, n.registryAddress, txID)
+	argsXDR, argsJSON, err := encodeSNotoFactoryDeployArgs(wasmHash, notary.chainAddress.String(), config, sacAddress, n.registryAddress, txID, notaryLookup)
 	if err != nil {
 		return nil, err
 	}
@@ -97,9 +97,12 @@ func (n *Noto) stellarPrepareDeploy(ctx context.Context, req *prototk.PrepareDep
 }
 
 // encodeSNotoFactoryDeployArgs builds the real Soroban call args for SNotoFactory's
-// `deploy(wasm_hash, notary, config, sac, saladin_factory, tx_id)` (soroban/contracts/
-// snoto-factory/src/lib.rs) - argument order must match the Rust signature exactly.
-func encodeSNotoFactoryDeployArgs(wasmHash pldtypes.Bytes32, notary string, config []byte, sac, saladinFactory string, txID pldtypes.Bytes32) (argsXDR []byte, argsJSON string, err error) {
+// `deploy(wasm_hash, notary, config, sac, saladin_factory, tx_id, notary_lookup)`
+// (soroban/contracts/snoto-factory/src/lib.rs) - argument order must match the Rust signature
+// exactly. `notaryLookup` is the Paladin identity locator (e.g. "notary@node1"), published
+// separately on-chain via `NotaryRegistered` so `InitContract` can recover it for any node - see
+// that event's own doc comment for why it can't just ride along in `config`.
+func encodeSNotoFactoryDeployArgs(wasmHash pldtypes.Bytes32, notary string, config []byte, sac, saladinFactory string, txID pldtypes.Bytes32, notaryLookup string) (argsXDR []byte, argsJSON string, err error) {
 	wasmHashVal, err := scValBytes(wasmHash[:])
 	if err != nil {
 		return nil, "", err
@@ -124,8 +127,12 @@ func encodeSNotoFactoryDeployArgs(wasmHash pldtypes.Bytes32, notary string, conf
 	if err != nil {
 		return nil, "", err
 	}
+	notaryLookupVal, err := scValString(notaryLookup)
+	if err != nil {
+		return nil, "", err
+	}
 
-	args := xdr.ScVec{wasmHashVal, notaryVal, configVal, sacVal, saladinFactoryVal, txIDVal}
+	args := xdr.ScVec{wasmHashVal, notaryVal, configVal, sacVal, saladinFactoryVal, txIDVal, notaryLookupVal}
 	var buf bytes.Buffer
 	if _, err := xdr.Marshal(&buf, args); err != nil {
 		return nil, "", err
@@ -138,6 +145,7 @@ func encodeSNotoFactoryDeployArgs(wasmHash pldtypes.Bytes32, notary string, conf
 		"sac":             sac,
 		"saladin_factory": saladinFactory,
 		"tx_id":           txID.String(),
+		"notary_lookup":   notaryLookup,
 	})
 	if err != nil {
 		return nil, "", err

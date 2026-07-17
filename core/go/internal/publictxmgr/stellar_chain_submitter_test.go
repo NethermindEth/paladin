@@ -214,6 +214,78 @@ func TestStellarAssignOrderingKeysNoFunderConfigured(t *testing.T) {
 	require.ErrorContains(t, err, "channel account funder")
 }
 
+func TestStellarEnsureFromAccountFundedBootstrapsMissingAccount(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	funderIdentifier := "stellar.funder"
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1), Funder: &funderIdentifier}
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	funderAddr := keypair.MustRandom().Address()
+	funderKey := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: funderIdentifier, KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: funderAddr},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ResolveKeyNewDatabaseTX", mock.Anything, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS).Return(funderKey, nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, funderAddr).Return(funderKey, nil).Once()
+	mockKeyManager.On("Sign", mock.Anything, funderKey, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil).Once()
+
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	getAccountInfoCalls := 0
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		if got.String() == from.String() {
+			getAccountInfoCalls++
+			return nil, fmt.Errorf("account not found")
+		}
+		// the funder
+		nonce := pldtypes.HexUint64(7)
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+	submittedHash := pldtypes.MustParseBytes32("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		return submittedHash, nil
+	}
+	ledger.getTransactionResult = func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+		return &baseledger.TxResult{ID: id, Success: true}, nil
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+	require.NoError(t, err)
+	assert.Equal(t, 1, getAccountInfoCalls)
+}
+
+func TestStellarEnsureFromAccountFundedNoopIfAlreadyFunded(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	nonce := pldtypes.HexUint64(1)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+	require.NoError(t, err)
+}
+
+func TestStellarEnsureFromAccountFundedNoFunderConfigured(t *testing.T) {
+	ctx, submitter, _, done := newTestStellarSubmitter(t)
+	defer done()
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1)}
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		return nil, fmt.Errorf("account not found")
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+	require.ErrorContains(t, err, "channel account funder")
+}
+
 func TestStellarPrepareSubmission(t *testing.T) {
 	ctx, submitter, m, done := newTestStellarSubmitter(t)
 	defer done()

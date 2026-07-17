@@ -117,19 +117,41 @@ func (s *stellarChainSubmitter) AssignOrderingKeys(ctx context.Context, from pld
 // submits (and waits for confirmation of) a CreateAccountOp funded from the configured funder
 // identity - an explicit operational decision (chapter 12 §12.2): there is no automatic/faucet
 // funding, so a missing funder configuration is a hard failure here, not a silent skip.
+func (s *stellarChainSubmitter) ensureChannelAccountFunded(ctx context.Context, channelAccount pldtypes.ChainAddress) error {
+	return s.ensureAccountFunded(ctx, channelAccount)
+}
+
+// EnsureFromAccountFunded ensures a transaction's own business signing identity (ptx.From - the
+// notary/party identity a domain resolves, not one of AssignOrderingKeys' channel sub-keys) exists
+// on chain, using the exact same funder/CreateAccountOp mechanism as ensureChannelAccountFunded.
+// This identity is never the envelope's source account at submission time (buildStellarTx always
+// sources from ptx.ChannelAccount), but ValidateTransaction's gas-estimation call still needs
+// stellar-rpc's simulateTransaction to LoadAccount it as the simulated transaction's own source
+// account, and that runs before AssignOrderingKeys/channel-account bootstrap ever happens for a
+// brand new identity - so without this, the very first transaction from a not-yet-seen identity
+// fails gas estimation with "failed to find ledger entry for account G...", even though channel
+// accounts are (and always were) auto-funded correctly.
+func (s *stellarChainSubmitter) EnsureFromAccountFunded(ctx context.Context, from pldtypes.ChainAddress) error {
+	return s.ensureAccountFunded(ctx, from)
+}
+
+// ensureAccountFunded is a no-op if account already exists on chain. Otherwise it submits (and
+// waits for confirmation of) a CreateAccountOp funded from the configured channel-account funder
+// identity - shared by ensureChannelAccountFunded (channel sub-keys) and EnsureFromAccountFunded
+// (a transaction's own business signing identity), since both need exactly the same bootstrap.
 //
 // Any GetAccountInfo error (not just a distinguishable "not found") is treated as "assume missing,
 // attempt to create" - stellar-rpc has no typed not-found error surfaced through baseledger.Client
 // today, and a genuine transient RPC error simply makes the subsequent CreateAccountOp submission
 // fail too, which bubbles up and is retried on the orchestrator's next poll tick like any other
 // AssignOrderingKeys failure.
-func (s *stellarChainSubmitter) ensureChannelAccountFunded(ctx context.Context, channelAccount pldtypes.ChainAddress) error {
-	if _, err := s.ptm.baseLedger.GetAccountInfo(ctx, channelAccount); err == nil {
+func (s *stellarChainSubmitter) ensureAccountFunded(ctx context.Context, account pldtypes.ChainAddress) error {
+	if _, err := s.ptm.baseLedger.GetAccountInfo(ctx, account); err == nil {
 		return nil
 	}
 	funderIdentifier := confutil.StringNotEmpty(s.channelAccounts.Funder, "")
 	if funderIdentifier == "" {
-		return i18n.NewError(ctx, msgs.MsgPublicTxMgrChannelAccountFunderNotConfigured, channelAccount)
+		return i18n.NewError(ctx, msgs.MsgPublicTxMgrChannelAccountFunderNotConfigured, account)
 	}
 	funder, err := s.ptm.keymgr.ResolveKeyNewDatabaseTX(ctx, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
 	if err != nil {
@@ -154,7 +176,7 @@ func (s *stellarChainSubmitter) ensureChannelAccountFunded(ctx context.Context, 
 		IncrementSequenceNum: true,
 		Operations: []txnbuild.Operation{&txnbuild.CreateAccount{
 			SourceAccount: funderAddr.String(),
-			Destination:   channelAccount.String(),
+			Destination:   account.String(),
 			Amount:        startingBalance,
 		}},
 		BaseFee:       txnbuild.MinBaseFee,
@@ -169,7 +191,7 @@ func (s *stellarChainSubmitter) ensureChannelAccountFunded(ctx context.Context, 
 	}
 	result, err := s.Submit(ctx, &PreparedSubmission{RawTransaction: rawTransaction, TransactionHash: &txHash})
 	if err != nil {
-		return fmt.Errorf("failed to submit channel account funding transaction for %s: %w", channelAccount, err)
+		return fmt.Errorf("failed to submit account funding transaction for %s: %w", account, err)
 	}
 	if result.TxHash == nil {
 		return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)

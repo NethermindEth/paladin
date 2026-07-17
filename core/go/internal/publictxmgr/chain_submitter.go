@@ -85,4 +85,10 @@ type ChainSubmitter interface {
 	// PrepareRestore builds and signs a standalone restore transaction for the archived entries
 	// described by soroban (chapter 12 §12.2's restore-preamble stage). Not applicable to EVM.
 	PrepareRestore(ctx context.Context, ptx *DBPublicTxn, soroban *baseledger.SorobanResources) (*PreparedSubmission, error)
+	// EnsureFromAccountFunded ensures a transaction's own business signing identity (from) exists
+	// on chain before ValidateTransaction's gas-estimation call needs to load it as a simulated
+	// transaction's source account. No-op for EVM (any address is valid without prior account
+	// creation). For Stellar, bootstraps it exactly like a channel account (chapter 12 §12.2) if
+	// it doesn't already exist on chain.
+	EnsureFromAccountFunded(ctx context.Context, from pldtypes.ChainAddress) error
 }

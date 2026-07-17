@@ -43,6 +43,12 @@ public class TestSenteRealTransition {
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record StellarFixtures(
             @JsonProperty String saladinFactoryAddress,
+            // A dedicated SaladinFactory instance for Noto, distinct from saladinFactoryAddress -
+            // domainmgr's registration-event routing (registrationIndexer's getDomainByAddress)
+            // assumes one dedicated registry instance per domain (domain.go's own doc comment), so
+            // configuring Sente and Noto against the *same* registry in one Testbed misroutes "reg"
+            // events to the wrong domain.
+            @JsonProperty String notoSaladinFactoryAddress,
             @JsonProperty String senteFactoryAddress,
             @JsonProperty String senteWasmHash,
             @JsonProperty String snotoFactoryAddress,
@@ -265,6 +271,7 @@ public class TestSenteRealTransition {
     @Test
     void deployGroupAndSubmitTransitionWithExternalSnotoCall() throws Exception {
         StellarFixtures fixtures = loadStellarFixtures();
+        assertNotNull(fixtures.notoSaladinFactoryAddress(), "run `./gradlew :soroban:deployStellarFixtures` to pick up notoSaladinFactoryAddress");
 
         Testbed testbed = new Testbed(
                 new Testbed.Setup("../go/db/migrations/sqlite", "build/test.java-sente-external-call-transition.txt", 15000),
@@ -286,7 +293,7 @@ public class TestSenteRealTransition {
                 // unreachable without shield/unshield, which this test never calls.
                 new Testbed.ConfigDomain(
                         "noto",
-                        fixtures.saladinFactoryAddress(),
+                        fixtures.notoSaladinFactoryAddress(),
                         new Testbed.ConfigPlugin("c-shared", "noto", ""),
                         new HashMap<>() {{
                             put("stellarSnotoFactoryAddress", fixtures.snotoFactoryAddress());
@@ -310,12 +317,16 @@ public class TestSenteRealTransition {
             assertNotNull(snotoAddress);
             assertFalse(snotoAddress.isBlank());
 
-            // Genesis: same single-member Sente group flow as deployGroupAndSubmitTransition.
+            // Genesis: same single-member Sente group flow as deployGroupAndSubmitTransition, but
+            // with a distinct member identity ("member3", not "member1") - deploy_group's own salt
+            // is sha256(members), so reusing "member1@node1" (deployGroupAndSubmitTransition's own
+            // member) would collide with that test's already-consumed deterministic group address
+            // whenever both tests run in the same Gradle invocation (same shared senteFactoryAddress).
             Map<?, ?> createdGroup = testbed.getRpcClient().request("pgroup_createGroup",
                     new HashMap<>() {{
                         put("domain", "sente");
                         put("name", "sente-external-call-transition-test");
-                        put("members", List.of("member1@node1"));
+                        put("members", List.of("member3@node1"));
                     }});
             assertNotNull(createdGroup);
             String groupID = (String) createdGroup.get("id");
@@ -361,7 +372,7 @@ public class TestSenteRealTransition {
                     new Testbed.TransactionInput(
                             "private",
                             "sente",
-                            "member1",
+                            "member3",
                             groupAddress,
                             new HashMap<>() {{
                                 put("externalCalls", externalCallsJson);

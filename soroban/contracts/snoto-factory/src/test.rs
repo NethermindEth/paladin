@@ -32,6 +32,7 @@ fn deploy_deploys_initializes_and_registers() {
     let sac = Address::generate(&env);
     let config = Bytes::from_slice(&env, b"config-bytes");
     let tx_id = BytesN::from_array(&env, &[7u8; 32]);
+    let notary_lookup = String::from_str(&env, "notary@node1");
 
     let client = ContractClient::new(&env, &snoto_factory_id);
     let snoto_address = client.deploy(
@@ -41,19 +42,30 @@ fn deploy_deploys_initializes_and_registers() {
         &sac,
         &factory_contract_id,
         &tx_id,
+        &notary_lookup,
     );
 
     // `env.events().all()` only retains events from the *most recent* top-level invocation
     // (confirmed against `contracts/factory`'s own test comment) - assert this immediately,
-    // before the double-initialize check below starts a new one.
+    // before the double-initialize check below starts a new one. Both events are published from
+    // `register`'s own context (SaladinFactory), not snoto-factory - see `deploy`'s own doc
+    // comment on why `notary_lookup` rides through `register` rather than being published here
+    // directly.
     let expected_registration = factory::Registration {
-        tx_id,
+        tx_id: tx_id.clone(),
         instance: snoto_address.clone(),
         config,
     };
+    let expected_identity_registered = factory::IdentityRegistered {
+        tx_id,
+        identity_lookup: notary_lookup,
+    };
     assert_eq!(
         env.events().all(),
-        std::vec![expected_registration.to_xdr(&env, &factory_contract_id)]
+        std::vec![
+            expected_registration.to_xdr(&env, &factory_contract_id),
+            expected_identity_registered.to_xdr(&env, &factory_contract_id),
+        ]
     );
 
     // Confirms the deployed address is a real, initialized SNoto instance (not just some
@@ -80,14 +92,15 @@ fn deploy_uses_tx_id_as_salt_so_reusing_tx_id_fails() {
     let sac = Address::generate(&env);
     let config = Bytes::from_slice(&env, b"config-bytes");
     let tx_id = BytesN::from_array(&env, &[9u8; 32]);
+    let notary_lookup = String::from_str(&env, "notary@node1");
 
     let client = ContractClient::new(&env, &snoto_factory_id);
-    client.deploy(&wasm_hash, &notary, &config, &sac, &factory_contract_id, &tx_id);
+    client.deploy(&wasm_hash, &notary, &config, &sac, &factory_contract_id, &tx_id, &notary_lookup);
 
     // Redeploying at the same tx_id (same salt) must fail before `initialize`/`register` are
     // ever reached - this is what makes `contracts/factory`'s own "no persistent storage, no
     // dedup entry needed" design safe (chapter 13 §13.5, factory/src/lib.rs's own doc comment):
     // idempotency already comes from this deployment step, not from the registry.
-    let result = client.try_deploy(&wasm_hash, &notary, &config, &sac, &factory_contract_id, &tx_id);
+    let result = client.try_deploy(&wasm_hash, &notary, &config, &sac, &factory_contract_id, &tx_id, &notary_lookup);
     assert!(result.is_err());
 }

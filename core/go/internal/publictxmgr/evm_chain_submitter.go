@@ -182,3 +182,9 @@ func (s *evmChainSubmitter) ActionOnStale(_ context.Context, _ *DBPublicTxn) (St
 func (s *evmChainSubmitter) PrepareRestore(ctx context.Context, _ *DBPublicTxn, _ *baseledger.SorobanResources) (*PreparedSubmission, error) {
 	return nil, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreNotSupported)
 }
+
+// EnsureFromAccountFunded is a no-op for EVM: any address is a valid eth_estimateGas/eth_call
+// source without needing to exist on chain first.
+func (s *evmChainSubmitter) EnsureFromAccountFunded(_ context.Context, _ pldtypes.ChainAddress) error {
+	return nil
+}

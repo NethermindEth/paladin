@@ -20,7 +20,10 @@ package componenttest
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +32,8 @@ import (
 	"github.com/LFDT-Paladin/paladin/domains/noto/pkg/types"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldclient"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/stretchr/testify/assert"
@@ -68,6 +73,32 @@ func loadStellarFixtures(t *testing.T) stellarFixtures {
 	require.NotEmpty(t, f.SnotoFactoryAddress)
 	require.NotEmpty(t, f.SnotoWasmHash)
 	return f
+}
+
+// fundRootFunderViaFriendbot funds this node's own resolved "root" identity (config/stellar.node{1,2,3}.config.yaml's
+// channelAccounts.funder) via the quickstart standalone network's friendbot. "root"'s configured
+// static seed is the network ID hash (SHA-256 of the network passphrase, per keypair.Master's own
+// derivation) - but Paladin's key manager always derives an HD child key from a configured seed,
+// never the raw seed's own keypair directly, so "root" can never actually BE the network's literal
+// genesis master account (confirmed empirically: they're different addresses). So, exactly like
+// any other identity, "root" needs its own on-chain funding before it can act as a channel-account
+// funder - friendbot is genuinely available on this network (despite it running with `--enable rpc`
+// rather than `horizon`; friendbot answers on port 8000 regardless, confirmed empirically), the
+// same mechanism §14.3's own Sente multi-member test already relies on for its own "root" identity.
+func fundRootFunderViaFriendbot(t *testing.T, ctx context.Context, client pldclient.PaladinClient) {
+	t.Helper()
+	rootVerifier, err := client.PTX().ResolveVerifier(ctx, "root", algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	require.NoError(t, err)
+
+	resp, err := http.Get("http://localhost:8000/friendbot?addr=" + rootVerifier)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	alreadyFunded := resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), "already funded")
+	require.True(t, resp.StatusCode == http.StatusOK || alreadyFunded,
+		"failed to fund root funder verifier %s via friendbot: HTTP %d: %s", rootVerifier, resp.StatusCode, body)
 }
 
 func waitForSuccessfulReceipt(t *testing.T, ctx context.Context, client pldclient.PaladinClient, txID uuid.UUID, timeout time.Duration) {
@@ -122,11 +153,24 @@ func TestStellarComponentTest(t *testing.T) {
 		notary.Stop(t)
 	})
 
+	// Each node resolves its own "root" identity independently (own key manager, own DB), so each
+	// needs its own on-chain funding before it can fund channel accounts from it - see
+	// fundRootFunderViaFriendbot's own doc comment.
+	fundRootFunderViaFriendbot(t, ctx, notary.GetClient())
+	fundRootFunderViaFriendbot(t, ctx, party2.GetClient())
+	fundRootFunderViaFriendbot(t, ctx, party3.GetClient())
+
 	// Deploy a real SNoto instance: PrepareDeploy's Stellar branch (chapter 14 step 2) builds a
 	// SorobanInvoke targeting SNotoFactory.deploy, which deploys+initializes the instance and
 	// calls SaladinFactory.register in one atomic on-chain invocation (chapter 14 step 1,
 	// soroban/contracts/snoto-factory) - domainmgr's event-stream consumer (chapter 14 step 5)
 	// then trusts that registration and treats the instance as real.
+	//
+	// A longer timeout than later transactions in this test: this first transaction bootstraps
+	// several *separate* 8-account channel-account pools (chapter 12 §12.2) - the notary's own
+	// identity, plus a fresh per-deploy nonce identity - each one a sequence of CreateAccountOps
+	// individually confirmed, currently paced by ~2s getTransaction polling per account. See
+	// build.gradle's componentTestStellarSQLite task for the matching go test -timeout bump.
 	deployTx := notary.GetClient().ForABI(ctx, *notoStellarConstructorABI).
 		Private().
 		Domain("noto").
@@ -136,7 +180,7 @@ func TestStellarComponentTest(t *testing.T) {
 			Notary:     notary.GetIdentityLocator(),
 			NotaryMode: types.NotaryModeBasic,
 		})).
-		Send().Wait(60 * time.Second)
+		Send().Wait(480 * time.Second)
 	require.NoError(t, deployTx.Error())
 	contractAddress := deployTx.Receipt().ContractAddress
 	require.NotNil(t, contractAddress, "deploy did not produce a contract address - is the SaladinFactory.register event being trusted/registered?")

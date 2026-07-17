@@ -34,7 +34,7 @@
 //! deploying and registering in the same atomic invocation.
 #![no_std]
 
-use soroban_sdk::{contract, contractevent, contractimpl, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contract, contractevent, contractimpl, Address, Bytes, BytesN, Env, String};
 
 /// `("reg", tx_id) -> (instance, config)` - the discovery event chapter 12's event-stream bridge
 /// consumes. `data_format = "vec"` keeps `(instance, config)` a positional pair matching the
@@ -48,18 +48,47 @@ pub struct Registration {
     pub config: Bytes,
 }
 
+/// Carries an off-chain identity-locator string (e.g. Noto's notary, `"notary@node1"`) alongside a
+/// registration, published from this same `SaladinFactory` context so it lands at the same
+/// address domainmgr's registry event stream already watches (chapter 14 §14.3's own `config`
+/// channel is committed to carrying whatever bytes the registering contract's on-chain crypto
+/// needs unchanged - e.g. a network passphrase - so it can't *also* carry identity metadata;
+/// this is the separate, dedicated channel for that, mirroring `Registration`'s own shape rather
+/// than inventing an unrelated one). Only published when `identity_lookup` is non-empty, so
+/// existing callers that don't need this (Sente, SAtom) are unaffected by passing an empty string.
+#[contractevent(topics = ["idreg"], data_format = "vec")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityRegistered {
+    #[topic]
+    pub tx_id: BytesN<32>,
+    pub identity_lookup: String,
+}
+
 #[contract]
 pub struct Contract;
 
 #[contractimpl]
 impl Contract {
-    pub fn register(env: Env, tx_id: BytesN<32>, instance: Address, config: Bytes) {
+    pub fn register(
+        env: Env,
+        tx_id: BytesN<32>,
+        instance: Address,
+        config: Bytes,
+        identity_lookup: String,
+    ) {
         Registration {
-            tx_id,
+            tx_id: tx_id.clone(),
             instance,
             config,
         }
         .publish(&env);
+        if !identity_lookup.is_empty() {
+            IdentityRegistered {
+                tx_id,
+                identity_lookup,
+            }
+            .publish(&env);
+        }
     }
 }
 
@@ -80,9 +109,12 @@ mod test {
         let tx_id = BytesN::from_array(&env, &[7u8; 32]);
         let instance = Address::generate(&env);
         let config = Bytes::from_slice(&env, b"config-bytes");
+        let empty_identity_lookup = String::from_str(&env, "");
 
-        client.register(&tx_id, &instance, &config);
+        client.register(&tx_id, &instance, &config, &empty_identity_lookup);
 
+        // An empty identity_lookup means no IdentityRegistered event - only "reg" is published,
+        // unaffected by this new, optional parameter.
         let expected = Registration {
             tx_id,
             instance,
@@ -91,6 +123,37 @@ mod test {
         assert_eq!(
             env.events().all(),
             std::vec![expected.to_xdr(&env, &contract_id)]
+        );
+    }
+
+    #[test]
+    fn register_with_identity_lookup_also_publishes_idreg_event() {
+        let env = Env::default();
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
+
+        let tx_id = BytesN::from_array(&env, &[8u8; 32]);
+        let instance = Address::generate(&env);
+        let config = Bytes::from_slice(&env, b"config-bytes");
+        let identity_lookup = String::from_str(&env, "notary@node1");
+
+        client.register(&tx_id, &instance, &config, &identity_lookup);
+
+        let expected_registration = Registration {
+            tx_id: tx_id.clone(),
+            instance,
+            config,
+        };
+        let expected_identity_registered = IdentityRegistered {
+            tx_id,
+            identity_lookup,
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![
+                expected_registration.to_xdr(&env, &contract_id),
+                expected_identity_registered.to_xdr(&env, &contract_id),
+            ]
         );
     }
 
@@ -104,10 +167,12 @@ mod test {
         // dedup/state check - confirming the "no persistent storage" design holds in practice.
         // (soroban-sdk testutils only retain events from the most recent top-level invocation,
         // so each call is asserted independently rather than accumulated.)
+        let empty_identity_lookup = String::from_str(&env, "");
         client.register(
             &BytesN::from_array(&env, &[1u8; 32]),
             &Address::generate(&env),
             &Bytes::from_slice(&env, b"a"),
+            &empty_identity_lookup,
         );
         assert_eq!(env.events().all().events().len(), 1);
 
@@ -115,6 +180,7 @@ mod test {
             &BytesN::from_array(&env, &[2u8; 32]),
             &Address::generate(&env),
             &Bytes::from_slice(&env, b"b"),
+            &empty_identity_lookup,
         );
         assert_eq!(env.events().all().events().len(), 1);
     }

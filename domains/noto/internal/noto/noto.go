@@ -640,7 +640,7 @@ func (n *Noto) PrepareDeploy(ctx context.Context, req *prototk.PrepareDeployRequ
 	}
 
 	if n.getChainIO().ChainKind() == "stellar" {
-		return n.stellarPrepareDeploy(ctx, req, params, notaryInfo)
+		return n.stellarPrepareDeploy(ctx, req, params, notaryInfo, notaryQualified.String())
 	}
 
 	notaryAddress := notaryInfo.address
@@ -732,7 +732,11 @@ func (n *Noto) InitContract(ctx context.Context, req *prototk.InitContractReques
 	ctx = log.WithLogField(ctx, "contract", req.ContractAddress)
 	var notoContractConfigJSON []byte
 
-	domainConfig, decodedData, err := n.decodeConfig(ctx, req.ContractConfig)
+	decodeConfig := n.decodeConfig
+	if n.getChainIO().ChainKind() == "stellar" {
+		decodeConfig = n.decodeStellarConfig
+	}
+	domainConfig, decodedData, err := decodeConfig(ctx, req.ContractConfig)
 	if err != nil {
 		// This on-chain contract has invalid configuration - not an error in our process
 		log.L(ctx).Errorf("Error decoding config: %s", err)
@@ -847,6 +851,44 @@ func (n *Noto) decodeConfig(ctx context.Context, domainConfig []byte) (*types.No
 		err = json.Unmarshal(config.Data, &decodedData)
 	}
 	return &config, &decodedData, err
+}
+
+// stellarNotoRegistrationConfig mirrors domainmgr's own
+// stellarRegistrationConfigWithNotaryLookup (core/go/internal/domainmgr/event_indexer_stellar.go)
+// field-for-field - the two sides of a JSON wire boundary between core and this plugin, kept in
+// sync by matching field names/tags rather than a shared Go type (this domain doesn't, and
+// shouldn't, import core's own internal package).
+type stellarNotoRegistrationConfig struct {
+	NetworkPassphrase pldtypes.HexBytes `json:"networkPassphrase"`
+	NotaryLookup      string            `json:"notaryLookup"`
+}
+
+// decodeStellarConfig parses registrationIndexer's own combined
+// {networkPassphrase, notaryLookup} JSON - the Stellar counterpart to decodeConfig's EVM
+// versioned-ABI-blob decode, which SNoto's own config channel (committed to carrying exactly the
+// network passphrase SNoto::initialize needs on-chain, unchanged - see NotaryRegistered's own doc
+// comment in soroban/contracts/snoto-factory/src/lib.rs) can't carry directly.
+// Name/Symbol/Decimals/Variant aren't tracked for Stellar yet - no on-chain carrier exists for them
+// (the same "shield/unshield unwired" boundary DomainConfig.StellarSacAddress's own doc comment
+// already documents) - so they default to their zero values; only basic notary mode is supported
+// (hooks mode, an EVM/Pente-hooks concept, has no Stellar equivalent yet).
+func (n *Noto) decodeStellarConfig(ctx context.Context, domainConfig []byte) (*types.NotoConfig_V1, *types.NotoConfigData_V0, error) {
+	var combined stellarNotoRegistrationConfig
+	if err := json.Unmarshal(domainConfig, &combined); err != nil {
+		return nil, nil, i18n.WrapError(ctx, err, msgs.MsgUnexpectedConfigType, "stellar")
+	}
+	if combined.NotaryLookup == "" {
+		return nil, nil, i18n.NewError(ctx, msgs.MsgParameterRequired, "notaryLookup")
+	}
+	config := &types.NotoConfig_V1{}
+	decodedData := &types.NotoConfigData_V0{
+		NotaryLookup: combined.NotaryLookup,
+		NotaryMode:   types.NotaryModeIntBasic,
+		RestrictMint: true,
+		AllowBurn:    true,
+		AllowLock:    true,
+	}
+	return config, decodedData, nil
 }
 
 func (n *Noto) validateDeployAndGetLogContext(ctx context.Context, txSpec *prototk.DeployTransactionSpecification) (context.Context, *types.ConstructorParams, error) {

@@ -197,7 +197,7 @@ func (d *domain) processDomainConfig(dbTX persistence.DBTX, confRes *prototk.Con
 		// against, so describe the wanted event by selector instead (chapter 14 step 5) - mirrors
 		// registrymgr's own configureEventStream, and must use the exact same selector formula the
 		// Stellar ingestor computes when writing indexed_events, or the two will never match.
-		registrySource.Selectors = []pldtypes.Bytes32{stellarRegisterSelector}
+		registrySource.Selectors = []pldtypes.Bytes32{stellarRegisterSelector, stellarIdentityRegisteredSelector}
 	} else {
 		registrySource.ABI = iPaladinContractRegistryABI
 	}

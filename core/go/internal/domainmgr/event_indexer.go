@@ -53,6 +53,25 @@ func (dm *domainManager) registrationIndexer(ctx context.Context, dbTX persisten
 	var txCompletions txCompletionsOrdered
 	nonRegisterEvents := make([]*pldapi.EventWithData, 0, len(batch.Events))
 
+	// First pass: collect any IdentityRegistered events (soroban/contracts/factory - published
+	// optionally from register's own context, alongside "reg", whenever a caller passes a
+	// non-empty identity_lookup) by tx_id, so the "reg" case below can fold a matching one in.
+	// Both events are published from the same register() invocation, so ordering within this
+	// batch is deterministic (registration first, then the optional identity one) - collecting
+	// them up front regardless keeps this pass independent of that ordering. Harmless/empty for
+	// any domain (e.g. Sente, SAtom) that never populates identity_lookup.
+	notaryLookupByTxID := make(map[uuid.UUID]string)
+	for _, ev := range batch.Events {
+		if ev.IndexedEvent != nil && ev.Signature == stellarIdentityRegisteredSelector {
+			txID, notaryLookup, err := decodeIdentityRegistered(ctx, ev)
+			if err != nil {
+				log.L(ctx).Errorf("Failed to parse IdentityRegistered event (%s): %s", err, pldtypes.JSONString(ev))
+				continue
+			}
+			notaryLookupByTxID[txID] = notaryLookup
+		}
+	}
+
 	for _, ev := range batch.Events {
 		processedEvent := false
 		switch {
@@ -97,10 +116,32 @@ func (dm *domainManager) registrationIndexer(ctx context.Context, dbTX persisten
 				log.L(ctx).Errorf("Failed to parse domain event (%s): %s", parseErr, pldtypes.JSONString(ev))
 			} else {
 				processedEvent = true
-				contract, completion := newRegisteredContract(d, ev, txID, *ev.AddressChain, instanceChain, pldtypes.HexBytes(config), nil)
+				// If this same transaction also published an IdentityRegistered event (register's
+				// own optional identity_lookup - see that event's doc comment), fold the identity
+				// lookup in alongside the raw config/passphrase bytes rather than losing it: it
+				// can't ride along in "config" itself, since e.g. SNoto's own on-chain initialize()
+				// needs those bytes to be exactly the network passphrase, unchanged.
+				configBytes := pldtypes.HexBytes(config)
+				if notaryLookup, ok := notaryLookupByTxID[txID]; ok {
+					combined, err := json.Marshal(&stellarRegistrationConfigWithNotaryLookup{
+						NetworkPassphrase: pldtypes.HexBytes(config),
+						NotaryLookup:      notaryLookup,
+					})
+					if err != nil {
+						log.L(ctx).Errorf("Failed to encode combined registration config: %s", err)
+					} else {
+						configBytes = combined
+					}
+				}
+				contract, completion := newRegisteredContract(d, ev, txID, *ev.AddressChain, instanceChain, configBytes, nil)
 				contracts = append(contracts, contract)
 				txCompletions = append(txCompletions, completion)
 			}
+
+		case ev.IndexedEvent != nil && ev.Signature == stellarIdentityRegisteredSelector:
+			// Fully consumed by the first pass above - just keep it out of nonRegisterEvents so it
+			// isn't also handed to the domain's own (unrelated) event-batch processing.
+			processedEvent = true
 		}
 		if !processedEvent {
 			nonRegisterEvents = append(nonRegisterEvents, ev)

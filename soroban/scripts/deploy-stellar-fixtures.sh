@@ -17,7 +17,15 @@
 # SNoto instances are - so, like `snotoWasmHash`, only the *hash* is uploaded here, not an instance.
 #
 # Writes artifacts/stellar-fixtures.json:
-# {"saladinFactoryAddress", "snotoFactoryAddress", "snotoWasmHash", "senteFactoryAddress", "senteWasmHash"}
+# {"saladinFactoryAddress", "notoSaladinFactoryAddress", "snotoFactoryAddress", "snotoWasmHash",
+#  "senteFactoryAddress", "senteWasmHash"}
+#
+# Two separate SaladinFactory instances are deployed (saladinFactoryAddress, notoSaladinFactoryAddress)
+# rather than one shared one: domainmgr's registration-event routing (registrationIndexer's own
+# getDomainByAddress) assumes one dedicated registry instance per domain - a design already
+# documented in domain.go's processDomainConfig - so two domains sharing one registry in the same
+# process (e.g. Sente + Noto configured together in one JVM Testbed) would have their "reg" events
+# misrouted to the wrong domain.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -36,6 +44,7 @@ stellar network add "$network" --rpc-url "$rpc_url" --network-passphrase "$netwo
 stellar keys generate "$deployer" --network "$network" --fund --overwrite >/dev/null
 
 saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+noto_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/snoto_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/snoto.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 sente_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/sente_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
@@ -44,6 +53,7 @@ sente_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/sente.wasm" --s
 cat > "$fixtures_file" <<JSON
 {
   "saladinFactoryAddress": "$saladin_factory_address",
+  "notoSaladinFactoryAddress": "$noto_saladin_factory_address",
   "snotoFactoryAddress": "$snoto_factory_address",
   "snotoWasmHash": "$snoto_wasm_hash",
   "senteFactoryAddress": "$sente_factory_address",

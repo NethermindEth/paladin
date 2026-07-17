@@ -33,7 +33,8 @@
 
 use satom::AtomOperation;
 use soroban_sdk::{
-    contract, contractimpl, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    contract, contractimpl, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val,
+    Vec,
 };
 
 #[contract]
@@ -74,6 +75,7 @@ impl Contract {
             tx_id.into_val(&env),
             satom_address.into_val(&env),
             config.into_val(&env),
+            String::from_str(&env, "").into_val(&env),
         ];
         let _: Val = env.invoke_contract(&saladin_factory, &register, register_args);
 

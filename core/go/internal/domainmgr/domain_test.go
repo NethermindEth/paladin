@@ -2097,7 +2097,7 @@ func TestDomainInitAcceptsStellarChainKind(t *testing.T) {
 	require.Len(t, capturedStream.Definition.Sources, 1)
 	source := capturedStream.Definition.Sources[0]
 	assert.Empty(t, source.ABI)
-	assert.Equal(t, []pldtypes.Bytes32{stellarRegisterSelector}, source.Selectors)
+	assert.Equal(t, []pldtypes.Bytes32{stellarRegisterSelector, stellarIdentityRegisteredSelector}, source.Selectors)
 }
 
 func TestEnqueueCompletionsContextDone(t *testing.T) {

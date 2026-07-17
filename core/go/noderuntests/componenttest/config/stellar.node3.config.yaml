@@ -37,12 +37,17 @@ wallets:
   # secp256k1/EVM's default of 1 (pldconf.SignerConfigDefaults.KeyDerivation.BIP44HardenedSegments)
   # - a plain (unhardened) segment fails with "PD020829: SLIP-10 ed25519 derivation requires all
   # path segments to be hardened". 5 covers any path depth Paladin's identity resolution builds.
-  # "root" derives the raw secret seed of the standalone network's master/root account
-  # (seed = SHA-256(networkPassphrase) - see network.ID in github.com/stellar/go-stellar-sdk),
-  # which already holds the entire genesis supply on a freshly started quickstart network. There
-  # is no friendbot here (Horizon is never started - see the stellar_quickstart service comment),
-  # so this is how channel accounts get funded in this dev/test setup. keySelector is listed before
-  # wallet1's catch-all below because wallet selection is first-match-wins in config order.
+  # "root"'s static seed is SHA-256(networkPassphrase) (network.ID in
+  # github.com/stellar/go-stellar-sdk) - the same seed the network's own genesis master account
+  # derives from directly (keypair.Master(networkPassphrase)). Correction: this does NOT make
+  # "root" itself the genesis master account - Paladin's key manager always derives an HD child
+  # key from a configured seed, never the raw seed's own keypair, so "root" resolves to a
+  # different address than keypair.Master() (confirmed empirically). Friendbot IS available on
+  # this network despite running with `--enable rpc` rather than `horizon` (confirmed empirically
+  # - see stellar_component_test.go's fundRootFunderViaFriendbot), so "root" gets funded like any
+  # other identity, once, by the test itself before it acts as the channel-account funder.
+  # keySelector is listed before wallet1's catch-all below because wallet selection is
+  # first-match-wins in config order.
   - name: root
     keySelector: "^root$"
     signer:

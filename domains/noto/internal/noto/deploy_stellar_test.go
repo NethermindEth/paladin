@@ -99,7 +99,7 @@ func TestPrepareDeploy_Stellar(t *testing.T) {
 	var args xdr.ScVec
 	_, err = xdr.Unmarshal(bytes.NewReader(invoke.ArgsXdr), &args)
 	require.NoError(t, err)
-	require.Len(t, args, 6)
+	require.Len(t, args, 7)
 
 	assert.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
 	assert.Equal(t, wasmHash[:], []byte(*args[0].Bytes))
@@ -130,6 +130,9 @@ func TestPrepareDeploy_Stellar(t *testing.T) {
 	txID, err := pldtypes.ParseBytes32Ctx(ctx, deployTransaction.TransactionId)
 	require.NoError(t, err)
 	assert.Equal(t, txID[:], []byte(*args[5].Bytes))
+
+	assert.Equal(t, xdr.ScValTypeScvString, args[6].Type)
+	assert.Equal(t, "notary@node1", string(*args[6].Str))
 }
 
 func TestPrepareDeploy_Stellar_MissingFactoryConfig(t *testing.T) {

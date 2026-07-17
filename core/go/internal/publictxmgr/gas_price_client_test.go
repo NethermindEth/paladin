@@ -1069,6 +1069,31 @@ func TestStartWithGasPriceError(t *testing.T) {
 	mockEthClient.AssertExpectations(t)
 }
 
+func TestStartTreatsNoGasPricingCapabilityAsZeroGasPrice(t *testing.T) {
+	ctx := context.Background()
+
+	conf := &pldconf.GasPriceConfig{
+		FixedGasPrice: nil,
+		EthFeeHistory: pldconf.EthFeeHistoryConfig{
+			PriorityFeePercentile: confutil.P(85),
+			HistoryBlockCount:     confutil.P(20),
+		},
+	}
+
+	gasPriceClient := NewGasPriceClient(ctx, conf)
+	hgc := gasPriceClient.(*HybridGasPriceClient)
+	err := hgc.Init(ctx)
+	require.NoError(t, err)
+	defer gasPriceClient.Stop()
+
+	// mockStellarBaseLedger (stellar_chain_submitter_test.go) implements baseledger.Client but not
+	// baseledger.GasPricingCapability - a chain-neutral base ledger with no dynamic-gas-pricing
+	// concept at all should be treated as a zero gas price chain, not fall through to
+	// estimateEIP1559Fees (which would otherwise error forever - see Start's own doc comment).
+	hgc.Start(ctx, &mockStellarBaseLedger{})
+	assert.True(t, hgc.hasZeroGasPrice)
+}
+
 func TestStartSkipsGasPriceWhenFixedPriceSet(t *testing.T) {
 	ctx := context.Background()
 	mockEthClient := ethclientmocks.NewEthClient(t)

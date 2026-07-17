@@ -34,7 +34,9 @@
 //! requires (none, today).
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 #[contract]
 pub struct Contract;
@@ -42,8 +44,13 @@ pub struct Contract;
 #[contractimpl]
 impl Contract {
     /// Deploys a new SNoto instance for `notary`/`config`/`sac`, initializes it, and registers it
-    /// with `saladin_factory` under `tx_id`/`config` (`SaladinFactory::register`'s own shape,
-    /// `contracts/factory`). Returns the deployed instance's address.
+    /// with `saladin_factory` under `tx_id`/`config`/`notary_lookup` (`SaladinFactory::register`'s
+    /// own shape, `contracts/factory`). Returns the deployed instance's address. `notary_lookup`
+    /// (the notary's Paladin identity-locator string, e.g. `"notary@node1"`) rides through to
+    /// `register`'s own `identity_lookup` parameter, published from `SaladinFactory`'s own context
+    /// as `IdentityRegistered` - not published from here directly, so it lands at the address
+    /// domainmgr's registry event stream already watches (`contracts/factory`'s own doc comment on
+    /// `IdentityRegistered` covers why `config`/`notary`/`sac` themselves can't also carry it).
     pub fn deploy(
         env: Env,
         wasm_hash: BytesN<32>,
@@ -52,6 +59,7 @@ impl Contract {
         sac: Address,
         saladin_factory: Address,
         tx_id: BytesN<32>,
+        notary_lookup: String,
     ) -> Address {
         let snoto_address = env
             .deployer()
@@ -73,6 +81,7 @@ impl Contract {
             tx_id.into_val(&env),
             snoto_address.into_val(&env),
             config.into_val(&env),
+            notary_lookup.into_val(&env),
         ];
         let _: Val = env.invoke_contract(&saladin_factory, &register, register_args);
 

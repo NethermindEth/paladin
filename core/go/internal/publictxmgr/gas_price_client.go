@@ -453,16 +453,28 @@ func (hGpc *HybridGasPriceClient) Start(ctx context.Context, baseLedger baseledg
 		hGpc.gasPricingLedger = gp
 	}
 
-	// If we haven't already been told a fixed gas price, check whether it's a zero gas price chain
-	if hGpc.fixedGasPrice == nil && hGpc.gasPricingLedger != nil {
-		zeroGasPrice, err := hGpc.gasPricingLedger.DetectZeroGasPrice(ctx)
-		if err == nil {
-			if zeroGasPrice {
-				hGpc.hasZeroGasPrice = true
-				log.L(ctx).Debugf("Detected zero gas price chain from base ledger")
-			}
+	if hGpc.fixedGasPrice == nil {
+		if hGpc.gasPricingLedger == nil {
+			// Chain-neutral (e.g. Soroban) base ledgers never implement GasPricingCapability at all
+			// - there's no dynamic-gas-pricing concept to detect zero-ness from, and estimateEIP1559Fees
+			// would otherwise error forever on every retrieveGasPrice stage attempt (this transaction
+			// never advances to signing/submission - a permanent stall, not a slow retry) rather than
+			// falling through to any of GetGasPriceObject's other retrieval strategies, since fees for
+			// these chains are carried on the resource estimate itself (chapter 12 §12.1), not queried
+			// as a separate "gas price".
+			hGpc.hasZeroGasPrice = true
+			log.L(ctx).Debugf("Base ledger has no gas pricing capability - treating as a zero gas price chain")
 		} else {
-			log.L(ctx).Warnf("Could not determine gas price from base ledger: %v", err)
+			// If we haven't already been told a fixed gas price, check whether it's a zero gas price chain
+			zeroGasPrice, err := hGpc.gasPricingLedger.DetectZeroGasPrice(ctx)
+			if err == nil {
+				if zeroGasPrice {
+					hGpc.hasZeroGasPrice = true
+					log.L(ctx).Debugf("Detected zero gas price chain from base ledger")
+				}
+			} else {
+				log.L(ctx).Warnf("Could not determine gas price from base ledger: %v", err)
+			}
 		}
 	}
 

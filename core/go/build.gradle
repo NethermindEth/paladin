@@ -419,11 +419,12 @@ task componentTestWithGasSQLite(type: GasComponentTest, dependsOn: [
 // alongside besu_free/besu_gas) plus the 3-node Stellar-backed config below
 // (config/stellar.node{1,2,3}.config.yaml, mirroring sqlite.node{1,2,3}.config.yaml's Besu setup -
 // each with its own signing identity and a shared "root" identity for channel-account funding).
-// There is no Go component test targeting these configs yet (chapter 12/§12.7 quickstart
-// acceptance work is still outstanding on the saladin branch - see saladin-book ch.12 §12.7), so
-// -run is pinned to a not-yet-existing test name: this is a safe no-op ("ok ... [no tests to run]")
-// that wires up the infra/config plumbing ahead of that follow-up Go work, rather than silently
-// re-running the existing SQLite suite under a misleading name.
+// TestStellarComponentTest (noderuntests/componenttest/stellar_component_test.go) now exercises
+// these configs (mint/transfer/state-distribution/resync), but it does not yet pass standalone:
+// the notary's own business signing identity has no funding path on standalone quickstart (no
+// friendbot equivalent wired up here, unlike the channel-account pool's own funding) - see
+// saladin-book ch.14 §14.1's own status note. Not yet in the CI-required `componentTest`
+// aggregate below for the same reason.
 task componentTestStellarSQLite(type: ComponentTest, dependsOn: [
         makeMocks,
         ':testinfra:startTestInfra',
@@ -433,7 +434,14 @@ task componentTestStellarSQLite(type: ComponentTest, dependsOn: [
     ]) {
     mustRunAfter 'componentTestPostgres', 'componentTestWithGasSQLite' // these tests cannot run concurrently
     args '-tags', "testdbsqlite,stellar_quickstart" // uses the stellar_quickstart standalone network
-    args '-run', '^TestStellarComponentTest' // no matching test exists yet - see comment above
+    args '-run', '^TestStellarComponentTest'
+    // Longer than ComponentTest's shared 180s default: this test's first transaction bootstraps
+    // several *separate* channel-account pools (one per distinct signing identity - the notary's
+    // own identity, plus a fresh per-deploy nonce identity, each with their own 8-account pool),
+    // and each account's CreateAccountOp confirmation is currently paced by fundingConfirmationRetry
+    // polling stellar-rpc's getTransaction every ~2s - a real, cumulative cost across several
+    // identities' worth of bootstrap, not a hang (confirmed by tracing a run to completion).
+    args '-timeout=600s'
 }
 
 task coordinationTestPostgres(type: CoordinationTest, dependsOn: [
