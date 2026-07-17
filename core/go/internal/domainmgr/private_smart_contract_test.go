@@ -155,7 +155,7 @@ func doDomainInitTransactionOK(t *testing.T, td *testDomainContext, resFn ...fun
 		Domain:  localTx.Transaction.Domain,
 		Address: *localTx.Transaction.To,
 	}
-	err := psc.InitTransaction(td.ctx, ptx, localTx)
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, ptx, localTx)
 	require.NoError(t, err)
 	assert.Len(t, ptx.PreAssembly.RequiredVerifiers, 1)
 	return psc, ptx, localTx
@@ -586,7 +586,7 @@ func TestDomainInitTransactionMissingInput(t *testing.T) {
 	psc := goodPSC(t, td)
 
 	tx := &components.PrivateTransaction{}
-	err := psc.InitTransaction(td.ctx, tx, &components.ResolvedTransaction{})
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, tx, &components.ResolvedTransaction{})
 	assert.Regexp(t, "PD011626", err)
 	assert.Nil(t, tx.PreAssembly)
 
@@ -603,7 +603,7 @@ func TestDomainInitTransactionConfirmedBlockFail(t *testing.T) {
 	localTx := goodPrivateTXWithInputs(psc)
 
 	ptx := &components.PrivateTransaction{}
-	err := psc.InitTransaction(td.ctx, ptx, localTx)
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, ptx, localTx)
 	assert.Regexp(t, "pop", err)
 	assert.Nil(t, ptx.PreAssembly)
 
@@ -624,7 +624,7 @@ func TestDomainInitTransactionError(t *testing.T) {
 	ptx := &components.PrivateTransaction{
 		ID: *localTx.Transaction.ID,
 	}
-	err := psc.InitTransaction(td.ctx, ptx, localTx)
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, ptx, localTx)
 	assert.Regexp(t, "pop", err)
 	assert.Nil(t, ptx.PreAssembly)
 
@@ -642,7 +642,7 @@ func TestDomainInitTransactionBadInputs(t *testing.T) {
 	ptx := &components.PrivateTransaction{
 		ID: *localTx.Transaction.ID,
 	}
-	err := psc.InitTransaction(td.ctx, ptx, localTx)
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, ptx, localTx)
 	assert.Regexp(t, "PD011612", err)
 	assert.Nil(t, ptx.PreAssembly)
 
@@ -1280,7 +1280,7 @@ func TestIncompleteStages(t *testing.T) {
 	ptx := &components.PrivateTransaction{}
 	localTx := &components.ResolvedTransaction{}
 
-	err := psc.InitTransaction(td.ctx, ptx, localTx)
+	err := psc.InitTransaction(td.ctx, td.c.dbTX, ptx, localTx)
 	assert.Regexp(t, "PD011626", err)
 
 	err = psc.AssembleTransaction(td.mdc, td.c.dbTX, ptx, localTx, []*prototk.ResolvedVerifier{})

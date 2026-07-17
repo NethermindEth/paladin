@@ -101,7 +101,7 @@ func TestSequencerManager_handleDeployTx_NoDomain(t *testing.T) {
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{})
+	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{}, false)
 	require.Error(t, err)
 }
 
@@ -112,7 +112,7 @@ func TestSequencerManager_handleDeployTx_DomainNotFound(t *testing.T) {
 
 	mocks.domainManager.EXPECT().GetDomainByName(ctx, "missing").Return(nil, errors.New("not found")).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "missing"})
+	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "missing"}, false)
 	require.Error(t, err)
 }
 
@@ -125,7 +125,7 @@ func TestSequencerManager_handleDeployTx_InitDeployError(t *testing.T) {
 	mocks.domainManager.EXPECT().GetDomainByName(ctx, "test-domain").Return(mockDomain, nil).Once()
 	mockDomain.EXPECT().InitDeploy(ctx, mock.Anything).Return(errors.New("init failed")).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"})
+	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
 	require.Error(t, err)
 }
 
@@ -144,7 +144,7 @@ func TestSequencerManager_handleDeployTx_Success(t *testing.T) {
 		close(done)
 	}).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"})
+	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
 	require.NoError(t, err)
 	<-done
 }
@@ -164,7 +164,7 @@ func TestSequencerManager_deploymentLoop_ResolveVerifierError(t *testing.T) {
 			{Lookup: "lookup1", Algorithm: "alg", VerifierType: "type"},
 		},
 	}
-	sm.deploymentLoop(ctx, mockDomain, tx)
+	sm.deploymentLoop(ctx, mockDomain, tx, false)
 }
 
 func TestSequencerManager_deploymentLoop_EvaluateDeploymentError(t *testing.T) {
@@ -185,7 +185,7 @@ func TestSequencerManager_deploymentLoop_EvaluateDeploymentError(t *testing.T) {
 			{Lookup: "lookup1", Algorithm: "alg", VerifierType: "type"},
 		},
 	}
-	sm.deploymentLoop(ctx, mockDomain, tx)
+	sm.deploymentLoop(ctx, mockDomain, tx, false)
 	require.Len(t, tx.Verifiers, 1)
 }
 
@@ -216,7 +216,7 @@ func TestSequencerManager_deploymentLoop_Success(t *testing.T) {
 			{Lookup: "lookup1", Algorithm: "alg", VerifierType: "type"},
 		},
 	}
-	sm.deploymentLoop(ctx, mockDomain, tx)
+	sm.deploymentLoop(ctx, mockDomain, tx, false)
 }
 
 func TestSequencerManager_evaluateDeployment_PrepareDeployError(t *testing.T) {
@@ -229,7 +229,7 @@ func TestSequencerManager_evaluateDeployment_PrepareDeployError(t *testing.T) {
 	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(errors.New("prepare failed")).Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -242,7 +242,7 @@ func TestSequencerManager_evaluateDeployment_NonLocalSigner(t *testing.T) {
 	tx := &components.PrivateContractDeploy{ID: uuid.New(), Signer: "signer@other-node"}
 	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -257,7 +257,7 @@ func TestSequencerManager_evaluateDeployment_ResolveAddressError(t *testing.T) {
 	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return(nil, errors.New("key error")).Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -280,7 +280,7 @@ func TestSequencerManager_evaluateDeployment_DeployTransactionNotImplemented(t *
 	// out ("not implemented") before ever needing a resolved address.
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -297,7 +297,7 @@ func TestSequencerManager_evaluateDeployment_NeitherInvokeNorDeploy(t *testing.T
 	// ever needing a resolved address.
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -314,7 +314,7 @@ func TestSequencerManager_evaluateDeployment_ValidateTransactionError(t *testing
 	mocks.publicTxManager.EXPECT().ValidateTransaction(ctx, nil, mock.Anything).Return(errors.New("validate failed")).Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -332,7 +332,7 @@ func TestSequencerManager_evaluateDeployment_PersistError(t *testing.T) {
 	mocks.syncPoints.EXPECT().PersistDeployDispatchBatch(ctx, mock.Anything, mock.Anything).Return(errors.New("persist failed")).Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -349,7 +349,44 @@ func TestSequencerManager_evaluateDeployment_Success(t *testing.T) {
 	mocks.publicTxManager.EXPECT().ValidateTransaction(ctx, nil, mock.Anything).Return(nil).Once()
 	mocks.syncPoints.EXPECT().PersistDeployDispatchBatch(ctx, mock.Anything, mock.Anything).Return(nil).Once()
 
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
+	require.NoError(t, err)
+}
+
+func TestSequencerManager_evaluateDeployment_ResumeSkipsAlreadyDispatched(t *testing.T) {
+	ctx := context.Background()
+	mocks := newSequencerLifecycleTestMocks(t)
+	sm := newSequencerManagerForTesting(t, mocks)
+
+	mockDomain := componentsmocks.NewDomain(t)
+	tx := goodDeployTxForEvaluate()
+	// A dispatch already exists for this transaction (the original, non-resumed evaluation is
+	// still in-flight or already completed) - evaluateDeployment must not re-run PrepareDeploy/
+	// ValidateTransaction against Soroban's non-idempotent create_contract_with_constructor, so no
+	// mockDomain.PrepareDeploy/ValidateTransaction/PersistDeployDispatchBatch expectation is set.
+	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(ctx, mock.Anything, []uuid.UUID{tx.ID}, mock.Anything).
+		Return(map[uuid.UUID][]*pldapi.PublicTx{tx.ID: {{}}}, nil).Once()
+
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, true)
+	require.NoError(t, err)
+}
+
+func TestSequencerManager_evaluateDeployment_ResumeProceedsWhenNotYetDispatched(t *testing.T) {
+	ctx := context.Background()
+	mocks := newSequencerLifecycleTestMocks(t)
+	sm := newSequencerManagerForTesting(t, mocks)
+
+	mockDomain := componentsmocks.NewDomain(t)
+	tx := goodDeployTxForEvaluate()
+	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(ctx, mock.Anything, []uuid.UUID{tx.ID}, mock.Anything).
+		Return(map[uuid.UUID][]*pldapi.PublicTx{}, nil).Once()
+	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil).Once()
+	from := pldtypes.RandAddress()
+	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return([]*pldtypes.EthAddress{from}, nil).Once()
+	mocks.publicTxManager.EXPECT().ValidateTransaction(ctx, nil, mock.Anything).Return(nil).Once()
+	mocks.syncPoints.EXPECT().PersistDeployDispatchBatch(ctx, mock.Anything, mock.Anything).Return(nil).Once()
+
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, true)
 	require.NoError(t, err)
 }
 
@@ -458,7 +495,7 @@ func TestSequencerManager_HandleNewTx_InvokeSuccess(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
+	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, _ persistence.DBTX, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
 
@@ -511,6 +548,10 @@ func TestSequencerManager_HandleTxResume_DeployAuto(t *testing.T) {
 	mocks.domainManager.EXPECT().GetDomainByName(mock.Anything, "test-domain").Return(mockDomain, nil).Once()
 	mockDomain.EXPECT().InitDeploy(mock.Anything, mock.Anything).Return(nil).Once()
 	done := make(chan struct{})
+	// A resumed deploy checks for an already-persisted dispatch first (sequencer.go's
+	// evaluateDeployment) - an empty result means this deploy hasn't been dispatched yet, so
+	// evaluation proceeds to PrepareDeploy as before.
+	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(map[uuid.UUID][]*pldapi.PublicTx{}, nil).Once()
 	mockDomain.EXPECT().PrepareDeploy(mock.Anything, mock.Anything).Return(errors.New("stop")).Once()
 	mocks.metrics.EXPECT().IncDispatchedTransactions().Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(ctx context.Context, req *syncpoints.TransactionFinalizeRequest, onCommit func(context.Context), onRollback func(context.Context, error)) {
@@ -563,7 +604,7 @@ func TestSequencerManager_HandleTxResume_InvokeResume(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(mock.Anything, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
+	mocks.domainAPI.EXPECT().InitTransaction(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, _ persistence.DBTX, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
 	mocks.originator.EXPECT().QueueEvent(mock.Anything, mock.Anything).Once()
@@ -620,7 +661,7 @@ func TestSequencerManager_handleTx_NilPreAssembly(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Return(nil).Once()
+	mocks.domainAPI.EXPECT().InitTransaction(ctx, dbTX, mock.Anything, localTx).Return(nil).Once()
 
 	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
@@ -1355,7 +1396,7 @@ func TestSequencerManager_evaluateDeployment_EncodeCallDataError(t *testing.T) {
 	from := pldtypes.RandAddress()
 	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return([]*pldtypes.EthAddress{from}, nil).Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(ctx, mock.Anything, mock.Anything, mock.Anything).Once()
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -1430,7 +1471,7 @@ func TestSequencerManager_evaluateDeployment_InvalidSignerValidateError(t *testi
 	tx := goodDeployTxForEvaluate()
 	tx.Signer = ""
 	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil).Once()
-	err := sm.evaluateDeployment(ctx, mockDomain, tx)
+	err := sm.evaluateDeployment(ctx, mockDomain, tx, false)
 	require.Error(t, err)
 }
 
@@ -1460,9 +1501,9 @@ func TestSequencerManager_HandleNewTx_SubmitModeExternal(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.MatchedBy(func(ptx *components.PrivateTransaction) bool {
+	mocks.domainAPI.EXPECT().InitTransaction(ctx, dbTX, mock.MatchedBy(func(ptx *components.PrivateTransaction) bool {
 		return ptx.Intent == prototk.TransactionSpecification_PREPARE_TRANSACTION
-	}), mock.Anything).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
+	}), mock.Anything).Run(func(_ context.Context, _ persistence.DBTX, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
 	done := make(chan struct{})
@@ -1522,7 +1563,7 @@ func TestSequencerManager_handleTx_InitTransactionError(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Return(errors.New("init failed")).Once()
+	mocks.domainAPI.EXPECT().InitTransaction(ctx, dbTX, mock.Anything, localTx).Return(errors.New("init failed")).Once()
 	err := sm.handleTx(ctx, dbTX, &components.PrivateTransaction{Address: contractAddr.ChainAddress()}, localTx, false)
 	require.Error(t, err)
 }
@@ -1541,7 +1582,7 @@ func TestSequencerManager_handleTx_LoadSequencerError(t *testing.T) {
 	mocks.domainAPI.EXPECT().Domain().Return(mockDomain).Once()
 	mockDomain.EXPECT().Name().Return("test-domain").Once()
 	mocks.domainManager.EXPECT().GetSmartContractByAddress(ctx, dbTX, contractAddr.ChainAddress()).Return(mocks.domainAPI, nil).Once()
-	mocks.domainAPI.EXPECT().InitTransaction(ctx, mock.Anything, localTx).Run(func(_ context.Context, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
+	mocks.domainAPI.EXPECT().InitTransaction(ctx, dbTX, mock.Anything, localTx).Run(func(_ context.Context, _ persistence.DBTX, ptx *components.PrivateTransaction, _ *components.ResolvedTransaction) {
 		ptx.PreAssembly = &components.TransactionPreAssembly{}
 	}).Return(nil).Once()
 	mocks.metrics.EXPECT().SetActiveSequencers(0).Once()

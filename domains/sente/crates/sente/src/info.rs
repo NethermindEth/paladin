@@ -54,6 +54,14 @@ pub struct InfoState {
     /// assembler used, rather than trusting the digest alone.
     #[serde(rename = "externalCallsJson", default = "empty_external_calls_json")]
     pub external_calls_json: String,
+    /// JSON-encoded `domain::InvokeJson` (empty string for a root-only transition with no real
+    /// business-contract invocation - the default, preserving this phase's original behavior
+    /// exactly). Carried here so `endorse_transaction` can independently rebuild the identical
+    /// `soroban-env-host` recording-mode invocation the assembler ran (same target contract,
+    /// function, args) against its own copy of the group's prior `SenteEntry` states, rather than
+    /// trusting `new_root`'s content-sensitivity on faith.
+    #[serde(rename = "invokeJson", default)]
+    pub invoke_json: String,
     pub signature: Option<SenderSignature>,
 }
 
@@ -79,7 +87,8 @@ pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
     {"name": "oldRoot", "type": "string"},
     {"name": "newRoot", "type": "string"},
     {"name": "onChainDigest", "type": "string"},
-    {"name": "externalCallsJson", "type": "string"}
+    {"name": "externalCallsJson", "type": "string"},
+    {"name": "invokeJson", "type": "string"}
   ]
 }"#;
 
@@ -91,6 +100,7 @@ impl InfoState {
         new_root: [u8; 32],
         on_chain_digest: [u8; 32],
         external_calls_json: String,
+        invoke_json: String,
     ) -> Self {
         Self {
             transaction_id,
@@ -99,15 +109,17 @@ impl InfoState {
             new_root,
             on_chain_digest,
             external_calls_json,
+            invoke_json,
             signature: None,
         }
     }
 
     /// The digest the sender's own `AttestationType.SIGN` request asks it to sign - Sente's
     /// off-chain integrity commitment (distinct from `on_chain_digest`, which endorsers sign
-    /// instead - see the module doc comment for why they must differ). Covers `on_chain_digest`
-    /// and `external_calls_json` too, so tampering with either after the sender signs invalidates
-    /// that signature, the same reasoning `sente_host::digest`-based endorsement used in S2.
+    /// instead - see the module doc comment for why they must differ). Covers `on_chain_digest`,
+    /// `external_calls_json`, and `invoke_json` too, so tampering with any of them after the
+    /// sender signs invalidates that signature, the same reasoning `sente_host::digest`-based
+    /// endorsement used in S2.
     pub fn signing_payload(&self) -> Result<[u8; 32]> {
         let canonical = serde_json::to_vec(&(
             &self.transaction_id,
@@ -116,6 +128,7 @@ impl InfoState {
             hex::encode(self.new_root),
             hex::encode(self.on_chain_digest),
             &self.external_calls_json,
+            &self.invoke_json,
         ))
         .context("failed to canonicalize info state for signing")?;
         Ok(Sha256::digest(canonical).into())
@@ -134,6 +147,7 @@ mod tests {
             new_root,
             digest,
             "[]".to_string(),
+            String::new(),
         )
     }
 
@@ -183,6 +197,19 @@ mod tests {
             base.signing_payload().unwrap(),
             tampered.signing_payload().unwrap(),
             "a tampered external_calls_json must invalidate the signing payload"
+        );
+    }
+
+    #[test]
+    fn signing_payload_changes_if_invoke_json_changes() {
+        let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
+        let mut tampered = base.clone();
+        tampered.invoke_json =
+            r#"{"contract":"C123","function":"bump","args":[]}"#.to_string();
+        assert_ne!(
+            base.signing_payload().unwrap(),
+            tampered.signing_payload().unwrap(),
+            "a tampered invoke_json must invalidate the signing payload"
         );
     }
 }

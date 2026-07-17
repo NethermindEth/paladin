@@ -106,7 +106,7 @@ func (d *domain) initSmartContract(ctx context.Context, dbTX persistence.DBTX, d
 	return pscValid, dc, nil
 }
 
-func (dc *domainContract) buildTransactionSpecification(ctx context.Context, localTx *components.ResolvedTransaction, intent prototk.TransactionSpecification_Intent) (*prototk.TransactionSpecification, error) {
+func (dc *domainContract) buildTransactionSpecification(ctx context.Context, dbTX persistence.DBTX, localTx *components.ResolvedTransaction, intent prototk.TransactionSpecification_Intent) (*prototk.TransactionSpecification, error) {
 
 	if localTx.Transaction == nil || localTx.Transaction.Data == nil || localTx.Function == nil ||
 		localTx.Transaction.Domain != dc.Domain().Name() || !localTx.Transaction.To.Equals(&dc.info.Address) {
@@ -131,8 +131,15 @@ func (dc *domainContract) buildTransactionSpecification(ctx context.Context, loc
 		}
 		baseBlockNumber, baseBlockTimestamp = latestConfirmedBlock.Number, latestConfirmedBlock.Timestamp
 	} else {
+		// Reuse the caller's own dbTX rather than opening a fresh persistence.NOTX() connection:
+		// this can run from within an already-open outer transaction (InitTransaction, called
+		// from handleTx's SendTransactions dbTX scope), and SQLite's connection pool is hard-capped
+		// to a single connection (see persistence/sqlite.go's MaxOpenConns) - opening a second,
+		// independent connection while the first is still held is a guaranteed self-deadlock, not
+		// merely a slow query (confirmed via a live goroutine dump: this exact call stuck forever
+		// in database/sql.(*DB).conn waiting for a connection the outer transaction was holding).
 		var blocks []*pldapi.IndexedBlock
-		err := dc.dm.persistence.NOTX().DB().WithContext(ctx).Table("indexed_blocks").Order("number DESC").Limit(1).Find(&blocks).Error
+		err := dbTX.DB().WithContext(ctx).Table("indexed_blocks").Order("number DESC").Limit(1).Find(&blocks).Error
 		if err != nil {
 			return nil, err
 		}
@@ -176,9 +183,9 @@ func (dc *domainContract) ContractConfig() *prototk.ContractConfig {
 	return dc.config
 }
 
-func (dc *domainContract) InitTransaction(ctx context.Context, tx *components.PrivateTransaction, localTx *components.ResolvedTransaction) error {
+func (dc *domainContract) InitTransaction(ctx context.Context, dbTX persistence.DBTX, tx *components.PrivateTransaction, localTx *components.ResolvedTransaction) error {
 
-	txSpec, err := dc.buildTransactionSpecification(ctx, localTx, tx.Intent)
+	txSpec, err := dc.buildTransactionSpecification(ctx, dbTX, localTx, tx.Intent)
 	if err != nil {
 		return err
 	}
@@ -246,7 +253,7 @@ func (dc *domainContract) AssembleTransaction(dCtx components.DomainContext, rea
 	// Assemble is a sender-role operation, that must be performed only using the local details of the transaction as submitted
 	// to this node by the application connected to that node. We cannot use any data that was received over the wire
 	// from the coordinator as part of the assembly.
-	txSpec, err := dc.buildTransactionSpecification(dCtx.Ctx(), localTx, tx.Intent)
+	txSpec, err := dc.buildTransactionSpecification(dCtx.Ctx(), readTX, localTx, tx.Intent)
 	if err != nil {
 		return err
 	}
@@ -612,7 +619,10 @@ func (dc *domainContract) PrepareTransaction(dCtx components.DomainContext, read
 
 func (dc *domainContract) InitCall(ctx context.Context, callTx *components.ResolvedTransaction) ([]*prototk.ResolveVerifierRequest, error) {
 
-	txSpec, err := dc.buildTransactionSpecification(ctx, callTx, prototk.TransactionSpecification_CALL)
+	// InitCall is a standalone read-only query, never invoked from within an already-open outer
+	// transaction (unlike InitTransaction), so a fresh NOTX() connection here carries no deadlock
+	// risk - see buildTransactionSpecification's own doc comment.
+	txSpec, err := dc.buildTransactionSpecification(ctx, dc.dm.persistence.NOTX(), callTx, prototk.TransactionSpecification_CALL)
 	if err != nil {
 		return nil, err
 	}
@@ -631,7 +641,7 @@ func (dc *domainContract) InitCall(ctx context.Context, callTx *components.Resol
 
 func (dc *domainContract) ExecCall(dCtx components.DomainContext, readTX persistence.DBTX, callTx *components.ResolvedTransaction, verifiers []*prototk.ResolvedVerifier) (*abi.ComponentValue, error) {
 
-	txSpec, err := dc.buildTransactionSpecification(dCtx.Ctx(), callTx, prototk.TransactionSpecification_CALL)
+	txSpec, err := dc.buildTransactionSpecification(dCtx.Ctx(), readTX, callTx, prototk.TransactionSpecification_CALL)
 	if err != nil {
 		return nil, err
 	}

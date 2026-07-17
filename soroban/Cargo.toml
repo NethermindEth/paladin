@@ -12,6 +12,7 @@ members = [
     "contracts/sente",
     "contracts/sente-factory",
     "contracts/identity-registry",
+    "contracts/test-counter",
 ]
 
 [workspace.package]

@@ -330,7 +330,7 @@ func (tb *testbed) execPrivateTransaction(ctx context.Context, tx *testbedTransa
 	// First we call init on the smart contract to:
 	// - validate the transaction ABI is understood by the contract
 	// - get an initial list of verifiers that need to be resolved
-	if err := tx.psc.InitTransaction(ctx, tx.ptx, tx.localTx); err != nil {
+	if err := tx.psc.InitTransaction(ctx, tb.c.Persistence().NOTX(), tx.ptx, tx.localTx); err != nil {
 		return err
 	}
 

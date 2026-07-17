@@ -1503,6 +1503,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "soroban-env-host",
+ "soroban-simulation",
  "stellar-strkey",
  "tokio",
  "tracing",

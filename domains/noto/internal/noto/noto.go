@@ -17,6 +17,7 @@ package noto
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -911,6 +912,27 @@ func (n *Noto) validateDeploy(ctx context.Context, tx *prototk.DeployTransaction
 	return &params, err
 }
 
+// parseContractAddress parses a TransactionSpecification's ContractInfo.ContractAddress into the
+// EVM-shaped 20-byte address ParsedTransaction.ContractAddress carries pervasively throughout this
+// package (ParsedTransaction.ContractAddress is a shared toolkit type, used by both Noto and Zeto -
+// generalizing it to be chain-neutral is out of scope for this pass, matching
+// chainio_stellar.go's placeholderContractID doc comment on the same limitation). For a genuine EVM
+// address this is lossless. For any other chain kind (e.g. a Stellar StrKey contract/account
+// address) - which ethtypes.NewAddress cannot parse at all, since it's not hex - this derives a
+// deterministic 20-byte stand-in via SHA-256, so the same real address always maps to the same
+// placeholder bytes across independent validations (e.g. an endorser's own re-derivation).
+func parseContractAddress(s string) (*ethtypes.Address0xHex, error) {
+	chainAddr, err := pldtypes.ParseChainAddress(s)
+	if err != nil {
+		return nil, err
+	}
+	if ethAddr, err := chainAddr.EthAddress(); err == nil {
+		return (*ethtypes.Address0xHex)(ethAddr), nil
+	}
+	hash := sha256.Sum256([]byte(chainAddr.String()))
+	return pldtypes.EthAddressBytes(hash[:20]).Address0xHex(), nil
+}
+
 func validateTransactionCommon[T comparable](
 	ctx context.Context,
 	tx *prototk.TransactionSpecification,
@@ -970,7 +992,7 @@ func validateTransactionCommon[T comparable](
 		return nil, *new(T), err
 	}
 
-	contractAddress, err := ethtypes.NewAddress(tx.ContractInfo.ContractAddress)
+	contractAddress, err := parseContractAddress(tx.ContractInfo.ContractAddress)
 	if err != nil {
 		return nil, *new(T), err
 	}

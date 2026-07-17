@@ -44,8 +44,9 @@ use saladin_plugin_rs::{pb, DomainHandler, PaladinClient};
 use sha2::{Digest, Sha256};
 
 use soroban_env_host::xdr::{
-    ContractExecutable, ContractId, Hash, Limits, ReadXdr, ScAddress, ScBytes, ScContractInstance,
-    ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM, WriteXdr,
+    ContractExecutable, ContractId, Hash, HostFunction, InvokeContractArgs, Limits, ReadXdr,
+    ScAddress, ScBytes, ScContractInstance, ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, VecM,
+    WriteXdr,
 };
 
 use crate::info::{InfoState, INFO_STATE_ABI_SCHEMA_JSON};
@@ -475,6 +476,10 @@ struct ExternalCallJson {
 struct TransitionParamsJson {
     #[serde(rename = "externalCalls", default)]
     external_calls: String,
+    /// JSON-encoded `Option<InvokeJson>` (see `InvokeJson`'s own doc comment) - `""` (the default)
+    /// means a root-only transition with no real business-contract invocation.
+    #[serde(rename = "invoke", default)]
+    invoke: String,
 }
 
 fn parse_external_calls(external_calls_json: &str) -> Result<Vec<ExternalCallJson>, String> {
@@ -534,13 +539,197 @@ fn encode_external_calls(calls: &[ExternalCallJson]) -> Result<ScVal, String> {
     )?))))
 }
 
-/// `new_root` is an opaque, content-free commitment for this phase's root-only transitions (module
-/// doc comment) - deterministically derived from `(old_root, transaction_id)` so every party
+/// `new_root` is an opaque, content-free commitment for a transition with no real business-contract
+/// invocation - deterministically derived from `(old_root, transaction_id)` so every party
 /// (assembler and every endorser) recomputes the identical value without coordination.
 fn derive_new_root(old_root: &[u8; 32], transaction_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(old_root);
     hasher.update(transaction_id.as_bytes());
+    hasher.finalize().into()
+}
+
+/// A transition's real business-contract invocation, as declared in a transition transaction's own
+/// `function_params_json` (`{"invoke": "{\"contract\":\"C...\",\"function\":\"...\",\"args\":[...]}"}`),
+/// JSON-*encoded string*, not a nested object, for the exact same ABI-round-trip reason
+/// `TransitionParamsJson.external_calls` already is (see its own doc comment). Absent/empty (the
+/// default) preserves the original root-only behavior exactly: `new_root` stays
+/// `derive_new_root(old_root, transaction_id)`, an opaque content-free commitment, and no
+/// `SenteEntry` beyond the group's own `Root` advances, which is what closes the gap flagged in
+/// this module's own doc comment (S1/S2's proven `soroban-env-host` recording-mode re-execution,
+/// wired into production for the first time here) without disturbing any existing root-only
+/// caller.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct InvokeJson {
+    contract: String,
+    function: String,
+    #[serde(default)]
+    args: Vec<serde_json::Value>,
+    /// Base64-encoded raw wasm bytes for the target contract's code - not tracked as a
+    /// `SenteEntry` Paladin state at all (see `run_invocation`'s own doc comment on why: a code
+    /// entry has no owning `ScAddress`, only a bare wasm hash, which doesn't fit `SenteEntry`'s
+    /// shape). Sente has no mechanism yet to distribute a contract's code to group members the
+    /// way it already distributes its data (that remains future work, the same genesis/deploy
+    /// boundary this module's own doc comment already flags for the group's own contract), so for
+    /// now the caller must supply it directly, on every invocation, exactly as it would need to
+    /// for a contract nothing else in the group has ever seen before.
+    #[serde(default)]
+    code: Option<String>,
+}
+
+fn parse_invoke(invoke_json: &str) -> Result<Option<InvokeJson>, String> {
+    if invoke_json.trim().is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(invoke_json).map_err(|e| format!("invalid invoke JSON: {e}"))
+}
+
+/// Builds the `HostFunction::InvokeContract` `sente_host::recording_invoke` needs, reusing
+/// `scval_json::encode_scval` for `args` - the same general JSON->`ScVal` encoder
+/// `encode_atom_operation` already uses for `external_calls`' own args.
+fn build_invoke_host_fn(invoke: &InvokeJson) -> Result<HostFunction, String> {
+    let contract_id = decode_contract_address(&invoke.contract)?;
+    let args = invoke
+        .args
+        .iter()
+        .map(crate::scval_json::encode_scval)
+        .collect::<Result<Vec<_>, _>>()?;
+    let function_name = ScSymbol(invoke.function.as_str().try_into().map_err(|_| {
+        format!("\"{}\" is not a valid Soroban symbol", invoke.function)
+    })?);
+    Ok(HostFunction::InvokeContract(InvokeContractArgs {
+        contract_address: ScAddress::Contract(contract_id),
+        function_name,
+        args: args
+            .try_into()
+            .map_err(|_| "failed to build invoke args vec".to_string())?,
+    }))
+}
+
+/// Decodes `invoke.code` (if supplied) into the `ContractCode` `LedgerEntry` fixture
+/// `run_invocation` needs alongside the target's tracked `SenteEntry` data - see `InvokeJson.code`
+/// and `run_invocation`'s own doc comments for why this can't just be another `SenteEntry`.
+fn invoke_code_fixture(
+    invoke: &InvokeJson,
+    ledger_info: &soroban_env_host::LedgerInfo,
+) -> Result<Vec<(soroban_env_host::xdr::LedgerEntry, Option<u32>)>, String> {
+    let Some(code_base64) = &invoke.code else {
+        return Ok(vec![]);
+    };
+    let wasm = BASE64
+        .decode(code_base64)
+        .map_err(|e| format!("invoke.code is not valid base64: {e}"))?;
+    let code_entry = soroban_env_host::e2e_testutils::wasm_entry(&wasm);
+    let live_until =
+        sente_host::protocol_floor_live_until(sente_host::EntryDurability::Persistent, ledger_info);
+    Ok(vec![(code_entry, Some(live_until))])
+}
+
+/// A deterministic, synthetic source account for `recording_invoke` - not a real signer. Sente's
+/// own group `transition` call needs no simulated `require_auth` for the business-contract
+/// invocation either (the module doc comment already explains why the *group's own* signature
+/// check can't be simulated at assemble time; that constraint doesn't extend to whatever *other*
+/// contract this invocation targets, which is why recording mode - not a real signed submission -
+/// is exactly the right tool here, the same reasoning Phase 1/2 already established). Every
+/// endorser derives the identical account from the same group contract id, so this needs no
+/// coordination beyond what both sides already have.
+fn invocation_source_account(contract_id_bytes: [u8; 32]) -> soroban_env_host::xdr::AccountId {
+    soroban_env_host::e2e_testutils::get_account_id(contract_id_bytes)
+}
+
+/// Runs a transition's real target-contract invocation against `prior_entries` (every `SenteEntry`
+/// currently tracked for this group, not just its own `Root`) - the exact recording-mode mechanism
+/// Phase 1/2 already proved deterministic across processes (`sente_host::recording_invoke`), now
+/// exercised against whatever contract+function+args a transition actually declares instead of a
+/// single fixed test scenario.
+///
+/// `extra_snapshot_entries` supplements the snapshot with raw `LedgerEntry` fixtures that aren't
+/// tracked as `SenteEntry` Paladin states at all - needed because a Soroban invocation cannot
+/// execute without its target contract's own `ContractCode` entry present, and `SenteEntry` has no
+/// shape for one (it models `ContractData`-keyed storage/instance slots only, identified by an
+/// owning `ScAddress` - a code entry is identified by a bare wasm hash instead, with no natural
+/// owning address). Production call sites (`assemble_transaction`/`endorse_transaction`) build
+/// this from `InvokeJson.code` via `invoke_code_fixture` - see that field's own doc comment for why
+/// the caller must supply the target's wasm directly rather than it being tracked/distributed as
+/// its own Paladin state (Sente has no mechanism for that yet).
+fn run_invocation(
+    invoke: &InvokeJson,
+    prior_entries: &[sente_host::SenteEntry],
+    extra_snapshot_entries: &[(soroban_env_host::xdr::LedgerEntry, Option<u32>)],
+    ledger_info: &soroban_env_host::LedgerInfo,
+    transaction_id: &str,
+    contract_id_bytes: [u8; 32],
+) -> Result<soroban_simulation::simulation::InvokeHostFunctionSimulationResult, String> {
+    let mut parts: Vec<(soroban_env_host::xdr::LedgerEntry, Option<u32>)> = prior_entries
+        .iter()
+        .map(|e| {
+            Ok::<_, String>((
+                e.to_ledger_entry().map_err(|err| err.to_string())?,
+                Some(sente_host::protocol_floor_live_until(e.durability, ledger_info)),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    parts.extend(extra_snapshot_entries.iter().cloned());
+    let snapshot =
+        sente_host::build_snapshot_source_from_parts(parts).map_err(|e| e.to_string())?;
+    let host_fn = build_invoke_host_fn(invoke)?;
+    let source_account = invocation_source_account(contract_id_bytes);
+    let base_prng_seed = sente_host::seed_from_transaction_id(transaction_id);
+    sente_host::recording_invoke(
+        snapshot,
+        ledger_info,
+        host_fn,
+        soroban_env_host::e2e_invoke::RecordingInvocationAuthMode::Recording(
+            soroban_env_host::e2e_invoke::RecordingInvocationAuthParams::new(true, false),
+        ),
+        &source_account,
+        base_prng_seed,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Converts a real invocation's write footprint (`modified_entries`) into the new/updated
+/// `SenteEntry` states it produces - the generalization of this phase's single hardcoded `Root`
+/// entry to Sente's documented long-term per-ledger-entry model ("What Pente does, translated",
+/// `saladin-book/part-2-saladin/14-domain-ports.md` §14.3). Each entry's `seq` continues from
+/// whatever `prior_entries` already tracked for the same `(contract_id, key_xdr)` slot, or starts
+/// at `0` for a slot never tracked before. Deletions (`state_after: None`) are skipped - nothing in
+/// this phase's scope removes a tracked entry.
+fn convert_modified_entries(
+    modified_entries: &[soroban_simulation::simulation::LedgerEntryDiff],
+    prior_entries: &[sente_host::SenteEntry],
+) -> Result<Vec<sente_host::SenteEntry>, String> {
+    let mut result = Vec::new();
+    for diff in modified_entries {
+        let Some(state_after) = &diff.state_after else {
+            continue;
+        };
+        let mut entry = sente_host::SenteEntry::from_ledger_entry(state_after, 0)
+            .map_err(|e| e.to_string())?;
+        entry.seq = prior_entries
+            .iter()
+            .find(|p| p.contract_id == entry.contract_id && p.key_xdr == entry.key_xdr)
+            .map(|p| p.seq + 1)
+            .unwrap_or(0);
+        result.push(entry);
+    }
+    Ok(result)
+}
+
+/// Generalizes `derive_new_root` for a transition that carries a real business-contract invocation:
+/// the root-advance commitment must be sensitive to the *actual* executed content
+/// (`sente_host::digest`'s own result/footprint hash), not just the transaction id, so a divergent
+/// re-execution during endorsement is genuinely detectable - the property `derive_new_root` alone
+/// cannot provide once real business logic is involved.
+fn derive_new_root_from_invocation(
+    old_root: &[u8; 32],
+    transaction_id: &str,
+    invocation_digest: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(old_root);
+    hasher.update(transaction_id.as_bytes());
+    hasher.update(invocation_digest);
     hasher.finalize().into()
 }
 
@@ -966,7 +1155,6 @@ impl DomainHandler for SenteDomain {
         };
 
         let old_root = decode_root(&prior_group_entry.entry.val().map_err(|e| e.to_string())?)?;
-        let new_root = derive_new_root(&old_root, &transaction.transaction_id);
         let tx_id = tx_id_bytes(&transaction.transaction_id)?;
         let params: TransitionParamsJson = if transaction.function_params_json.trim().is_empty() {
             TransitionParamsJson::default()
@@ -978,6 +1166,65 @@ impl DomainHandler for SenteDomain {
         let external_calls_json =
             serde_json::to_string(&external_calls).map_err(|e| e.to_string())?;
         let external_calls_scval = encode_external_calls(&external_calls)?;
+        let invoke = parse_invoke(&params.invoke)?;
+
+        // A root-only transition (invoke == None) keeps its original, unchanged behavior exactly:
+        // new_root is the opaque content-free commitment, and no SenteEntry beyond the group's own
+        // Root advances. A transition carrying a real invocation instead re-executes it for real
+        // (sente_host::recording_invoke, the S1/S2-proven mechanism) against every SenteEntry
+        // currently tracked for this group, and folds the real result into new_root so a divergent
+        // re-execution is genuinely detectable during endorsement.
+        let mut new_root = derive_new_root(&old_root, &transaction.transaction_id);
+        let mut invoke_json = String::new();
+        let mut extra_output_entries: Vec<sente_host::SenteEntry> = vec![];
+        let mut extra_input_refs: Vec<pb::StateRef> = vec![];
+        if let Some(invoke) = &invoke {
+            let ledger_info = soroban_env_host::e2e_testutils::default_ledger_info();
+            let all_prior_entries: Vec<sente_host::SenteEntry> =
+                prior.iter().map(|p| p.entry.clone()).collect();
+            let code_fixture = invoke_code_fixture(invoke, &ledger_info)?;
+            let result = run_invocation(
+                invoke,
+                &all_prior_entries,
+                &code_fixture,
+                &ledger_info,
+                &transaction.transaction_id,
+                contract_id.0 .0,
+            )?;
+            if result.invoke_result.is_err() {
+                return Ok(pb::AssembleTransactionResponse {
+                    assembly_result: pb::assemble_transaction_response::Result::Revert as i32,
+                    assembled_transaction: None,
+                    attestation_plan: vec![],
+                    revert_reason: Some(format!(
+                        "invocation failed: {:?}",
+                        result.invoke_result
+                    )),
+                });
+            }
+            let invocation_digest = sente_host::digest(&result).map_err(|e| e.to_string())?;
+            new_root = derive_new_root_from_invocation(
+                &old_root,
+                &transaction.transaction_id,
+                &invocation_digest,
+            );
+            extra_output_entries =
+                convert_modified_entries(&result.modified_entries, &all_prior_entries)?;
+            invoke_json = serde_json::to_string(invoke).map_err(|e| e.to_string())?;
+            extra_input_refs = extra_output_entries
+                .iter()
+                .filter_map(|e| {
+                    prior
+                        .iter()
+                        .find(|p| p.entry.contract_id == e.contract_id && p.entry.key_xdr == e.key_xdr)
+                        .map(|p| pb::StateRef {
+                            id: p.id.clone(),
+                            schema_id: schema_id.clone(),
+                        })
+                })
+                .collect();
+        }
+
         let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root, external_calls_scval)?;
         let config = self.config()?;
         let on_chain_digest = saladin_typed_data_digest(
@@ -1010,26 +1257,40 @@ impl DomainHandler for SenteDomain {
             new_root,
             on_chain_digest,
             external_calls_json,
+            invoke_json,
         );
         let info_json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
         let signing_payload = info.signing_payload().map_err(|e| e.to_string())?;
 
+        let mut input_states = vec![pb::StateRef {
+            id: prior_group_entry.id.clone(),
+            schema_id: schema_id.clone(),
+        }];
+        input_states.extend(extra_input_refs);
+
+        let mut output_states = vec![pb::NewState {
+            schema_id: schema_id.clone(),
+            state_data_json: serde_json::to_string(&new_entry).map_err(|e| e.to_string())?,
+            distribution_list: raw_members.clone(),
+            id: None,
+            nullifier_specs: vec![],
+        }];
+        for entry in &extra_output_entries {
+            output_states.push(pb::NewState {
+                schema_id: schema_id.clone(),
+                state_data_json: serde_json::to_string(entry).map_err(|e| e.to_string())?,
+                distribution_list: raw_members.clone(),
+                id: None,
+                nullifier_specs: vec![],
+            });
+        }
+
         Ok(pb::AssembleTransactionResponse {
             assembly_result: pb::assemble_transaction_response::Result::Ok as i32,
             assembled_transaction: Some(pb::AssembledTransaction {
-                input_states: vec![pb::StateRef {
-                    id: prior_group_entry.id.clone(),
-                    schema_id: schema_id.clone(),
-                }],
+                input_states,
                 read_states: vec![],
-                output_states: vec![pb::NewState {
-                    schema_id: schema_id.clone(),
-                    state_data_json: serde_json::to_string(&new_entry)
-                        .map_err(|e| e.to_string())?,
-                    distribution_list: raw_members.clone(),
-                    id: None,
-                    nullifier_specs: vec![],
-                }],
+                output_states,
                 info_states: vec![pb::NewState {
                     schema_id: self.info_schema_id()?,
                     state_data_json: info_json,
@@ -1088,14 +1349,24 @@ impl DomainHandler for SenteDomain {
         let info: InfoState = serde_json::from_str(&info_state.state_data_json)
             .map_err(|e| format!("invalid InfoState JSON: {e}"))?;
 
-        let input = req
+        if req.inputs.is_empty() {
+            return Err("endorse_transaction: no input state provided".to_string());
+        }
+        let prior_entries: Vec<sente_host::SenteEntry> = req
             .inputs
-            .first()
-            .ok_or("endorse_transaction: no input state provided")?;
-        let prior_entry: sente_host::SenteEntry = serde_json::from_str(&input.state_data_json)
-            .map_err(|e| format!("invalid SenteEntry JSON: {e}"))?;
+            .iter()
+            .map(|input| {
+                serde_json::from_str(&input.state_data_json)
+                    .map_err(|e| format!("invalid SenteEntry JSON: {e}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let instance_key_base64 = instance_key_xdr_base64();
+        let prior_group_entry = prior_entries
+            .iter()
+            .find(|e| e.contract_id == info.contract_id && e.key_xdr == instance_key_base64)
+            .ok_or("endorse_transaction: no group instance entry among input states")?;
         let old_root_actual =
-            decode_root(&prior_entry.val().map_err(|e| e.to_string())?)?;
+            decode_root(&prior_group_entry.val().map_err(|e| e.to_string())?)?;
 
         if old_root_actual != info.old_root {
             return Ok(pb::EndorseTransactionResponse {
@@ -1109,7 +1380,56 @@ impl DomainHandler for SenteDomain {
             });
         }
 
-        let expected_new_root = derive_new_root(&old_root_actual, &info.transaction_id);
+        let contract_id_bytes = BASE64
+            .decode(&info.contract_id)
+            .map_err(|e| format!("invalid contract_id: {e}"))
+            .and_then(|bytes| {
+                ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string())
+            })
+            .and_then(|addr| match addr {
+                ScAddress::Contract(cid) => Ok(cid.0 .0),
+                other => Err(format!("expected a contract ScAddress, got {other:?}")),
+            })?;
+
+        // Independently re-derive new_root the same way assemble_transaction did: a root-only
+        // transition (invoke_json empty) just re-derives the same opaque commitment; a transition
+        // carrying a real invocation independently re-executes it (sente_host::recording_invoke,
+        // against this endorser's own copy of every input SenteEntry) and folds the resulting
+        // digest in - a divergent re-execution here produces a different new_root, exactly the
+        // detection Phase 1/2 already proved for the fixed test scenario, now for real business
+        // logic.
+        let invoke = parse_invoke(&info.invoke_json)?;
+        let expected_new_root = match &invoke {
+            None => derive_new_root(&old_root_actual, &info.transaction_id),
+            Some(invoke) => {
+                let ledger_info = soroban_env_host::e2e_testutils::default_ledger_info();
+                let code_fixture = invoke_code_fixture(invoke, &ledger_info)?;
+                let result = run_invocation(
+                    invoke,
+                    &prior_entries,
+                    &code_fixture,
+                    &ledger_info,
+                    &info.transaction_id,
+                    contract_id_bytes,
+                )?;
+                if result.invoke_result.is_err() {
+                    return Ok(pb::EndorseTransactionResponse {
+                        endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                        payload: None,
+                        revert_reason: Some(format!(
+                            "re-execution failed: {:?}",
+                            result.invoke_result
+                        )),
+                    });
+                }
+                let invocation_digest = sente_host::digest(&result).map_err(|e| e.to_string())?;
+                derive_new_root_from_invocation(
+                    &old_root_actual,
+                    &info.transaction_id,
+                    &invocation_digest,
+                )
+            }
+        };
         if expected_new_root != info.new_root {
             return Ok(pb::EndorseTransactionResponse {
                 endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
@@ -1129,16 +1449,6 @@ impl DomainHandler for SenteDomain {
         let payload_xdr =
             transition_payload_xdr(tx_id, info.old_root, info.new_root, external_calls_scval)?;
         let config = self.config()?;
-        let contract_id_bytes = BASE64
-            .decode(&info.contract_id)
-            .map_err(|e| format!("invalid contract_id: {e}"))
-            .and_then(|bytes| {
-                ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string())
-            })
-            .and_then(|addr| match addr {
-                ScAddress::Contract(cid) => Ok(cid.0 .0),
-                other => Err(format!("expected a contract ScAddress, got {other:?}")),
-            })?;
         let expected_digest = saladin_typed_data_digest(
             config.network_passphrase.as_bytes(),
             &contract_id_bytes,
@@ -1594,6 +1904,7 @@ mod tests {
             new_root,
             [3u8; 32],
             "[]".to_string(),
+            String::new(),
         );
 
         let public_key = [5u8; 32];
@@ -1687,6 +1998,7 @@ mod tests {
             new_root,
             [3u8; 32],
             external_calls_json,
+            String::new(),
         );
 
         let public_key = [5u8; 32];
@@ -1981,5 +2293,451 @@ mod tests {
             serde_json::from_str(&response.new_states[0].state_data_json).unwrap();
         assert_eq!(entry.seq, 1);
         assert_eq!(decode_root(&entry.val().unwrap()).unwrap(), new_root);
+    }
+
+    fn counter_wasm() -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../soroban/artifacts/test_counter.wasm"),
+        )
+        .expect("failed to read test_counter.wasm - run `./gradlew :soroban:compile` first")
+    }
+
+    /// Sets up a `SenteDomain` for one group (configure/init/init_contract, mirroring what
+    /// `sente_step.rs`'s harness binary does once per real plugin load), with a fake core that
+    /// answers `find_available_states` with whatever `prior_states` the caller supplies -
+    /// shared setup for the real-invocation tests below.
+    async fn domain_with_prior_states(
+        contract_address_strkey: String,
+        network_passphrase: &[u8],
+        prior_states: Vec<sente_host::SenteEntry>,
+    ) -> SenteDomain {
+        let (client, mut to_core_rx) = PaladinClient::new_test("real-invocation-test");
+        let fake_core_client = client.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = to_core_rx.recv().await {
+                let Some(header) = msg.header else { continue };
+                if let Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) =
+                    msg.request_from_domain
+                {
+                    let states = prior_states
+                        .iter()
+                        .enumerate()
+                        .map(|(i, e)| pb::StoredState {
+                            id: format!("prior-{i}"),
+                            schema_id: "SenteEntry".to_string(),
+                            created_at: 0,
+                            data_json: serde_json::to_string(e).unwrap(),
+                            locks: vec![],
+                        })
+                        .collect();
+                    fake_core_client.resolve_test(
+                        &header.message_id,
+                        Ok(pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
+                            pb::FindAvailableStatesResponse { states },
+                        )),
+                    );
+                }
+            }
+        });
+
+        let domain = SenteDomain::new(client);
+        domain
+            .configure_domain(pb::ConfigureDomainRequest {
+                config_json: serde_json::json!({
+                    "senteFactoryAddress": contract_address_strkey,
+                    "saladinFactoryAddress": contract_address_strkey,
+                    "senteWasmHash": hex::encode([0u8; 32]),
+                    "networkPassphrase": String::from_utf8_lossy(network_passphrase),
+                })
+                .to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        domain
+            .init_domain(pb::InitDomainRequest {
+                abi_state_schemas: vec![
+                    pb::StateSchema {
+                        id: "SenteEntry".to_string(),
+                        signature: "SenteEntry".to_string(),
+                    },
+                    pb::StateSchema {
+                        id: "SenteInfo".to_string(),
+                        signature: "SenteInfo".to_string(),
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        domain
+            .init_contract(pb::InitContractRequest {
+                contract_address: contract_address_strkey,
+                contract_config: vec![],
+                privacy_group: Some(pb::PrivacyGroup {
+                    members: vec!["sender@node1".to_string()],
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        domain
+    }
+
+    struct RealInvocationFixture {
+        domain: SenteDomain,
+        group_address_strkey: String,
+        group_entry: sente_host::SenteEntry,
+        counter_instance_entry: sente_host::SenteEntry,
+        counter_address: String,
+        counter_wasm_base64: String,
+    }
+
+    /// Builds a group (real genesis `SenteEntry`) plus a real, independently-deployable stateful
+    /// contract (`test-counter` - this workspace's own minimal fixture for exactly this purpose,
+    /// see its own doc comment for why `factory.wasm`'s `register` couldn't serve this role)
+    /// already tracked as its own `SenteEntry`, both served back by the fake core's
+    /// `find_available_states` - shared setup for the real-invocation tests below.
+    async fn real_invocation_fixture() -> RealInvocationFixture {
+        let network_passphrase = b"Test SDF Network ; September 2015";
+        let group_address = ScAddress::Contract(ContractId(Hash([0x33; 32])));
+        let group_address_strkey = contract_strkey(&group_address).unwrap();
+        let group_contract_id_base64 =
+            BASE64.encode(group_address.to_xdr(Limits::none()).unwrap());
+        let genesis_val =
+            genesis_instance_val([0x44; 32], &[[1u8; 32]], network_passphrase).unwrap();
+        let group_entry = sente_host::SenteEntry {
+            contract_id: group_contract_id_base64,
+            key_xdr: instance_key_xdr_base64(),
+            val_xdr: BASE64.encode(genesis_val.to_xdr(Limits::none()).unwrap()),
+            durability: sente_host::EntryDurability::Persistent,
+            seq: 0,
+        };
+
+        // The counter's own genesis instance - a real, deterministically-reconstructible "already
+        // deployed" contract (CreateContractData, the same mechanism Phase 1's spike used for
+        // factory.wasm), tracked as a real SenteEntry just like the group's own Root. Its wasm
+        // *code* is not tracked as a SenteEntry at all (see run_invocation's own doc comment) -
+        // supplied via InvokeJson.code instead, exactly as a real caller would have to.
+        let counter_wasm_bytes = counter_wasm();
+        let counter = soroban_env_host::e2e_testutils::CreateContractData::new(
+            [0x55; 32],
+            &counter_wasm_bytes,
+        );
+        let counter_instance_entry =
+            sente_host::SenteEntry::from_ledger_entry(&counter.contract_entry, 0).unwrap();
+        let counter_address = contract_strkey(&counter.contract_address).unwrap();
+
+        let domain = domain_with_prior_states(
+            group_address_strkey.clone(),
+            network_passphrase,
+            vec![group_entry.clone(), counter_instance_entry.clone()],
+        )
+        .await;
+
+        RealInvocationFixture {
+            domain,
+            group_address_strkey,
+            group_entry,
+            counter_instance_entry,
+            counter_address,
+            counter_wasm_base64: BASE64.encode(&counter_wasm_bytes),
+        }
+    }
+
+    fn bump_transaction(
+        fixture: &RealInvocationFixture,
+        transaction_id_seed: u8,
+    ) -> pb::TransactionSpecification {
+        let invoke_json = serde_json::to_string(&serde_json::json!({
+            "contract": fixture.counter_address,
+            "function": "bump",
+            "args": [],
+            "code": fixture.counter_wasm_base64,
+        }))
+        .unwrap();
+        let function_params_json =
+            serde_json::to_string(&serde_json::json!({ "invoke": invoke_json })).unwrap();
+        pb::TransactionSpecification {
+            transaction_id: format!("0x{}", hex::encode([transaction_id_seed; 32])),
+            from: "sender@node1".to_string(),
+            contract_info: Some(pb::ContractInfo {
+                contract_address: fixture.group_address_strkey.clone(),
+                contract_config_json: "{}".to_string(),
+            }),
+            function_params_json,
+            ..Default::default()
+        }
+    }
+
+    /// The single most important proof this module's own doc comment flags as previously missing:
+    /// a transition carrying a real `invoke` genuinely executes it via `soroban-env-host`'s
+    /// recording mode (not a placeholder), against a real, independently-deployable stateful
+    /// contract. The resulting write footprint becomes a real new `SenteEntry` (the counter's own
+    /// storage slot, tracked separately from the group's own `Root` entry - the generalization
+    /// beyond a single hardcoded slot), and endorsement independently re-executes and agrees.
+    #[tokio::test]
+    async fn assemble_and_endorse_real_invocation_advances_a_stateful_contract() {
+        let fixture = real_invocation_fixture().await;
+        let transaction = bump_transaction(&fixture, 0x66);
+
+        let assemble_resp = fixture
+            .domain
+            .assemble_transaction(pb::AssembleTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                transaction: Some(transaction.clone()),
+                resolved_verifiers: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            assemble_resp.assembly_result,
+            pb::assemble_transaction_response::Result::Ok as i32,
+            "assembly must succeed: {:?}",
+            assemble_resp.revert_reason
+        );
+        let assembled = assemble_resp.assembled_transaction.unwrap();
+        assert_eq!(
+            assembled.output_states.len(),
+            2,
+            "the group's own Root entry plus the counter's own new COUNT storage entry"
+        );
+        // Only the group's own prior Root entry is spent as an input: bump()'s COUNT storage slot
+        // is a brand new ledger entry on this first call (the counter's own *instance* entry,
+        // tracked separately, is read but not written by bump() at all), so there is nothing prior
+        // to reference for it - exactly what a genuinely real execution's footprint should produce,
+        // not a hardcoded assumption.
+        assert_eq!(assembled.input_states.len(), 1);
+
+        let counter_output = assembled
+            .output_states
+            .iter()
+            .find(|s| {
+                let e: sente_host::SenteEntry =
+                    serde_json::from_str(&s.state_data_json).unwrap();
+                e.contract_id == fixture.counter_instance_entry.contract_id
+                    && e.key_xdr != fixture.counter_instance_entry.key_xdr
+            })
+            .expect("counter's own new COUNT entry must be one of the output states");
+        let counter_entry: sente_host::SenteEntry =
+            serde_json::from_str(&counter_output.state_data_json).unwrap();
+        assert_eq!(
+            counter_entry.seq, 0,
+            "the COUNT storage slot never existed before this transaction - its first version is seq 0"
+        );
+
+        let info_state = &assembled.info_states[0];
+        let info: InfoState = serde_json::from_str(&info_state.state_data_json).unwrap();
+        assert!(
+            !info.invoke_json.is_empty(),
+            "InfoState must carry the real invocation so endorsers can independently re-execute it"
+        );
+
+        // Endorsement independently rebuilds the same snapshot from the same prior states and
+        // re-executes the same real invocation - exactly S2's proven cross-process mechanism,
+        // now for real business logic instead of a placeholder root hash.
+        let endorse_resp = fixture
+            .domain
+            .endorse_transaction(pb::EndorseTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                endorsement_request: None,
+                endorsement_verifier: None,
+                transaction: Some(transaction),
+                resolved_verifiers: vec![],
+                inputs: vec![
+                    pb::EndorsableState {
+                        id: "group-0".to_string(),
+                        schema_id: "SenteEntry".to_string(),
+                        state_data_json: serde_json::to_string(&fixture.group_entry).unwrap(),
+                    },
+                    pb::EndorsableState {
+                        id: "counter-0".to_string(),
+                        schema_id: "SenteEntry".to_string(),
+                        state_data_json: serde_json::to_string(&fixture.counter_instance_entry)
+                            .unwrap(),
+                    },
+                ],
+                reads: vec![],
+                outputs: vec![],
+                info: vec![pb::EndorsableState {
+                    id: "info-0".to_string(),
+                    schema_id: "SenteInfo".to_string(),
+                    state_data_json: info_state.state_data_json.clone(),
+                }],
+                signatures: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            endorse_resp.endorsement_result,
+            pb::endorse_transaction_response::Result::Sign as i32,
+            "endorsement must independently re-derive the same new_root and agree: {:?}",
+            endorse_resp.revert_reason
+        );
+    }
+
+    /// The divergence half of the same proof: an endorser given a tampered `InfoState` (a
+    /// different claimed `new_root` than what the real invocation actually produces) must detect
+    /// the mismatch and revert, rather than blindly trusting the assembler.
+    #[tokio::test]
+    async fn endorse_real_invocation_rejects_a_tampered_new_root() {
+        let fixture = real_invocation_fixture().await;
+        let transaction = bump_transaction(&fixture, 0x66);
+
+        let assemble_resp = fixture
+            .domain
+            .assemble_transaction(pb::AssembleTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                transaction: Some(transaction.clone()),
+                resolved_verifiers: vec![],
+            })
+            .await
+            .unwrap();
+        let assembled = assemble_resp.assembled_transaction.unwrap();
+        let info_state = &assembled.info_states[0];
+        let mut info: InfoState = serde_json::from_str(&info_state.state_data_json).unwrap();
+        info.new_root = [0xffu8; 32]; // tamper: claim a new_root the real invocation never produced
+        let tampered_info_json = serde_json::to_string(&info).unwrap();
+
+        let endorse_resp = fixture
+            .domain
+            .endorse_transaction(pb::EndorseTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                endorsement_request: None,
+                endorsement_verifier: None,
+                transaction: Some(transaction),
+                resolved_verifiers: vec![],
+                inputs: vec![
+                    pb::EndorsableState {
+                        id: "group-0".to_string(),
+                        schema_id: "SenteEntry".to_string(),
+                        state_data_json: serde_json::to_string(&fixture.group_entry).unwrap(),
+                    },
+                    pb::EndorsableState {
+                        id: "counter-0".to_string(),
+                        schema_id: "SenteEntry".to_string(),
+                        state_data_json: serde_json::to_string(&fixture.counter_instance_entry)
+                            .unwrap(),
+                    },
+                ],
+                reads: vec![],
+                outputs: vec![],
+                info: vec![pb::EndorsableState {
+                    id: "info-0".to_string(),
+                    schema_id: "SenteInfo".to_string(),
+                    state_data_json: tampered_info_json,
+                }],
+                signatures: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            endorse_resp.endorsement_result,
+            pb::endorse_transaction_response::Result::Revert as i32,
+            "a tampered new_root must be rejected, not signed"
+        );
+        assert!(endorse_resp
+            .revert_reason
+            .unwrap_or_default()
+            .contains("new_root mismatch"));
+    }
+
+    /// State genuinely chains across successive transitions - the generalization this module's own
+    /// doc comment flags as previously missing (`SenteEntry` tracking only the group's own `Root`
+    /// slot, not a real per-contract state model): a second `bump()` must see the *first* one's
+    /// real, persisted counter value and increment from there, not from a fresh/default state.
+    #[tokio::test]
+    async fn assemble_transaction_builds_on_a_prior_real_invocation_result() {
+        let fixture = real_invocation_fixture().await;
+
+        let first = fixture
+            .domain
+            .assemble_transaction(pb::AssembleTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                transaction: Some(bump_transaction(&fixture, 0x66)),
+                resolved_verifiers: vec![],
+            })
+            .await
+            .unwrap();
+        let first_assembled = first.assembled_transaction.unwrap();
+        let first_group_output = first_assembled
+            .output_states
+            .iter()
+            .find(|s| {
+                let e: sente_host::SenteEntry =
+                    serde_json::from_str(&s.state_data_json).unwrap();
+                e.contract_id == fixture.group_entry.contract_id
+            })
+            .unwrap();
+        let first_group_entry: sente_host::SenteEntry =
+            serde_json::from_str(&first_group_output.state_data_json).unwrap();
+        let first_count_output = first_assembled
+            .output_states
+            .iter()
+            .find(|s| {
+                let e: sente_host::SenteEntry =
+                    serde_json::from_str(&s.state_data_json).unwrap();
+                e.contract_id == fixture.counter_instance_entry.contract_id
+                    && e.key_xdr != fixture.counter_instance_entry.key_xdr
+            })
+            .unwrap();
+        let first_count_entry: sente_host::SenteEntry =
+            serde_json::from_str(&first_count_output.state_data_json).unwrap();
+        assert_eq!(first_count_entry.seq, 0);
+
+        // A second SenteDomain (a different group member's own node), whose fake core now reports
+        // the *first* transition's real outputs as the current prior state - exactly what would
+        // happen for real once the first transition confirms and this group member's own node
+        // re-syncs its tracked states.
+        let domain_2 = domain_with_prior_states(
+            fixture.group_address_strkey.clone(),
+            b"Test SDF Network ; September 2015",
+            vec![
+                first_group_entry.clone(),
+                fixture.counter_instance_entry.clone(),
+                first_count_entry.clone(),
+            ],
+        )
+        .await;
+
+        let second = domain_2
+            .assemble_transaction(pb::AssembleTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                transaction: Some(bump_transaction(&fixture, 0x77)),
+                resolved_verifiers: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            second.assembly_result,
+            pb::assemble_transaction_response::Result::Ok as i32,
+            "second assembly must succeed: {:?}",
+            second.revert_reason
+        );
+        let second_assembled = second.assembled_transaction.unwrap();
+        let second_count_output = second_assembled
+            .output_states
+            .iter()
+            .find(|s| {
+                let e: sente_host::SenteEntry =
+                    serde_json::from_str(&s.state_data_json).unwrap();
+                e.contract_id == fixture.counter_instance_entry.contract_id
+                    && e.key_xdr != fixture.counter_instance_entry.key_xdr
+            })
+            .unwrap();
+        let second_count_entry: sente_host::SenteEntry =
+            serde_json::from_str(&second_count_output.state_data_json).unwrap();
+        assert_eq!(
+            second_count_entry.seq, 1,
+            "the COUNT slot now already exists at seq 0 - this update must be seq 1"
+        );
+        // The second transition's own input_states must reference the first transition's real
+        // COUNT output as one of its inputs now that it actually exists as prior state - proving
+        // this isn't a coincidence of matching seq numbers but genuine state continuity.
+        assert_eq!(
+            second_assembled.input_states.len(),
+            2,
+            "the group's Root plus the now-existing COUNT entry are both spent this time"
+        );
     }
 }

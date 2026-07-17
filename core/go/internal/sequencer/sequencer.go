@@ -208,7 +208,7 @@ func (sMgr *sequencerManager) resumeIncompleteTransactions(ctx context.Context) 
 // Synchronous function to submit a deployment request which is asynchronously processed
 // Private transaction manager will receive a notification when the public transaction is confirmed
 // (same as for invokes)
-func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, tx *components.PrivateContractDeploy) error {
+func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, tx *components.PrivateContractDeploy, resume bool) error {
 	log.L(ctx).Debugf("handling new private contract deploy transaction: %v", tx)
 	if tx.Domain == "" {
 		return i18n.NewError(ctx, msgs.MsgSequencerDomainNotProvided)
@@ -228,12 +228,12 @@ func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, tx *components
 	// unlike invoke transactions, we don't yet have the sequencer thread to dispatch to so we start a new go routine for each deployment
 	// TODO - should have a pool of deployment threads? Maybe size of pool should be one? Or at least one per domain?
 	sMgr.metrics.IncDispatchedTransactions()
-	go sMgr.deploymentLoop(log.WithLogField(sMgr.ctx, "role", "deploy-loop"), domain, tx)
+	go sMgr.deploymentLoop(log.WithLogField(sMgr.ctx, "role", "deploy-loop"), domain, tx, resume)
 
 	return nil
 }
 
-func (sMgr *sequencerManager) deploymentLoop(ctx context.Context, domain components.Domain, tx *components.PrivateContractDeploy) {
+func (sMgr *sequencerManager) deploymentLoop(ctx context.Context, domain components.Domain, tx *components.PrivateContractDeploy, resume bool) {
 	log.L(ctx).Info("starting deployment loop")
 
 	var err error
@@ -257,7 +257,7 @@ func (sMgr *sequencerManager) deploymentLoop(ctx context.Context, domain compone
 	}
 
 	if err == nil {
-		err = sMgr.evaluateDeployment(ctx, domain, tx)
+		err = sMgr.evaluateDeployment(ctx, domain, tx, resume)
 	}
 	if err != nil {
 		log.L(ctx).Errorf("error evaluating deployment: %s", err)
@@ -267,7 +267,28 @@ func (sMgr *sequencerManager) deploymentLoop(ctx context.Context, domain compone
 	log.L(ctx).Info("deployment completed successfully")
 }
 
-func (sMgr *sequencerManager) evaluateDeployment(ctx context.Context, domain components.Domain, tx *components.PrivateContractDeploy) error {
+func (sMgr *sequencerManager) evaluateDeployment(ctx context.Context, domain components.Domain, tx *components.PrivateContractDeploy, resume bool) error {
+
+	// Guard against a resumed deploy racing with the original attempt that's simply still
+	// in-flight (not stuck) - unlike handleTx's originator state machine (deliberately idempotent
+	// to being resumed, per its own doc comment), a deploy's own on-chain operation may not be:
+	// Soroban's create_contract_with_constructor fails with "already exists" if the same
+	// deployer+salt is invoked a second time. resumeIncompleteTransactions's initial/periodic scan
+	// (pollForIncompleteTransactions - meant for genuine crash recovery) has no way to distinguish
+	// "stuck since a previous process" from "still legitimately in-flight in this one" (e.g.
+	// waiting on Stellar channel-account funding/confirmation), so a resumed deploy checks for an
+	// already-persisted dispatch first and, if found, treats the deploy as already handled rather
+	// than re-running PrepareDeploy+ValidateTransaction concurrently with the original attempt.
+	if resume {
+		existingPubTxs, err := sMgr.components.PublicTxManager().QueryPublicTxForTransactions(ctx, sMgr.components.Persistence().NOTX(), []uuid.UUID{tx.ID}, nil)
+		if err != nil {
+			return err
+		}
+		if len(existingPubTxs[tx.ID]) > 0 {
+			log.L(ctx).Infof("deployment %s already dispatched - skipping redundant resume", tx.ID)
+			return nil
+		}
+	}
 
 	// TODO there is a lot of common code between this and the Dispatch function in the sequencer. should really move some of it into a common place
 	// and use that as an opportunity to refactor to be more readable
@@ -427,7 +448,7 @@ func (sMgr *sequencerManager) HandleNewTx(ctx context.Context, dbTX persistence.
 			Domain: tx.Domain,
 			From:   tx.From,
 			Inputs: tx.Data,
-		})
+		}, false)
 	}
 	intent := prototk.TransactionSpecification_SEND_TRANSACTION
 	if txi.Transaction.SubmitMode.V() == pldapi.SubmitModeExternal {
@@ -472,7 +493,7 @@ func (sMgr *sequencerManager) HandleTxResume(ctx context.Context, txi *component
 				Domain: tx.Domain,
 				From:   tx.From,
 				Inputs: tx.Data,
-			})
+			}, true)
 		}
 		intent := prototk.TransactionSpecification_SEND_TRANSACTION
 		if txi.Transaction.SubmitMode.V() == pldapi.SubmitModeExternal {
@@ -510,7 +531,7 @@ func (sMgr *sequencerManager) handleTx(ctx context.Context, dbTX persistence.DBT
 	}
 	localTx.Transaction.Domain = domainName
 
-	err = domainAPI.InitTransaction(ctx, tx, localTx)
+	err = domainAPI.InitTransaction(ctx, dbTX, tx, localTx)
 	if err != nil {
 		return err
 	}

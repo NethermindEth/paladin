@@ -31,6 +31,10 @@ prost = "0.14"
 # deterministically-reconstructible contract instance via `e2e_testutils::CreateContractData`
 # instead of a real on-chain deploy (deploy/genesis is S3) - see `domain.rs`'s own doc comment.
 soroban-env-host = { version = "=27.0.0", features = ["testutils"] }
+# Needed to name `InvokeHostFunctionSimulationResult`/`LedgerEntryDiff` explicitly
+# (`run_invocation`/`convert_modified_entries` in `domain.rs`) - the same version-pinned dependency
+# `sente-host` itself already carries, kept in lockstep for the same reason.
+soroban-simulation = { version = "=27.0.0", features = ["testutils"] }
 
 [dev-dependencies]
 assert_cmd = "2"

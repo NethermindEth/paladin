@@ -339,7 +339,13 @@ func NewInstanceForTesting(t *testing.T, domainRegistryAddress *pldtypes.EthAddr
 	}
 
 	i.httpURL = "http://localhost:" + strconv.Itoa(*i.conf.RPCServer.HTTP.Port)
-	client, err := rpcclient.NewHTTPClient(log.WithLogField(t.Context(), "client-for", binding.name), &pldconf.HTTPClientConfig{URL: i.httpURL})
+	// RequestTimeout longer than DefaultHTTPConfig's 30s: a single request into a node (e.g.
+	// ptx_sendTransaction) can synchronously chain to a real backend RPC round trip - Stellar's
+	// simulateTransaction/getTransaction genuinely slow down for a while right after a burst of
+	// on-chain activity (e.g. the multi-account channel-account bootstrap a deploy triggers), so
+	// this in-test client needs enough budget to observe a real (if slow) response rather than
+	// time out client-side while the node is still legitimately working.
+	client, err := rpcclient.NewHTTPClient(log.WithLogField(t.Context(), "client-for", binding.name), &pldconf.HTTPClientConfig{URL: i.httpURL, RequestTimeout: confutil.P("120s")})
 	require.NoError(t, err)
 	i.client = pldclient.Wrap(client).ReceiptPollingInterval(100 * time.Millisecond)
 
