@@ -142,7 +142,7 @@ func (h *mintHandler) Assemble(ctx context.Context, tx *types.ParsedTransaction,
 			OutputStates: outputStates.states,
 			InfoStates:   infoStates,
 		},
-		AttestationPlan: buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedTransfer),
+		AttestationPlan: h.noto.buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedTransfer),
 	}, nil
 }
 
@@ -303,10 +303,16 @@ func (h *mintHandler) stellarBaseLedgerInvoke(ctx context.Context, tx *types.Par
 		return nil, err
 	}
 
-	contractID, err := placeholderContractID(tx.ContractAddress)
-	if err != nil {
-		return nil, err
-	}
+	// Unlike EncodeTransferUnmasked's off-chain digest (which only needs to be consistent across
+	// assemble/endorse, so a deterministic placeholder derived from the EVM-shaped
+	// tx.ContractAddress is acceptable there per placeholderContractID's own doc comment), THIS
+	// contractID is what stellar-rpc actually routes the on-chain invocation to - it must be the
+	// genuine deployed instance's Soroban address, not a placeholder, or simulateTransaction fails
+	// with "Error(Storage, MissingValue)" against a contract that doesn't exist. tx.Transaction is
+	// the original TransactionSpecification, whose ContractInfo.ContractAddress is that real,
+	// already-StrKey-formatted address (see buildTransactionSpecification) - no placeholder needed
+	// here since this code path only ever runs for a genuinely Stellar-configured domain.
+	contractID := tx.Transaction.ContractInfo.ContractAddress
 	argsXDR, argsJSON, err := encodeSNotoTransferArgs(txID, nil /* inputs - mint has none */, outputs, sender.Payload, data)
 	if err != nil {
 		return nil, err

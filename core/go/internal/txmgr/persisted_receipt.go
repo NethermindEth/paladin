@@ -207,7 +207,7 @@ func (tm *txManager) FinalizeTransactions(ctx context.Context, dbTX persistence.
 						// Notify the original transaction's coordinator of the chained outcome (success, on-chain revert, or off-chain revert).
 						// The chained transaction was originated on this node, so if there is a coordinator loaded with this transaction in State_Dispatched
 						// it will be on this node.
-						contractAddr, parseErr := pldtypes.ParseEthAddress(cr.ContractAddress)
+						contractAddr, parseErr := pldtypes.ParseChainAddress(cr.ContractAddress)
 						if parseErr != nil {
 							log.L(ctx).Errorf("Failed to parse contract address %s for chained TX propagation: %s", cr.ContractAddress, parseErr)
 						} else {

@@ -205,7 +205,7 @@ func (h *lockHandler) Assemble(ctx context.Context, tx *types.ParsedTransaction,
 			OutputStates: outputStates,
 			InfoStates:   infoStates,
 		},
-		AttestationPlan: buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedLock),
+		AttestationPlan: h.noto.buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedLock),
 	}, nil
 }
 

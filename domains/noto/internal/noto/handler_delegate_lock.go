@@ -140,7 +140,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 			OutputStates: outputStates,
 			InfoStates:   infoStates,
 		},
-		AttestationPlan: buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedApproval),
+		AttestationPlan: h.noto.buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedApproval),
 	}, nil
 }
 

@@ -25,11 +25,8 @@ import (
 	"github.com/LFDT-Paladin/paladin/domains/noto/internal/msgs"
 	"github.com/LFDT-Paladin/paladin/domains/noto/pkg/types"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
-	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
-	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
-	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 )
 
@@ -259,24 +256,28 @@ func resolveIdentities(ctx context.Context, n *Noto, tx *types.ParsedTransaction
 	return ids, nil
 }
 
-// buildEndorsePlan returns the standard Noto attestation plan:
-// sender signs the payload, notary endorses.
-func buildEndorsePlan(notaryParty, senderParty string, signPayload []byte) []*prototk.AttestationRequest {
+// buildEndorsePlan returns the standard Noto attestation plan: sender signs the payload, notary
+// endorses. Algorithm/VerifierType/PayloadType come from the chain kind's own chainIO (EVM's
+// ECDSA_SECP256K1/ETH_ADDRESS/OPAQUE_TO_RSV vs Stellar's EDDSA_ED25519/STELLAR_ADDRESS/
+// OPAQUE_TO_EDDSA) - hardcoding the EVM scheme here would produce a signature/verifier a Stellar
+// endorser's own independent re-verification (stellarChainIO.VerifySignature) could never satisfy.
+func (n *Noto) buildEndorsePlan(notaryParty, senderParty string, signPayload []byte) []*prototk.AttestationRequest {
+	chainIO := n.getChainIO()
 	return []*prototk.AttestationRequest{
 		{
 			Name:            "sender",
 			AttestationType: prototk.AttestationType_SIGN,
-			Algorithm:       algorithms.ECDSA_SECP256K1,
-			VerifierType:    verifiers.ETH_ADDRESS,
+			Algorithm:       chainIO.SigningAlgorithm(),
+			VerifierType:    chainIO.VerifierType(),
 			Payload:         signPayload,
-			PayloadType:     signpayloads.OPAQUE_TO_RSV,
+			PayloadType:     chainIO.SignaturePayloadType(),
 			Parties:         []string{senderParty},
 		},
 		{
 			Name:            "notary",
 			AttestationType: prototk.AttestationType_ENDORSE,
-			Algorithm:       algorithms.ECDSA_SECP256K1,
-			VerifierType:    verifiers.ETH_ADDRESS,
+			Algorithm:       chainIO.SigningAlgorithm(),
+			VerifierType:    chainIO.VerifierType(),
 			Parties:         []string{notaryParty},
 		},
 	}

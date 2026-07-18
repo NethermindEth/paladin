@@ -18,6 +18,7 @@ package pldtypes
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
@@ -53,6 +54,24 @@ func EthAddressBytes(b []byte) *EthAddress {
 
 func EthAddressFromChainAddress(addr ChainAddress) (*EthAddress, error) {
 	return addr.EthAddress()
+}
+
+// EthAddressOrPlaceholder parses s as a chain address and returns its genuine EVM form when it is
+// one. For any other chain kind (e.g. a Stellar StrKey address) - which has no EVM representation
+// at all - it derives a deterministic 20-byte stand-in via SHA-256, so the same real address
+// always maps to the same placeholder bytes. Only appropriate where the EthAddress-typed result is
+// used for identification/display/status tracking, never for on-chain routing or consensus (the
+// placeholder is not, and cannot be converted back to, the real address).
+func EthAddressOrPlaceholder(s string) (*EthAddress, error) {
+	chainAddr, err := ParseChainAddress(s)
+	if err != nil {
+		return nil, err
+	}
+	if ethAddr, err := chainAddr.EthAddress(); err == nil {
+		return ethAddr, nil
+	}
+	hash := sha256.Sum256([]byte(chainAddr.String()))
+	return EthAddressBytes(hash[:20]), nil
 }
 
 func RandAddress() *EthAddress {

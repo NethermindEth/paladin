@@ -32,6 +32,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
@@ -57,8 +58,9 @@ func newStellarChainIO(networkPassphrase string) *stellarChainIO {
 
 func (s *stellarChainIO) ChainKind() string { return "stellar" }
 
-func (s *stellarChainIO) SigningAlgorithm() string { return algorithms.EDDSA_ED25519 }
-func (s *stellarChainIO) VerifierType() string     { return verifiers.STELLAR_ADDRESS }
+func (s *stellarChainIO) SigningAlgorithm() string     { return algorithms.EDDSA_ED25519 }
+func (s *stellarChainIO) VerifierType() string         { return verifiers.STELLAR_ADDRESS }
+func (s *stellarChainIO) SignaturePayloadType() string { return signpayloads.OPAQUE_TO_EDDSA }
 
 func (s *stellarChainIO) NetworkPassphrase() string { return s.networkPassphrase }
 

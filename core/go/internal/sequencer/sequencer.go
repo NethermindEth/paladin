@@ -583,13 +583,20 @@ func (sMgr *sequencerManager) HandleTransactionCollected(ctx context.Context, si
 
 	// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 	// so accept the fact that there may not be a sequencer for this public TX submission
-	sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(contractAddress).ChainAddress())
+	sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustParseChainAddress(contractAddress))
 	if sequencer != nil {
+		// SignerAddress is informational (status/snapshot tracking only, never used for on-chain
+		// routing), so a non-EVM signer gets a deterministic placeholder rather than panicking -
+		// see EthAddressOrPlaceholder's own doc comment.
+		signerEthAddr, err := pldtypes.EthAddressOrPlaceholder(signerAddress)
+		if err != nil {
+			return err
+		}
 		collectedEvent := &coordinatorTx.CollectedEvent{
 			BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
 				TransactionID: txID,
 			},
-			SignerAddress: *pldtypes.MustEthAddress(signerAddress),
+			SignerAddress: *signerEthAddr,
 		}
 
 		// Public TX manager events are informational rather than critical for the coordinator. This function is called as part of
@@ -607,7 +614,7 @@ func (sMgr *sequencerManager) HandleNonceAssigned(ctx context.Context, nonce uin
 
 	// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 	// so accept the fact that there may not be a sequencer for this public TX submission
-	sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(contractAddress).ChainAddress())
+	sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustParseChainAddress(contractAddress))
 	if sequencer != nil {
 		coordinatorNonceAllocatedEvent := &coordinatorTx.NonceAllocatedEvent{
 			BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
@@ -631,7 +638,7 @@ func (sMgr *sequencerManager) HandlePublicTXSubmission(ctx context.Context, dbTX
 	if !deploy {
 		// Public TX manager doesn't distinguish between new contracts (for which a sequencer doesn't yet exist) and a transaction,
 		// so accept the fact that there may not be a sequencer for this public TX submission
-		sequencer := sMgr.GetSequencer(ctx, pldtypes.MustEthAddress(tx.TransactionContractAddress).ChainAddress())
+		sequencer := sMgr.GetSequencer(ctx, *pldtypes.MustParseChainAddress(tx.TransactionContractAddress))
 		if sequencer != nil {
 			coordinatorSubmittedEvent := &coordinatorTx.SubmittedEvent{
 				BaseCoordinatorEvent: coordinatorTx.BaseCoordinatorEvent{
@@ -731,10 +738,10 @@ func (sMgr *sequencerManager) queueConfirmedRevertedEventToCoordinator(ctx conte
 	})
 }
 
-func (sMgr *sequencerManager) HandleChainedTransactionOutcome(ctx context.Context, contractAddress pldtypes.EthAddress, txID uuid.UUID, receiptType components.ReceiptType, failureMessage string, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation) {
+func (sMgr *sequencerManager) HandleChainedTransactionOutcome(ctx context.Context, contractAddress pldtypes.ChainAddress, txID uuid.UUID, receiptType components.ReceiptType, failureMessage string, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation) {
 	log.L(ctx).Infof("HandleChainedTransactionOutcome txID=%s contract=%s receiptType=%d", txID, contractAddress, receiptType)
 
-	sequencer := sMgr.GetSequencer(ctx, contractAddress.ChainAddress())
+	sequencer := sMgr.GetSequencer(ctx, contractAddress)
 	if sequencer == nil {
 		log.L(ctx).Warnf("HandleChainedTransactionOutcome: no loaded sequencer for contract %s txID=%s", contractAddress, txID)
 		return

@@ -1024,8 +1024,8 @@ func TestFinalizeTransactionsChainedReceiptPropagationSuccess(t *testing.T) {
 			// Mock the transaction_deps query used by dependency notification pre-commit (no dependents)
 			mc.db.ExpectQuery("SELECT.*transaction_deps").WillReturnRows(sqlmock.NewRows([]string{}))
 			// HandleChainedTransactionOutcome is called post-commit for A's coordinator notification
-			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.EthAddress) bool {
-				return addr == *pldtypes.MustEthAddress(contractAddress)
+			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.ChainAddress) bool {
+				return addr == *pldtypes.MustParseChainAddress(contractAddress)
 			}), originalTxID, components.RT_Success, mock.Anything, mock.Anything, mock.Anything).Return()
 			// No mock for WriteOrDistributeChainedTransactionReceipts - it should not be called
 			mc.db.ExpectCommit()
@@ -1158,8 +1158,8 @@ func TestFinalizeTransactionsChainedOnChainRevertNotifiesCoordinator(t *testing.
 					AddRow(chainedTxID, originalTxID, "sender1", "domain1", contractAddress))
 			mc.db.ExpectQuery("SELECT.*transaction_deps").WillReturnRows(sqlmock.NewRows([]string{}))
 			// On-chain revert: coordinator is notified but receipt is NOT propagated
-			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.EthAddress) bool {
-				return addr == *pldtypes.MustEthAddress(contractAddress)
+			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.ChainAddress) bool {
+				return addr == *pldtypes.MustParseChainAddress(contractAddress)
 			}), originalTxID, components.RT_FailedOnChainWithRevertData, mock.Anything, mock.MatchedBy(func(rd pldtypes.HexBytes) bool {
 				return len(rd) == 2 && rd[0] == 0xde
 			}), mock.Anything).Return()
@@ -1203,8 +1203,8 @@ func TestFinalizeTransactionsChainedOffChainRevertNotifiesCoordinator(t *testing
 					AddRow(chainedTxID, originalTxID, "sender1", "domain1", contractAddress))
 			mc.db.ExpectQuery("SELECT.*transaction_deps").WillReturnRows(sqlmock.NewRows([]string{}))
 			// Off-chain revert: coordinator notified
-			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.EthAddress) bool {
-				return addr == *pldtypes.MustEthAddress(contractAddress)
+			mc.sequencerMgr.On("HandleChainedTransactionOutcome", mock.Anything, mock.MatchedBy(func(addr pldtypes.ChainAddress) bool {
+				return addr == *pldtypes.MustParseChainAddress(contractAddress)
 			}), originalTxID, components.RT_FailedWithMessage, mock.Anything, mock.Anything, mock.Anything).Return()
 			mc.db.ExpectCommit()
 		})

@@ -29,6 +29,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/eip712"
@@ -49,8 +50,9 @@ func newEVMChainIO(chainID int64) *evmChainIO {
 
 func (e *evmChainIO) ChainKind() string { return "evm" }
 
-func (e *evmChainIO) SigningAlgorithm() string { return algorithms.ECDSA_SECP256K1 }
-func (e *evmChainIO) VerifierType() string     { return verifiers.ETH_ADDRESS }
+func (e *evmChainIO) SigningAlgorithm() string     { return algorithms.ECDSA_SECP256K1 }
+func (e *evmChainIO) VerifierType() string         { return verifiers.ETH_ADDRESS }
+func (e *evmChainIO) SignaturePayloadType() string { return signpayloads.OPAQUE_TO_RSV }
 
 func (e *evmChainIO) NetworkPassphrase() string { return "" }
 

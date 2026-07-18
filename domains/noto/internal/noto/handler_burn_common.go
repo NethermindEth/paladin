@@ -123,7 +123,7 @@ func (h *burnCommon) assembleBurn(ctx context.Context, tx *types.ParsedTransacti
 			OutputStates: outputs.states,
 			InfoStates:   infoStates,
 		},
-		AttestationPlan: buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedTransfer),
+		AttestationPlan: h.noto.buildEndorsePlan(tx.DomainConfig.NotaryLookup, req.Transaction.From, encodedTransfer),
 	}, nil
 }
 

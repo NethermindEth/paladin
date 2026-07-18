@@ -837,7 +837,7 @@ func TestSequencerManager_HandleChainedTransactionOutcome_UnknownReceiptType(t *
 	seq := newSequencerForTesting(contractAddr, mocks)
 	sm.sequencers[contractAddr.String()] = seq
 
-	sm.HandleChainedTransactionOutcome(ctx, *contractAddr, txID, components.ReceiptType(999), "", nil, pldtypes.OnChainLocation{})
+	sm.HandleChainedTransactionOutcome(ctx, contractAddr.ChainAddress(), txID, components.ReceiptType(999), "", nil, pldtypes.OnChainLocation{})
 }
 
 func TestSequencerManager_HandleDirectTransactionRevert_NilFrom(t *testing.T) {

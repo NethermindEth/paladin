@@ -101,5 +101,5 @@ type SequencerManager interface {
 	// coordinator. Called on the node that persisted the chained_dispatches mapping, which is
 	// by definition the dispatch-creator node.
 	// If the sequencer for the contract is not currently loaded, this is a no-op.
-	HandleChainedTransactionOutcome(ctx context.Context, contractAddress pldtypes.EthAddress, txID uuid.UUID, receiptType ReceiptType, failureMessage string, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation)
+	HandleChainedTransactionOutcome(ctx context.Context, contractAddress pldtypes.ChainAddress, txID uuid.UUID, receiptType ReceiptType, failureMessage string, revertData pldtypes.HexBytes, onChain pldtypes.OnChainLocation)
 }

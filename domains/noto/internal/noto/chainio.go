@@ -46,19 +46,24 @@ import (
 // it as an opaque placeholder seed for the SALADIN_TYPED_DATA_V0 contract_id (zero-padded to 32
 // bytes), NOT a real Stellar contract ID, clearly documented at the implementation. Identity
 // *representation* (NotoCoin.Owner, identityPair's new chainAddress field) now uses
-// pldtypes.ChainAddress (step 4); TransactionWrapper (handlers.go) and buildEndorsePlan
-// (handlers.go, called directly by all 12 handler files with a fixed signature) stay untouched,
-// as does hooks.go's Pente-private-invoke notary mode (EVM/Pente-only until Sente exists, tracked
-// as a leftover in chapter 14).
+// pldtypes.ChainAddress (step 4); TransactionWrapper (handlers.go) stays untouched, as does
+// hooks.go's Pente-private-invoke notary mode (EVM/Pente-only until Sente exists, tracked as a
+// leftover in chapter 14). buildEndorsePlan (handlers.go, called by all 12 handler files) *is* now
+// chain-aware (SigningAlgorithm/VerifierType/SignaturePayloadType above) - endorsement couldn't
+// otherwise succeed on Stellar, since a real endorser independently re-verifies the sender's
+// signature (stellarChainIO.VerifySignature), which fails outright against an EVM-shaped one.
 type chainIO interface {
 	// ChainKind identifies which base_ledger.ChainKind this implementer serves ("evm"/"stellar")
 	// - lets Prepare() branch on the prepared-tx shape without a new field on *Noto.
 	ChainKind() string
 
-	// SigningAlgorithm and VerifierType identify the signing scheme this chain kind uses for
-	// sender/notary attestations - today's algorithms.ECDSA_SECP256K1/verifiers.ETH_ADDRESS.
+	// SigningAlgorithm, VerifierType, and SignaturePayloadType identify the signing scheme this
+	// chain kind uses for sender/notary attestations - EVM's ECDSA_SECP256K1/ETH_ADDRESS/
+	// OPAQUE_TO_RSV vs Stellar's EDDSA_ED25519/STELLAR_ADDRESS/OPAQUE_TO_EDDSA (a raw 64-byte R||S
+	// signature - ed25519 has no recovery/V byte, so it can't share EVM's opaque:rsv shape).
 	SigningAlgorithm() string
 	VerifierType() string
+	SignaturePayloadType() string
 
 	// ResolveIdentity resolves a lookup to an identity from a verifier list - today's
 	// findEthAddressVerifier. Populates identityPair.chainAddress (chain-neutral) as well as the
