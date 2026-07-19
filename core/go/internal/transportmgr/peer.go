@@ -92,6 +92,14 @@ func (tm *transportManager) getPeer(ctx context.Context, nodeName string, sendin
 	return tm.connectPeer(ctx, nodeName, sending)
 }
 
+// EnsurePeerConnected implements components.TransportManager - see that interface's own doc
+// comment for why this needs to be called outside any DB transaction before SendReliable, rather
+// than SendReliable being left to activate the connection itself.
+func (tm *transportManager) EnsurePeerConnected(ctx context.Context, nodeName string) error {
+	_, err := tm.getPeer(ctx, nodeName, true)
+	return err
+}
+
 // get a list of all active peers
 func (tm *transportManager) listActivePeers() nameSortedPeers {
 	tm.peersLock.RLock()

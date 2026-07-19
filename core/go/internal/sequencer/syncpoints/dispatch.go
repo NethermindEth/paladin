@@ -155,6 +155,22 @@ func (s *syncPoints) PersistDispatchBatch(dCtx components.DomainContext, contrac
 		}
 	}
 
+	// Ensure every remote node we're about to reliably-message has an active (or freshly-activated)
+	// peer connection *before* queueing the write - see components.TransportManager.
+	// EnsurePeerConnected's own doc comment: SendReliable's own peer activation can deadlock against
+	// the writer's own transaction on a node's first-ever lookup, since SQLite only has one
+	// connection to give out. Doing it here, before the transaction opens, avoids that entirely.
+	connectedNodes := make(map[string]struct{}, len(preparedReliableMsgs))
+	for _, msg := range preparedReliableMsgs {
+		if _, done := connectedNodes[msg.Node]; done {
+			continue
+		}
+		connectedNodes[msg.Node] = struct{}{}
+		if err := s.transportMgr.EnsurePeerConnected(dCtx.Ctx(), msg.Node); err != nil {
+			return err
+		}
+	}
+
 	// Send the write operation with all of the batch sequence operations to the flush worker
 	op := s.writer.Queue(dCtx.Ctx(), &syncPointOperation{
 		domainContext:   dCtx,

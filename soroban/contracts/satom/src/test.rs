@@ -214,13 +214,19 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
     // Never checked by this test path (only spend/unlock is exercised) - any value satisfies
     // prepare_unlock's requirement that both commitments be set together.
     let cancel_commitment = BytesN::from_array(&env, &[254u8; 32]);
-    snoto_client.prepare_unlock(&lock_id, &spend_commitment, &cancel_commitment);
+    snoto_client.prepare_unlock(
+        &BytesN::from_array(&env, &[105u8; 32]),
+        &lock_id,
+        &spend_commitment,
+        &cancel_commitment,
+    );
 
     let satom_id = env.register(Contract, ());
-    snoto_client.delegate_lock(&lock_id, &satom_id);
+    snoto_client.delegate_lock(&BytesN::from_array(&env, &[106u8; 32]), &lock_id, &satom_id);
 
     let unlock_args = soroban_sdk::vec![
         &env,
+        BytesN::from_array(&env, &[107u8; 32]).into_val(&env),
         lock_id.clone().into_val(&env),
         soroban_sdk::Vec::from_array(&env, [locked_output.clone()]).into_val(&env),
         soroban_sdk::Vec::from_array(&env, [spend_output.clone()]).into_val(&env),

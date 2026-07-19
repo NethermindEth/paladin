@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,29 @@ func fundRootFunderViaFriendbot(t *testing.T, ctx context.Context, client pldcli
 		"failed to fund root funder verifier %s via friendbot: HTTP %d: %s", rootVerifier, resp.StatusCode, body)
 }
 
+// writePersistentNode3Config rewrites config/stellar.node3.config.yaml's `dsn: ":memory:"` to a
+// real sqlite file under t.TempDir(), returning the path to the rewritten copy. party3 needs this
+// for the restart/resync drill below: an in-memory DB is wiped on every Stop(), so a restarted
+// node3 would have to re-index the *entire* chain history from the oldest available ledger (not
+// just catch up on what it missed) before its "noto" event-stream even exists again to notice the
+// transfer sent while it was down - unboundedly slower than any reasonable test timeout as the
+// chain grows, and the reason a from-scratch rescan (not the reliable-message resend cycle, the
+// first-suspected cause) was actually why this drill kept timing out even at 60s. coordinationtest
+// avoids this entirely by using real postgres for every node (see its own config/*.yaml) rather
+// than sqlite ":memory:" - switching this whole suite to postgres is out of scope here, so this
+// keeps sqlite but makes party3's data specifically survive its own Stop()/Start() within this test.
+func writePersistentNode3Config(t *testing.T) string {
+	t.Helper()
+	orig, err := os.ReadFile("config/stellar.node3.config.yaml")
+	require.NoError(t, err)
+	dbPath := filepath.Join(t.TempDir(), "stellar-node3.sqlite")
+	rewritten := strings.Replace(string(orig), `dsn: ":memory:"`, `dsn: "`+dbPath+`"`, 1)
+	require.NotEqual(t, string(orig), rewritten, "expected to find dsn: \":memory:\" in config/stellar.node3.config.yaml")
+	newConfigPath := filepath.Join(t.TempDir(), "stellar.node3.config.yaml")
+	require.NoError(t, os.WriteFile(newConfigPath, []byte(rewritten), 0600))
+	return newConfigPath
+}
+
 func waitForSuccessfulReceipt(t *testing.T, ctx context.Context, client pldclient.PaladinClient, txID uuid.UUID, timeout time.Duration) {
 	t.Helper()
 	assert.Eventually(t, func() bool {
@@ -144,9 +168,12 @@ func TestStellarComponentTest(t *testing.T) {
 
 	// manualTestCleanup=true: this test stops/restarts party3 mid-test (the resync drill below),
 	// so it manages Stop() itself rather than relying on a single t.Cleanup-registered stop.
+	// party3 gets its own rewritten config (writePersistentNode3Config's own doc comment) so its
+	// restart later doesn't wipe its DB - both Start() calls must use this same path.
+	node3ConfigPath := writePersistentNode3Config(t)
 	notary.Start(t, domainConfig, "config/stellar.node1.config.yaml", true)
 	party2.Start(t, domainConfig, "config/stellar.node2.config.yaml", true)
-	party3.Start(t, domainConfig, "config/stellar.node3.config.yaml", true)
+	party3.Start(t, domainConfig, node3ConfigPath, true)
 	t.Cleanup(func() {
 		party3.Stop(t)
 		party2.Stop(t)
@@ -252,7 +279,16 @@ func TestStellarComponentTest(t *testing.T) {
 	require.NoError(t, transferWhileDownTx.Error())
 
 	time.Sleep(2 * time.Second)
-	party3.Start(t, domainConfig, "config/stellar.node3.config.yaml", true)
+	party3.Start(t, domainConfig, node3ConfigPath, true)
 
-	waitForSuccessfulReceipt(t, ctx, party3.GetClient(), transferWhileDownTx.ID(), 30*time.Second)
+	// 60s: even with a persistent DB (writePersistentNode3Config) letting party3 resume from its
+	// last checkpoint instead of re-indexing from genesis, node1's queued state-distribution
+	// messages for party3 only get resent once its short initial retry burst (against the
+	// just-stopped node) gives up and falls back to the next periodic full re-scan -
+	// pldconf.TransportManagerDefaults.ReliableMessageResend, 30s by default and not overridden by
+	// any node config here. A 30s wait would have ~zero margin against that same 30s timer;
+	// TestTransactionSuccessIfOneRequiredVerifierStoppedDuringSubmission (coordinationtest) hits the
+	// analogous race for EVM and handles it the same way - by giving the restarted node comfortably
+	// more time than the internal resend interval, not by changing that interval itself.
+	waitForSuccessfulReceipt(t, ctx, party3.GetClient(), transferWhileDownTx.ID(), 60*time.Second)
 }

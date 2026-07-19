@@ -114,6 +114,17 @@ type TransportManager interface {
 	// including over node restart, until an ack is returned from the remote node.
 	SendReliable(ctx context.Context, dbTX persistence.DBTX, msg ...*pldapi.ReliableMessage) (err error)
 
+	// EnsurePeerConnected proactively resolves and activates a connection to nodeName, outside of
+	// any database transaction. Callers about to call SendReliable from within an open dbTX for one
+	// or more remote nodes should call this first, per-node, before opening that transaction:
+	// SendReliable's own peer activation (on a node it hasn't connected to before) does a registry
+	// lookup that falls back to a fresh, un-cached DB read on a cache miss, and persistence's
+	// MaxOpenConns=1 (sqlite) means that read deadlocks against an already-open surrounding
+	// transaction holding the pool's only connection. Calling this first warms the registry's
+	// transport-details cache and/or establishes the connection, so SendReliable's own later lookup
+	// is a pure cache hit no matter how deep inside a transaction it's called from.
+	EnsurePeerConnected(ctx context.Context, nodeName string) error
+
 	QueryReliableMessages(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessage, error)
 	QueryReliableMessageAcks(ctx context.Context, dbTX persistence.DBTX, jq *query.QueryJSON) ([]*pldapi.ReliableMessageAck, error)
 }

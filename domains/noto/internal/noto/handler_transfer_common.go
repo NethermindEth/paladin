@@ -303,10 +303,14 @@ func (h *transferCommon) stellarBaseLedgerInvokeTransfer(ctx context.Context, tx
 		return nil, err
 	}
 
-	contractID, err := placeholderContractID(tx.ContractAddress)
-	if err != nil {
-		return nil, err
-	}
+	// The genuine deployed instance's Soroban address, NOT placeholderContractID's off-chain-only
+	// stand-in - see handler_mint.go's stellarBaseLedgerInvoke's own doc comment for why: this
+	// contractID is what stellar-rpc actually routes the on-chain invocation to, and the
+	// placeholder isn't a real contract address, so simulateTransaction would fail with
+	// "Error(Storage, MissingValue)" against a contract that doesn't exist (found by hitting this
+	// live - mint's own analogous fix predates this one, transfer/lock/unlock's own stellar invoke
+	// methods just never got the same fix applied).
+	contractID := tx.Transaction.ContractInfo.ContractAddress
 	argsXDR, argsJSON, err := encodeSNotoTransferArgs(txID, inputs, outputs, sender.Payload, data)
 	if err != nil {
 		return nil, err

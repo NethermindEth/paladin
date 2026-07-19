@@ -455,10 +455,10 @@ func (h *lockHandler) stellarBaseLedgerInvokeLock(ctx context.Context, tx *types
 		return nil, err
 	}
 
-	contractID, err := placeholderContractID(tx.ContractAddress)
-	if err != nil {
-		return nil, err
-	}
+	// See handler_transfer_common.go's stellarBaseLedgerInvokeTransfer's own comment: the genuine
+	// deployed instance's Soroban address is required here, not placeholderContractID's
+	// off-chain-only stand-in.
+	contractID := tx.Transaction.ContractInfo.ContractAddress
 	argsXDR, argsJSON, err := encodeSNotoLockArgs(txID, inputs, lockedOutputs, outputs, sender.Payload, data)
 	if err != nil {
 		return nil, err

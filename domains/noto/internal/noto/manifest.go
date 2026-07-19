@@ -76,7 +76,7 @@ func (mb *manifestBuilder) finalizeNewState(manifest *types.NotoManifest, newSta
 	if err == nil {
 		manifest.States = append(manifest.States, &types.NotoManifestStateEntry{
 			ID:           stateID,
-			Participants: distribution.addresses(),
+			Participants: distribution.chainAddressStrings(),
 		})
 	}
 	return err

@@ -277,13 +277,16 @@ func (h *unlockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTransact
 }
 
 // stellarBaseLedgerInvokeUnlock builds a real PreparedChainTransaction.soroban (SorobanInvoke) for
-// SNoto's actual `unlock(lock_id, locked_inputs, outputs, data)` (chapter 13 §13.2). Unlike the EVM
-// path there is no signature/proof slot at all (see EncodeUnlock's doc comment: the sender's
-// signature has no on-chain role here) and `locked_inputs` must be the locked-coin state IDs only -
-// req.InputStates also carries the V1+ lock-info state ref Assemble appends (see Assemble's
-// `existingLock.stateRef` append), which SNoto has no on-chain concept of (its lock state lives in
-// native contract storage, keyed by lock_id, not a Paladin state). Settled scope, same as mint/
-// transfer/lock: only the V2 (basic notary mode, non-nullifier) variant is exercised.
+// SNoto's actual `unlock(tx_id, lock_id, locked_inputs, outputs, data)` (chapter 13 §13.2). Unlike
+// the EVM path there is no signature/proof slot at all (see EncodeUnlock's doc comment: the
+// sender's signature has no on-chain role here) and `locked_inputs` must be the locked-coin state
+// IDs only - req.InputStates also carries the V1+ lock-info state ref Assemble appends (see
+// Assemble's `existingLock.stateRef` append), which SNoto has no on-chain concept of (its lock
+// state lives in native contract storage, keyed by lock_id, not a Paladin state). tx_id is
+// req.Transaction.TransactionId, mirroring how the EVM path threads it through
+// NotoSpendLockArgs.TxId - SNoto's own unlock event has no other field that could serve Paladin's
+// off-chain confirmation correlation (see lib.rs's module doc comment). Settled scope, same as
+// mint/transfer/lock: only the V2 (basic notary mode, non-nullifier) variant is exercised.
 func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 	inParams := tx.Params.(*types.UnlockParams)
 
@@ -292,6 +295,10 @@ func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *t
 		return nil, err
 	}
 
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
 	lockedInputStates := h.noto.filterSchema(req.InputStates, []string{h.noto.lockedCoinSchema.Id})
 	lockedInputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, lockedInputStates, false))
 	if err != nil {
@@ -303,11 +310,11 @@ func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *t
 		return nil, err
 	}
 
-	contractID, err := placeholderContractID(tx.ContractAddress)
-	if err != nil {
-		return nil, err
-	}
-	argsXDR, argsJSON, err := encodeSNotoUnlockArgs(inParams.LockID, lockedInputs, outputs, data)
+	// See handler_transfer_common.go's stellarBaseLedgerInvokeTransfer's own comment: the genuine
+	// deployed instance's Soroban address is required here, not placeholderContractID's
+	// off-chain-only stand-in.
+	contractID := tx.Transaction.ContractInfo.ContractAddress
+	argsXDR, argsJSON, err := encodeSNotoUnlockArgs(txID, inParams.LockID, lockedInputs, outputs, data)
 	if err != nil {
 		return nil, err
 	}

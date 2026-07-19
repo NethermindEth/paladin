@@ -138,8 +138,15 @@ type NotoManifest struct {
 }
 
 type NotoManifestStateEntry struct {
-	ID           pldtypes.Bytes32       `json:"state"`
-	Participants []*pldtypes.EthAddress `json:"participants"`
+	ID pldtypes.Bytes32 `json:"state"`
+	// Participants are chain-neutral verifier strings (an EVM "0x.." address or a Stellar "G.."
+	// StrKey account address, matching whatever n.getChainIO().VerifierType() the domain instance
+	// uses) - NOT Paladin identity locators. noto.go's manifest-availability check matches these
+	// directly against ReverseKeyLookup's own Verifier strings. Previously typed
+	// []*pldtypes.EthAddress despite NotoManifestABI's own "participants" component already being
+	// chain-neutral "string[]" - a party with no resolvable EVM address (e.g. Stellar-only) then
+	// marshaled to a bare JSON null, which the ABI encoder rejected trying to parse as a string.
+	Participants []string `json:"participants"`
 }
 
 var NotoManifestABI = &abi.Parameter{

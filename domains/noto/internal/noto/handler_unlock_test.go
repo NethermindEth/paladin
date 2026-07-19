@@ -577,24 +577,28 @@ func TestUnlock_Stellar(t *testing.T) {
 	var args xdr.ScVec
 	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
 	require.NoError(t, err)
-	require.Len(t, args, 4) // lock_id, locked_inputs, outputs, data - no signature slot
+	require.Len(t, args, 5) // tx_id, lock_id, locked_inputs, outputs, data - no signature slot
 
 	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
-	assert.Equal(t, lockID[:], []byte(*args[0].Bytes))
+	txIDBytes32 := pldtypes.MustParseBytes32(tx.TransactionId)
+	assert.Equal(t, txIDBytes32[:], []byte(*args[0].Bytes))
 
-	require.Equal(t, xdr.ScValTypeScvVec, args[1].Type)
-	lockedInputsVec := **args[1].Vec
+	require.Equal(t, xdr.ScValTypeScvBytes, args[1].Type)
+	assert.Equal(t, lockID[:], []byte(*args[1].Bytes))
+
+	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
+	lockedInputsVec := **args[2].Vec
 	require.Len(t, lockedInputsVec, 1) // locked-coin state only - the lock-info state ref is excluded
 	assert.Equal(t, inputCoin.ID[:], []byte(*lockedInputsVec[0].Bytes))
 
-	require.Equal(t, xdr.ScValTypeScvVec, args[2].Type)
-	outputsVec := **args[2].Vec
+	require.Equal(t, xdr.ScValTypeScvVec, args[3].Type)
+	outputsVec := **args[3].Vec
 	require.Len(t, outputsVec, 1)
 	outputIDBytes32 := pldtypes.MustParseBytes32(*outputCoinState.Id)
 	assert.Equal(t, outputIDBytes32[:], []byte(*outputsVec[0].Bytes))
 
-	require.Equal(t, xdr.ScValTypeScvBytes, args[3].Type)
-	assert.NotEmpty(t, *args[3].Bytes)
+	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
+	assert.NotEmpty(t, *args[4].Bytes)
 }
 
 func TestUnlock_V0(t *testing.T) {

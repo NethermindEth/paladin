@@ -122,6 +122,116 @@ var allEventsJSON = mustBuildEventsJSON(interfaceV2Build.ABI, interfaceV0Build.A
 var eventSignatures = mustLoadEventSignatures(interfaceV2Build.ABI, allEvents)
 var eventSignaturesV0 = mustLoadEventSignatures(interfaceV0Build.ABI, allEventsV0)
 
+// stellarEventsJSON declares SNoto's own on-chain event names (soroban/contracts/snoto/src/lib.rs's
+// #[contractevent(topics = [...])] strings) as this domain's AbiEventsJson when the chain kind is
+// Stellar, in place of allEventsJSON's Solidity-convention names ("Transfer", "NotoLockCreated",
+// etc) which never match anything SNoto actually emits. domainmgr's event-stream registration
+// (core/go/internal/domainmgr/domain.go) computes a Stellar selector as
+// SHA-256("saladin:"+event.Name+":v0") for every event in whatever AbiEventsJson a domain returns -
+// it has no per-event alias mechanism, so the name here must literally equal the on-chain topic0
+// symbol. This is the same convention domains/sente/crates/sente/src/domain.rs's own
+// SENTE_EVENTS_ABI_JSON already established and proved end-to-end against a live network - see
+// that constant's own doc comment. Field types are filled in with SNoto's real positional "vec"
+// data shape (soroban/contracts/snoto/src/lib.rs) for documentation; only the event "name" is
+// load-bearing for selector computation. Stellar events are dispatched by raw selector
+// (events.go's handleStellarEventV1), not by decoding these types via SoliditySignature matching -
+// see stellarEventSelectors' own doc comment for why.
+const stellarEventsJSON = `[
+  {
+    "type": "event",
+    "name": "transfer",
+    "anonymous": false,
+    "inputs": [
+      {"name": "tx_id", "type": "bytes32", "indexed": true},
+      {"name": "inputs", "type": "bytes32[]", "indexed": false},
+      {"name": "outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "signature", "type": "bytes", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "lock",
+    "anonymous": false,
+    "inputs": [
+      {"name": "lock_id", "type": "bytes32", "indexed": true},
+      {"name": "inputs", "type": "bytes32[]", "indexed": false},
+      {"name": "locked_outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "signature", "type": "bytes", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "prepare_unlock",
+    "anonymous": false,
+    "inputs": [
+      {"name": "lock_id", "type": "bytes32", "indexed": true},
+      {"name": "tx_id", "type": "bytes32", "indexed": false},
+      {"name": "spend_commitment", "type": "bytes32", "indexed": false},
+      {"name": "cancel_commitment", "type": "bytes32", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "delegate_lock",
+    "anonymous": false,
+    "inputs": [
+      {"name": "lock_id", "type": "bytes32", "indexed": true},
+      {"name": "tx_id", "type": "bytes32", "indexed": false},
+      {"name": "delegate", "type": "string", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "unlock",
+    "anonymous": false,
+    "inputs": [
+      {"name": "lock_id", "type": "bytes32", "indexed": true},
+      {"name": "tx_id", "type": "bytes32", "indexed": false},
+      {"name": "locked_inputs", "type": "bytes32[]", "indexed": false},
+      {"name": "outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "cancel_unlock",
+    "anonymous": false,
+    "inputs": [
+      {"name": "lock_id", "type": "bytes32", "indexed": true},
+      {"name": "locked_inputs", "type": "bytes32[]", "indexed": false},
+      {"name": "cancel_outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "deposit",
+    "anonymous": false,
+    "inputs": [
+      {"name": "tx_id", "type": "bytes32", "indexed": true},
+      {"name": "from", "type": "string", "indexed": false},
+      {"name": "amount", "type": "int128", "indexed": false},
+      {"name": "outputs", "type": "bytes32[]", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  },
+  {
+    "type": "event",
+    "name": "withdraw",
+    "anonymous": false,
+    "inputs": [
+      {"name": "tx_id", "type": "bytes32", "indexed": true},
+      {"name": "recipient", "type": "string", "indexed": false},
+      {"name": "amount", "type": "int128", "indexed": false},
+      {"name": "inputs", "type": "bytes32[]", "indexed": false},
+      {"name": "data", "type": "bytes", "indexed": false}
+    ]
+  }
+]`
+
 var allSchemas = []*abi.Parameter{
 	types.NotoCoinABI,
 	types.NotoLockInfoABI_V0,
@@ -545,10 +655,18 @@ func (n *Noto) ConfigureDomain(ctx context.Context, req *prototk.ConfigureDomain
 	signingAlgos := map[string]int32{}
 	signingAlgos[algoName] = 32
 
+	// abiEventsJSON: Stellar's event-stream selectors are computed from these event names verbatim
+	// (see stellarEventsJSON's own doc comment) - allEventsJSON's Solidity-convention names only
+	// make sense for EVM.
+	abiEventsJSON := allEventsJSON
+	if n.getChainIO().ChainKind() == "stellar" {
+		abiEventsJSON = stellarEventsJSON
+	}
+
 	return &prototk.ConfigureDomainResponse{
 		DomainConfig: &prototk.DomainConfig{
 			AbiStateSchemasJson: schemasJSON,
-			AbiEventsJson:       allEventsJSON,
+			AbiEventsJson:       abiEventsJSON,
 			SigningAlgorithms:   signingAlgos,
 		},
 		// Chapter 14 step 4: domains/noto's chainIO seam now has a real (if mint-scoped) Stellar
@@ -868,10 +986,25 @@ type stellarNotoRegistrationConfig struct {
 // versioned-ABI-blob decode, which SNoto's own config channel (committed to carrying exactly the
 // network passphrase SNoto::initialize needs on-chain, unchanged - see NotaryRegistered's own doc
 // comment in soroban/contracts/snoto-factory/src/lib.rs) can't carry directly.
-// Name/Symbol/Decimals/Variant aren't tracked for Stellar yet - no on-chain carrier exists for them
-// (the same "shield/unshield unwired" boundary DomainConfig.StellarSacAddress's own doc comment
-// already documents) - so they default to their zero values; only basic notary mode is supported
-// (hooks mode, an EVM/Pente-hooks concept, has no Stellar equivalent yet).
+// Name/Symbol/Decimals aren't tracked for Stellar yet - no on-chain carrier exists for them (the
+// same "shield/unshield unwired" boundary DomainConfig.StellarSacAddress's own doc comment already
+// documents) - so they default to their zero values; only basic notary mode is supported (hooks
+// mode, an EVM/Pente-hooks concept, has no Stellar equivalent yet).
+//
+// Variant is NOT left at its zero value, unlike those other fields: zero is NotoVariantV0, which
+// would route HandleEventBatch to handleV0Event - a purely-EVM dispatch path with no stellar
+// awareness at all, silently dropping every SNoto event. SNoto's own lock/unlock invoke code
+// (handler_lock.go/handler_unlock.go's stellarBaseLedgerInvoke* methods) already assumes non-V0
+// semantics (`!tx.DomainConfig.IsV0()` gates loading the V1+ lock-info state).
+//
+// NotoVariantV1, specifically, not V2: V2's TransactionDataABI_V2 (types/states.go) adds a
+// required "from" address field encodeTransactionData populates via findEthAddressVerifier - which
+// has no resolvable value for a Stellar-only party (no secp256k1/EVM verifier exists), so choosing
+// V2 here made Assemble fail on every transaction with "Input map missing key 'from' required for
+// tuple component .from" (discovered by hitting this live). V1's TransactionDataABI_V1 has no such
+// field. The handler_lock.go/handler_unlock.go stellarBaseLedgerInvoke* methods this domain
+// actually exercises for Stellar only ever gate on `!IsV0()`, never specifically on `IsV1()`
+// vs `IsV2()`, so V1 satisfies every branch those methods need.
 func (n *Noto) decodeStellarConfig(ctx context.Context, domainConfig []byte) (*types.NotoConfig_V1, *types.NotoConfigData_V0, error) {
 	var combined stellarNotoRegistrationConfig
 	if err := json.Unmarshal(domainConfig, &combined); err != nil {
@@ -880,7 +1013,7 @@ func (n *Noto) decodeStellarConfig(ctx context.Context, domainConfig []byte) (*t
 	if combined.NotaryLookup == "" {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgParameterRequired, "notaryLookup")
 	}
-	config := &types.NotoConfig_V1{}
+	config := &types.NotoConfig_V1{Variant: types.NotoVariantV1}
 	decodedData := &types.NotoConfigData_V0{
 		NotaryLookup: combined.NotaryLookup,
 		NotaryMode:   types.NotaryModeIntBasic,
@@ -1395,7 +1528,7 @@ func (n *Noto) CheckStateCompletion(ctx context.Context, req *prototk.CheckState
 	uniqueAddresses := make(map[string]struct{})
 	for _, state := range manifest.States {
 		for _, target := range state.Participants {
-			uniqueAddresses[target.String()] = struct{}{}
+			uniqueAddresses[target] = struct{}{}
 		}
 	}
 	for addr := range uniqueAddresses {
@@ -1414,7 +1547,7 @@ func (n *Noto) CheckStateCompletion(ctx context.Context, req *prototk.CheckState
 	for _, state := range manifest.States {
 		for _, target := range state.Participants {
 			for _, keyLookup := range lookupRes.Results {
-				if target.String() == keyLookup.Verifier && keyLookup.Found {
+				if target == keyLookup.Verifier && keyLookup.Found {
 					log.L(ctx).Debugf("Require state %s as we own key %s for address %s", state.ID, *keyLookup.KeyIdentifier, target)
 					requiredStateIDs = append(requiredStateIDs, state.ID.String())
 				}

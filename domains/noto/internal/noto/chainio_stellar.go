@@ -459,11 +459,18 @@ func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs [
 }
 
 // encodeSNotoUnlockArgs builds the real Soroban call args for SNoto's
-// `unlock(lock_id, locked_inputs, outputs, data)` (soroban/contracts/snoto/src/lib.rs) - note there
-// is no signature/proof slot at all: the sender's signature has no on-chain role for unlock (only
-// for off-chain endorsement, already checked by Endorse/validateSignature via EncodeUnlock above),
-// and the commit-reveal digest is recomputed on-chain from these same 4 args, not passed in.
-func encodeSNotoUnlockArgs(lockID pldtypes.Bytes32, lockedInputs, outputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+// `unlock(tx_id, lock_id, locked_inputs, outputs, data)` (soroban/contracts/snoto/src/lib.rs) -
+// note there is no signature/proof slot at all: the sender's signature has no on-chain role for
+// unlock (only for off-chain endorsement, already checked by Endorse/validateSignature via
+// EncodeUnlock above), and the commit-reveal digest is recomputed on-chain from
+// (lock_id, locked_inputs, outputs, data) only, not passed in. tx_id exists purely for Paladin's
+// off-chain confirmation correlation (see lib.rs's own module doc comment) - lock_id can't serve
+// that role since it identifies the original lock-creation transaction, not this unlock.
+func encodeSNotoUnlockArgs(txID, lockID pldtypes.Bytes32, lockedInputs, outputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
 	lockIDVal, err := scValBytes(lockID[:])
 	if err != nil {
 		return nil, "", err
@@ -481,13 +488,14 @@ func encodeSNotoUnlockArgs(lockID pldtypes.Bytes32, lockedInputs, outputs []pldt
 		return nil, "", err
 	}
 
-	args := xdr.ScVec{lockIDVal, lockedInputsVal, outputsVal, dataVal}
+	args := xdr.ScVec{txIDVal, lockIDVal, lockedInputsVal, outputsVal, dataVal}
 	var buf bytes.Buffer
 	if _, err := xdr.Marshal(&buf, args); err != nil {
 		return nil, "", err
 	}
 
 	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":         txID.String(),
 		"lock_id":       lockID.String(),
 		"locked_inputs": bytes32Strings(lockedInputs),
 		"outputs":       bytes32Strings(outputs),

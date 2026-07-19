@@ -177,6 +177,7 @@ func TestPersistDispatchBatch_WithRemotePreparedTxnDistribution(t *testing.T) {
 			},
 		},
 	}
+	transportMgr.On("EnsurePeerConnected", mock.Anything, "node2").Return(nil)
 	transportMgr.On("SendReliable", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 	mp.Mock.ExpectBegin()
@@ -194,6 +195,7 @@ func TestPersistDispatchBatch_WithStateDistributions(t *testing.T) {
 	stateDistribution := &components.StateDistribution{
 		IdentityLocator: "identity@node2",
 	}
+	transportMgr.On("EnsurePeerConnected", mock.Anything, "node2").Return(nil)
 	transportMgr.On("SendReliable", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 	mp.Mock.ExpectBegin()
@@ -252,6 +254,7 @@ func TestPersistDispatchBatch_WithPublicDispatch_RemoteBinding(t *testing.T) {
 	txID := uuid.New()
 	localID := uint64(43)
 	pubTxMgr.On("WriteNewTransactions", mock.Anything, mock.Anything, mock.Anything).Return([]*pldapi.PublicTx{{LocalID: &localID}}, nil)
+	transportMgr.On("EnsurePeerConnected", mock.Anything, "node2").Return(nil)
 	transportMgr.On("SendReliable", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 	mp.Mock.ExpectBegin()
@@ -308,6 +311,7 @@ func TestPersistDispatchBatch_WithPrivateDispatch_Remote(t *testing.T) {
 
 	originalTxID := uuid.New()
 	txMgr.On("ChainPrivateTransactions", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	transportMgr.On("EnsurePeerConnected", mock.Anything, "node2").Return(nil)
 	transportMgr.On("SendReliable", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 	mp.Mock.ExpectBegin()

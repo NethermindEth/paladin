@@ -188,18 +188,32 @@ func (n *Noto) makeNewInfoState(info *types.TransactionData, variant pldtypes.He
 	if err != nil {
 		return nil, err
 	}
-	if variant == types.NotoVariantV0 {
+	switch variant {
+	case types.NotoVariantV0:
 		return &prototk.NewState{
 			SchemaId:         n.dataSchemaV0.Id,
 			StateDataJson:    string(infoJSON),
 			DistributionList: distributionList,
 		}, nil
+	case types.NotoVariantV1:
+		// TransactionDataABI_V1 (unlike V2) has no "from" component - the only branch here that
+		// works when info.From is nil, which it always is for a party with no resolvable EVM
+		// address (e.g. a Stellar-only party - discovered by hitting this live: previously this
+		// function had no V1 case at all and fell through to the V2 schema below, which then
+		// failed ABI-encoding with "Input map missing key 'from' required for tuple component
+		// .from" for exactly that reason).
+		return &prototk.NewState{
+			SchemaId:         n.dataSchemaV1.Id,
+			StateDataJson:    string(infoJSON),
+			DistributionList: distributionList,
+		}, nil
+	default:
+		return &prototk.NewState{
+			SchemaId:         n.dataSchemaV2.Id,
+			StateDataJson:    string(infoJSON),
+			DistributionList: distributionList,
+		}, nil
 	}
-	return &prototk.NewState{
-		SchemaId:         n.dataSchemaV2.Id,
-		StateDataJson:    string(infoJSON),
-		DistributionList: distributionList,
-	}, nil
 }
 
 func (n *Noto) makeNewManifestInfoState(manifest *types.NotoManifest, distributionList []string) (*prototk.NewState, error) {
@@ -307,6 +321,25 @@ skipDuplicate:
 			}
 		}
 		al = append(al, id.address)
+	}
+	return al
+}
+
+// chainAddressStrings gets each identity's chain-neutral verifier string (id.chainAddress,
+// populated by every chainIO implementer - see identityPair's own doc comment), with
+// de-duplication - the manifest's own "participants" list (manifest.go's finalizeNewState) needs
+// this rather than addresses() above, since a Stellar-only identity has no EthAddress at all.
+func (idl identityList) chainAddressStrings() []string {
+	al := make([]string, 0, len(idl))
+skipDuplicate:
+	for _, id := range idl {
+		s := id.chainAddress.String()
+		for _, existing := range al {
+			if existing == s {
+				continue skipDuplicate
+			}
+		}
+		al = append(al, s)
 	}
 	return al
 }

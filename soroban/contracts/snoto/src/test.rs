@@ -196,12 +196,18 @@ fn lock_lifecycle_spend() {
     // Never checked by this test path (only spend is exercised) - any value satisfies
     // prepare_unlock's requirement that both commitments be set together.
     let cancel_commitment = state_id(&s.env, 254);
-    client.prepare_unlock(&lock_id, &spend_commitment, &cancel_commitment);
+    client.prepare_unlock(
+        &state_id(&s.env, 105),
+        &lock_id,
+        &spend_commitment,
+        &cancel_commitment,
+    );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
 
     client.unlock(
+        &state_id(&s.env, 107),
         &lock_id,
         &Vec::from_array(&s.env, [locked_output]),
         &Vec::from_array(&s.env, [spend_output]),
@@ -286,10 +292,15 @@ fn lock_lifecycle_cancel() {
         &locked_output,
         &cancel_output,
     );
-    client.prepare_unlock(&lock_id, &spend_commitment, &cancel_commitment);
+    client.prepare_unlock(
+        &state_id(&s.env, 105),
+        &lock_id,
+        &spend_commitment,
+        &cancel_commitment,
+    );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
 
     client.cancel_unlock(
         &lock_id,
@@ -335,13 +346,19 @@ fn unlock_rejects_wrong_preimage() {
         &spend_output,
     );
     let cancel_commitment = state_id(&s.env, 254);
-    client.prepare_unlock(&lock_id, &spend_commitment, &cancel_commitment);
+    client.prepare_unlock(
+        &state_id(&s.env, 105),
+        &lock_id,
+        &spend_commitment,
+        &cancel_commitment,
+    );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
 
     // Wrong output (doesn't match the committed spend_output) must be rejected.
     client.unlock(
+        &state_id(&s.env, 107),
         &lock_id,
         &Vec::from_array(&s.env, [locked_output]),
         &Vec::from_array(&s.env, [state_id(&s.env, 200)]),

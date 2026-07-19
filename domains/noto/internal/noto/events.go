@@ -73,22 +73,23 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		}
 	}
 
+	// Stellar events carry no SoliditySignature at all (that field is populated by EVM log
+	// decoding only) - dispatch by raw selector instead, mirroring how Sente's own Rust plugin
+	// (domains/sente/crates/sente/src/domain.rs) matches its events. See events_stellar.go's own
+	// doc comment for why this is a parallel dispatch path rather than a synthetic
+	// SoliditySignature: the on-chain field layouts genuinely differ from EVM's, so the decode step
+	// needs per-event-kind logic regardless.
+	if n.getChainIO().ChainKind() == "stellar" {
+		return n.handleStellarEventV1(ctx, ev, res, req, useNullifier, smtForStates)
+	}
+
 	switch ev.SoliditySignature {
 	case eventSignatures[EventTransfer]:
 		log.L(ctx).Infof("Processing '%s' event in batch %s", ev.SoliditySignature, req.BatchId)
 		var transfer NotoTransfer_Event
 		if err := json.Unmarshal([]byte(ev.DataJson), &transfer); err == nil {
-			txData, err := n.decodeTransactionDataV1(ctx, transfer.Data)
-			if err != nil {
+			if err := n.applyTransferEvent(ctx, ev, &transfer, res, useNullifier, smtForStates); err != nil {
 				return err
-			}
-			n.recordTransactionInfo(ev, transfer.TxId, txData.InfoStates, res)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(transfer.TxId, transfer.Inputs)...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(transfer.TxId, transfer.Outputs)...)
-			if useNullifier {
-				if err := n.updateMerkleTree(ctx, smtForStates.Tree, smtForStates.Storage, transfer.TxId, convertToUint256(transfer.Outputs)); err != nil {
-					return err
-				}
 			}
 		} else {
 			log.L(ctx).Warnf("Ignoring malformed Transfer event in batch %s: %s", req.BatchId, err)
@@ -98,15 +99,9 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		log.L(ctx).Infof("Processing '%s' event in batch %s", ev.SoliditySignature, req.BatchId)
 		var lockCreated NotoLockCreated_Event
 		if err := json.Unmarshal([]byte(ev.DataJson), &lockCreated); err == nil {
-			txData, err := n.decodeTransactionDataV1(ctx, lockCreated.Data)
-			if err != nil {
+			if err := n.applyLockCreatedEvent(ctx, ev, &lockCreated, res); err != nil {
 				return err
 			}
-			n.recordTransactionInfo(ev, lockCreated.TxId, txData.InfoStates, res)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Inputs)...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Outputs)...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Contents)...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, []pldtypes.Bytes32{lockCreated.NewLockState})...)
 		} else {
 			log.L(ctx).Warnf("Ignoring malformed LockCreated event in batch %s: %s", req.BatchId, err)
 		}
@@ -131,30 +126,8 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		log.L(ctx).Infof("Processing '%s' event in batch %s", ev.SoliditySignature, req.BatchId)
 		var lockSpent NotoLockSpentOrCancelled_Event
 		if err := json.Unmarshal([]byte(ev.DataJson), &lockSpent); err == nil {
-			txData, err := n.decodeTransactionDataV1(ctx, lockSpent.TxData)
-			if err != nil {
+			if err := n.applyLockSpentOrCancelledEvent(ctx, ev, &lockSpent, res, req); err != nil {
 				return err
-			}
-			n.recordTransactionInfo(ev, lockSpent.TxId, txData.InfoStates, res)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockSpent.TxId, lockSpent.Inputs)...)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockSpent.TxId, []pldtypes.Bytes32{lockSpent.OldLockState})...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockSpent.TxId, lockSpent.Outputs)...)
-
-			if req.ContractInfo != nil {
-				var domainConfig *types.NotoParsedConfig
-				err = json.Unmarshal([]byte(req.ContractInfo.ContractConfigJson), &domainConfig)
-				if err != nil {
-					return err
-				}
-				if domainConfig.IsNotary &&
-					domainConfig.NotaryMode == types.NotaryModeHooks.Enum() &&
-					!domainConfig.Options.Hooks.PublicAddress.Equals(lockSpent.Spender) {
-					err = n.handleNotaryPrivateUnlockV1(ctx, req.StateQueryContext, domainConfig, &lockSpent)
-					if err != nil {
-						log.L(ctx).Errorf("Failed to handle %s event in batch %s: %s", ev.SoliditySignature, req.BatchId, err)
-						return err
-					}
-				}
 			}
 		} else {
 			log.L(ctx).Warnf("Ignoring malformed %s event in batch %s: %s", ev.SoliditySignature, req.BatchId, err)
@@ -190,6 +163,90 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		}
 	}
 
+	return nil
+}
+
+// applyTransferEvent applies a decoded Transfer event to the batch response. Shared between the
+// EVM SoliditySignature-dispatched path in handleV1Event and the Stellar raw-selector-dispatched
+// path in handleStellarEventV1 - the decoded NotoTransfer_Event shape is identical either way,
+// only how it gets populated (JSON unmarshal vs XDR decode) differs.
+func (n *Noto) applyTransferEvent(ctx context.Context, ev *prototk.OnChainEvent, transfer *NotoTransfer_Event, res *prototk.HandleEventBatchResponse, useNullifier bool, smtForStates *smt.MerkleTreeSpec) error {
+	txData, err := n.decodeTransactionDataV1(ctx, transfer.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, transfer.TxId, txData.InfoStates, res)
+	res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(transfer.TxId, transfer.Inputs)...)
+	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(transfer.TxId, transfer.Outputs)...)
+	if useNullifier {
+		if err := n.updateMerkleTree(ctx, smtForStates.Tree, smtForStates.Storage, transfer.TxId, convertToUint256(transfer.Outputs)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyLockCreatedEvent applies a decoded LockCreated event to the batch response. Shared between
+// the EVM and Stellar dispatch paths - see applyTransferEvent's comment for why the split exists.
+//
+// SNoto's on-chain Lock event has no equivalent of EVM's "Contents"/"NewLockState" fields (those
+// come from EVM Noto's V1+ lock-info state model, which Stellar's lock design doesn't have), so a
+// Stellar-decoded NotoLockCreated_Event leaves both zero-valued. Guarding on IsZero() here (rather
+// than requiring Stellar's decoder to fabricate a placeholder ID) stops a bogus all-zero state ID
+// from being recorded as a genuine confirmed state.
+func (n *Noto) applyLockCreatedEvent(ctx context.Context, ev *prototk.OnChainEvent, lockCreated *NotoLockCreated_Event, res *prototk.HandleEventBatchResponse) error {
+	txData, err := n.decodeTransactionDataV1(ctx, lockCreated.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, lockCreated.TxId, txData.InfoStates, res)
+	res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Inputs)...)
+	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Outputs)...)
+	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Contents)...)
+	if !lockCreated.NewLockState.IsZero() {
+		res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, []pldtypes.Bytes32{lockCreated.NewLockState})...)
+	}
+	return nil
+}
+
+// applyLockSpentOrCancelledEvent applies a decoded LockSpent/LockCancelled event to the batch
+// response. Shared between the EVM and Stellar dispatch paths - see applyTransferEvent's comment
+// for why the split exists.
+//
+// The Pente-hooks branch below is EVM/Pente-only (NotaryModeHooks has no Stellar equivalent yet),
+// but is safe to keep in this shared helper: domainConfig.NotaryMode will simply never equal
+// NotaryModeHooks for a Stellar-configured domain, so the branch is inert on that path.
+//
+// OldLockState.IsZero() guards the same way applyLockCreatedEvent's NewLockState check does: SNoto's
+// on-chain Unlock event has no equivalent of EVM's lock-info state ref, so a Stellar-decoded
+// NotoLockSpentOrCancelled_Event leaves it zero-valued, and it must not be recorded as a genuine
+// spent state.
+func (n *Noto) applyLockSpentOrCancelledEvent(ctx context.Context, ev *prototk.OnChainEvent, lockSpent *NotoLockSpentOrCancelled_Event, res *prototk.HandleEventBatchResponse, req *prototk.HandleEventBatchRequest) error {
+	txData, err := n.decodeTransactionDataV1(ctx, lockSpent.TxData)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, lockSpent.TxId, txData.InfoStates, res)
+	res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockSpent.TxId, lockSpent.Inputs)...)
+	if !lockSpent.OldLockState.IsZero() {
+		res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockSpent.TxId, []pldtypes.Bytes32{lockSpent.OldLockState})...)
+	}
+	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockSpent.TxId, lockSpent.Outputs)...)
+
+	if req.ContractInfo != nil {
+		var domainConfig *types.NotoParsedConfig
+		if err := json.Unmarshal([]byte(req.ContractInfo.ContractConfigJson), &domainConfig); err != nil {
+			return err
+		}
+		if domainConfig.IsNotary &&
+			domainConfig.NotaryMode == types.NotaryModeHooks.Enum() &&
+			!domainConfig.Options.Hooks.PublicAddress.Equals(lockSpent.Spender) {
+			if err := n.handleNotaryPrivateUnlockV1(ctx, req.StateQueryContext, domainConfig, lockSpent); err != nil {
+				log.L(ctx).Errorf("Failed to handle lock-spent-or-cancelled event in batch %s: %s", req.BatchId, err)
+				return err
+			}
+		}
+	}
 	return nil
 }
 
