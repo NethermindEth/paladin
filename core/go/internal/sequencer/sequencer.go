@@ -59,6 +59,17 @@ type sequencerManager struct {
 	sequencers                  map[string]*sequencer
 	heartbeatInterval           time.Duration
 	targetActiveSequencersLimit int // Max number of sequencers this node aims to retain in memory concurrently. Hitting this limit will cause an attempt to remove the lowest priority sequencer from memory, and hence require it to be recreated from persisted state if it is needed in the future
+	// inFlightDeploys tracks deploy transaction IDs with a deploymentLoop currently running in this
+	// process (from handleDeployTx's first call for that ID until its goroutine completes).
+	// pollForIncompleteTransactions's periodic/startup scan is meant for genuine crash recovery, but
+	// has no way to tell "stuck since a previous, now-dead process" apart from "still legitimately
+	// running in this one" purely from DB state - a resumed deploy that isn't in this map is either
+	// genuinely stuck or belongs to a different (crashed) process, so it's safe to run; one that IS
+	// in this map is still actively being handled by this same process's own goroutine, so the
+	// resume is redundant and must be skipped rather than racing a second
+	// PrepareDeploy+ValidateTransaction against the first - see evaluateDeployment's own doc
+	// comment on why that's unsafe for Soroban's non-idempotent create_contract_with_constructor.
+	inFlightDeploys sync.Map
 }
 
 // Init implements Engine.
@@ -288,6 +299,21 @@ func (sMgr *sequencerManager) evaluateDeployment(ctx context.Context, domain com
 			log.L(ctx).Infof("deployment %s already dispatched - skipping redundant resume", tx.ID)
 			return nil
 		}
+		// The check above only catches the case where the original attempt has already reached
+		// PersistDeployDispatchBatch. If it's still earlier than that (e.g. still inside
+		// PrepareDeploy or ValidateTransaction - Stellar's channel-account funding can take tens of
+		// seconds), existingPubTxs is still empty and the DB alone can't distinguish "genuinely
+		// stuck since a previous, now-dead process" from "still legitimately running in this one".
+		// inFlightDeploys makes that distinction in memory: only one evaluateDeployment for a given
+		// tx.ID proceeds past this point at a time within this process.
+		if _, alreadyInFlight := sMgr.inFlightDeploys.LoadOrStore(tx.ID, struct{}{}); alreadyInFlight {
+			log.L(ctx).Infof("deployment %s already in flight in this process - skipping redundant resume", tx.ID)
+			return nil
+		}
+		defer sMgr.inFlightDeploys.Delete(tx.ID)
+	} else {
+		sMgr.inFlightDeploys.Store(tx.ID, struct{}{})
+		defer sMgr.inFlightDeploys.Delete(tx.ID)
 	}
 
 	// TODO there is a lot of common code between this and the Dispatch function in the sequencer. should really move some of it into a common place

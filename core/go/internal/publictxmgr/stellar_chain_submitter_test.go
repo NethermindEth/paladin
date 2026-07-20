@@ -5,7 +5,9 @@
 package publictxmgr
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"testing"
 
@@ -16,6 +18,7 @@ import (
 	baseledgerstellar "github.com/LFDT-Paladin/paladin/core/pkg/baseledger/stellar"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/retry"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/algorithms"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/signpayloads"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
@@ -161,7 +164,10 @@ func TestStellarAssignOrderingKeysBootstrapsMissingAccount(t *testing.T) {
 	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
 		if got.String() == channelAddr {
 			getAccountInfoCalls++
-			if getAccountInfoCalls == 1 {
+			// Calls 1 and 2 are ensureAccountFunded's own entry check and its per-attempt recheck
+			// inside the rebuild loop, both before the account has been created; call 3 is
+			// AssignOrderingKeys' own post-funding lookup, after ensureAccountFunded has returned.
+			if getAccountInfoCalls <= 2 {
 				return nil, fmt.Errorf("account not found")
 			}
 			nonce := pldtypes.HexUint64(42)
@@ -253,7 +259,241 @@ func TestStellarEnsureFromAccountFundedBootstrapsMissingAccount(t *testing.T) {
 
 	err := submitter.EnsureFromAccountFunded(ctx, from)
 	require.NoError(t, err)
-	assert.Equal(t, 1, getAccountInfoCalls)
+	// The entry check plus the rebuild loop's own per-attempt recheck, both before the account
+	// exists.
+	assert.Equal(t, 2, getAccountInfoCalls)
+}
+
+// stellarBadSeqErrorResultXDR builds a base64 ErrorResultXDR for a txBAD_SEQ rejection - what a
+// real Stellar node returns when a submitted sequence number was already consumed, which is
+// exactly what two concurrent ensureAccountFunded calls against the same funder identity produce
+// (see AssignOrderingKeys' own doc comment: a deploy needs two separate 8-account channel-account
+// pools bootstrapped simultaneously - the notary's own identity, plus a fresh per-deploy nonce
+// identity - both funded from the same configured funder, with no in-process serialization).
+func stellarBadSeqErrorResultXDR(t *testing.T) string {
+	t.Helper()
+	var badSeqResult xdr.TransactionResult
+	badSeqResult.Result.Code = xdr.TransactionResultCodeTxBadSeq
+	var buf bytes.Buffer
+	_, err := xdr.Marshal(&buf, badSeqResult)
+	require.NoError(t, err)
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// TestStellarEnsureAccountFundedRetriesAndRecoversFromBadSeq proves the fix for a live failure
+// observed against a genuinely cold-started (fresh) Stellar network: stellarChainSubmitter.Submit
+// already translates a txBAD_SEQ rejection into SubmitResult{Outcome: SubmissionOutcomeNonceTooLow,
+// TxHash: <the original intended hash>}, err == nil - previously, ensureAccountFunded never
+// inspected result.Outcome, so a rejected submission was indistinguishable from an accepted one
+// and fell straight through to polling GetTransactionResult for a hash that was never actually
+// accepted on-chain (reproduced by the sibling
+// TestStellarEnsureAccountFundedRetriesThenFailsOnPersistentBadSeq test below).
+//
+// Here the first submission attempt is rejected (funder sequence stale, as if a concurrent
+// bootstrap already consumed it), and the second attempt observes the funder's now-advanced
+// sequence number (as if that concurrent submission has since confirmed) and succeeds - the exact
+// recovery a sequence-number race calls for.
+func TestStellarEnsureAccountFundedRetriesAndRecoversFromBadSeq(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	funderIdentifier := "stellar.funder"
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1), Funder: &funderIdentifier}
+	// Fast retry bounds so this test doesn't wait out the real production timing (2-5s per
+	// attempt, up to 30 attempts).
+	submitter.fundingConfirmationRetry = retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+		RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("1ms"), MaxDelay: confutil.P("1ms"), Factor: confutil.P(1.0)},
+		MaxAttempts: confutil.P(3),
+	})
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	funderAddr := keypair.MustRandom().Address()
+	funderKey := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: funderIdentifier, KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: funderAddr},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ResolveKeyNewDatabaseTX", mock.Anything, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS).Return(funderKey, nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, funderAddr).Return(funderKey, nil)
+	mockKeyManager.On("Sign", mock.Anything, funderKey, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil)
+
+	getAccountInfoCallsForFunder := 0
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		if got.String() == from.String() {
+			return nil, fmt.Errorf("account not found")
+		}
+		getAccountInfoCallsForFunder++
+		// First read: the sequence a concurrent submission is ABOUT to consume. Second read
+		// onward: that concurrent submission has since confirmed, advancing the sequence -
+		// exactly what re-fetching before retrying should observe.
+		nonce := pldtypes.HexUint64(7)
+		if getAccountInfoCallsForFunder > 1 {
+			nonce = 8
+		}
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+
+	errorResultXDR := stellarBadSeqErrorResultXDR(t)
+	submitCalls := 0
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		submitCalls++
+		if submitCalls == 1 {
+			return baseledger.TxID{}, &baseledgerstellar.SubmissionRejectedError{Status: "ERROR", ErrorResultXDR: errorResultXDR}
+		}
+		var hash baseledger.TxID
+		hash[0] = byte(submitCalls)
+		return hash, nil
+	}
+	ledger.getTransactionResult = func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+		return &baseledger.TxResult{ID: id, Success: true}, nil
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+
+	require.NoError(t, err, "expected the second attempt (against the funder's now-advanced sequence) to succeed")
+	assert.Equal(t, 2, submitCalls, "expected exactly one retry after the bad-sequence rejection")
+}
+
+// TestStellarEnsureAccountFundedRetriesThenFailsOnPersistentBadSeq confirms the retry is bounded
+// (matching fundingConfirmationRetry's own MaxAttempts) rather than looping forever, if every
+// submission attempt keeps losing the sequence-number race.
+func TestStellarEnsureAccountFundedRetriesThenFailsOnPersistentBadSeq(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	funderIdentifier := "stellar.funder"
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1), Funder: &funderIdentifier}
+	// fundingRebuildRetry (not fundingConfirmationRetry) is what bounds submission-rejection
+	// retries: confirmation polling is never reached in this test, since every submission attempt
+	// is itself rejected.
+	submitter.fundingRebuildRetry = retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+		RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("1ms"), MaxDelay: confutil.P("1ms"), Factor: confutil.P(1.0)},
+		MaxAttempts: confutil.P(2),
+	})
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	funderAddr := keypair.MustRandom().Address()
+	funderKey := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: funderIdentifier, KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: funderAddr},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ResolveKeyNewDatabaseTX", mock.Anything, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS).Return(funderKey, nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, funderAddr).Return(funderKey, nil)
+	mockKeyManager.On("Sign", mock.Anything, funderKey, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil)
+
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		if got.String() == from.String() {
+			return nil, fmt.Errorf("account not found")
+		}
+		nonce := pldtypes.HexUint64(7)
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+
+	errorResultXDR := stellarBadSeqErrorResultXDR(t)
+	submitCalls := 0
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		submitCalls++
+		return baseledger.TxID{}, &baseledgerstellar.SubmissionRejectedError{Status: "ERROR", ErrorResultXDR: errorResultXDR}
+	}
+	getTransactionResultCalls := 0
+	ledger.getTransactionResult = func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+		getTransactionResultCalls++
+		return nil, fmt.Errorf("transaction %s not found (or outside the RPC retention window)", id)
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+
+	require.Error(t, err, "ensureAccountFunded should surface a failure if the sequence race never resolves")
+	assert.Equal(t, 2, submitCalls, "expected the bounded retry count (MaxAttempts=2), not an unbounded loop")
+	assert.Equal(t, 0, getTransactionResultCalls, "expected it to never reach confirmation polling, since no submission was ever accepted")
+}
+
+// TestStellarEnsureAccountFundedRebuildsWhenConfirmationNeverArrives proves the second, subtler
+// half of the same live failure: stellar-rpc only synchronously rejects a submission whose
+// sequence is ALREADY stale against its current ledger view. Two concurrent submissions built
+// before either has landed in a ledger can both look valid and both get accepted (Submit returns
+// no error, Outcome != SubmissionOutcomeNonceTooLow) - the eventual loser is then silently dropped
+// from the mempool once the winner's inclusion advances the funder's sequence, and never surfaces
+// as a rejection, only as a confirmation that never arrives. Confirmed against a real cold-started
+// network: the first fix (retrying on an outright NonceTooLow rejection) was not sufficient on its
+// own - a live deploy still failed with "transaction ... not found (or outside the RPC retention
+// window)" after polling the same never-confirming hash for fundingConfirmationRetry's entire
+// budget. The fix is for a confirmation timeout to also trigger a rebuild (fresh funder sequence,
+// fresh submission) rather than only an outright rejection.
+func TestStellarEnsureAccountFundedRebuildsWhenConfirmationNeverArrives(t *testing.T) {
+	ctx, submitter, m, done := newTestStellarSubmitter(t)
+	defer done()
+	funderIdentifier := "stellar.funder"
+	submitter.channelAccounts = &pldconf.ChannelAccountsConfig{PoolSize: confutil.P(1), Funder: &funderIdentifier}
+	// Fast bounds so the test doesn't wait out real production timing.
+	submitter.fundingConfirmationRetry = retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+		RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("1ms"), MaxDelay: confutil.P("1ms"), Factor: confutil.P(1.0)},
+		MaxAttempts: confutil.P(2),
+	})
+	submitter.fundingRebuildRetry = retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+		RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("1ms"), MaxDelay: confutil.P("1ms"), Factor: confutil.P(1.0)},
+		MaxAttempts: confutil.P(3),
+	})
+
+	from := *pldtypes.MustParseChainAddress(testStellarAccount)
+	funderAddr := keypair.MustRandom().Address()
+	funderKey := &pldapi.KeyMappingAndVerifier{
+		KeyMappingWithPath: &pldapi.KeyMappingWithPath{KeyMapping: &pldapi.KeyMapping{Identifier: funderIdentifier, KeyHandle: "m/44'/148'/1'"}},
+		Verifier:           &pldapi.KeyVerifier{Verifier: funderAddr},
+	}
+
+	mockKeyManager := m.keyManager.(*componentsmocks.KeyManager)
+	mockKeyManager.On("ResolveKeyNewDatabaseTX", mock.Anything, funderIdentifier, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS).Return(funderKey, nil).Once()
+	mockKeyManager.On("ReverseKeyLookup", mock.Anything, mock.Anything, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, funderAddr).Return(funderKey, nil)
+	mockKeyManager.On("Sign", mock.Anything, funderKey, signpayloads.OPAQUE_TO_EDDSA, mock.Anything).Return([]byte("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), nil)
+
+	fundedOnChain := false
+	ledger := submitter.ptm.baseLedger.(*mockStellarBaseLedger)
+	getFunderInfoCalls := 0
+	ledger.getAccountInfo = func(ctx context.Context, got pldtypes.ChainAddress) (*baseledger.AccountInfo, error) {
+		if got.String() == from.String() {
+			if fundedOnChain {
+				nonce := pldtypes.HexUint64(1)
+				return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+			}
+			return nil, fmt.Errorf("account not found")
+		}
+		getFunderInfoCalls++
+		// Each rebuild re-reads a fresh (higher) sequence, as if a racing concurrent submission
+		// keeps confirming ahead of ours.
+		nonce := pldtypes.HexUint64(6 + uint64(getFunderInfoCalls))
+		return &baseledger.AccountInfo{Address: got, OrderingKey: &nonce}, nil
+	}
+
+	submitCalls := 0
+	confirmedHashes := map[baseledger.TxID]bool{}
+	ledger.submit = func(ctx context.Context, raw baseledger.SignedChainTx) (baseledger.TxID, error) {
+		submitCalls++
+		var hash baseledger.TxID
+		hash[0] = byte(submitCalls)
+		if submitCalls == 3 {
+			// The third rebuild finally wins the race and actually lands.
+			confirmedHashes[hash] = true
+			fundedOnChain = true
+		}
+		return hash, nil
+	}
+	ledger.getTransactionResult = func(ctx context.Context, id baseledger.TxID) (*baseledger.TxResult, error) {
+		if confirmedHashes[id] {
+			return &baseledger.TxResult{ID: id, Success: true}, nil
+		}
+		// The first two submissions were silently lost to the race: never rejected outright, but
+		// never confirming either.
+		return nil, fmt.Errorf("transaction %s not found (or outside the RPC retention window)", id)
+	}
+
+	err := submitter.EnsureFromAccountFunded(ctx, from)
+
+	require.NoError(t, err, "expected the third rebuild (which actually lands) to succeed")
+	assert.Equal(t, 3, submitCalls, "expected exactly two rebuilds after the first two submissions were silently lost")
 }
 
 func TestStellarEnsureFromAccountFundedNoopIfAlreadyFunded(t *testing.T) {

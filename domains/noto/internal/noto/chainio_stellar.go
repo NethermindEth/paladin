@@ -21,6 +21,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"math/big"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/i18n"
 	"github.com/LFDT-Paladin/paladin/domains/noto/internal/msgs"
@@ -127,6 +128,24 @@ func scValAddress(strkeyAddr string) (xdr.ScVal, error) {
 		return xdr.ScVal{}, err
 	}
 	return xdr.NewScVal(xdr.ScValTypeScvAddress, addr)
+}
+
+// scValI128 encodes a non-negative amount as an i128 SCVal (SNoto's deposit/withdraw "amount"
+// shape - the only place this codebase encodes a real numeric on-chain value; transfer/lock/
+// unlock only ever pass opaque state IDs, since coin amounts otherwise live entirely off-chain).
+func scValI128(amount *big.Int) (xdr.ScVal, error) {
+	if amount.Sign() < 0 {
+		return xdr.ScVal{}, fmt.Errorf("amount must be non-negative, got %s", amount.String())
+	}
+	lo := new(big.Int).And(amount, new(big.Int).SetUint64(^uint64(0))).Uint64()
+	hi := new(big.Int).Rsh(amount, 64)
+	if !hi.IsInt64() {
+		return xdr.ScVal{}, fmt.Errorf("amount %s exceeds i128 range", amount.String())
+	}
+	return xdr.NewScVal(xdr.ScValTypeScvI128, xdr.Int128Parts{
+		Hi: xdr.Int64(hi.Int64()),
+		Lo: xdr.Uint64(lo),
+	})
 }
 
 func marshalScVal(v xdr.ScVal) ([]byte, error) {
@@ -639,6 +658,96 @@ func encodeSNotoCancelUnlockArgs(txID, lockID pldtypes.Bytes32, lockedInputs, ca
 		"locked_inputs":  bytes32Strings(lockedInputs),
 		"cancel_outputs": bytes32Strings(cancelOutputs),
 		"data":           pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoDepositArgs builds the real Soroban call args for SNoto's
+// `deposit(tx_id, from, amount, outputs, data)` (soroban/contracts/snoto/src/lib.rs) - the real
+// on-chain SAC shield. from is the resolved chain-neutral StrKey string of the depositing party
+// (both the real SAC-transfer source and the off-chain recipient of the new NotoCoin outputs).
+func encodeSNotoDepositArgs(txID pldtypes.Bytes32, from string, amount *big.Int, outputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	fromVal, err := scValAddress(from)
+	if err != nil {
+		return nil, "", err
+	}
+	amountVal, err := scValI128(amount)
+	if err != nil {
+		return nil, "", err
+	}
+	outputsVal, err := scValBytes32Vec(outputs)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, fromVal, amountVal, outputsVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":   txID.String(),
+		"from":    from,
+		"amount":  amount.String(),
+		"outputs": bytes32Strings(outputs),
+		"data":    pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoWithdrawArgs builds the real Soroban call args for SNoto's
+// `withdraw(tx_id, recipient, amount, inputs, data)` (soroban/contracts/snoto/src/lib.rs) - the
+// real on-chain SAC unshield. recipient is the resolved chain-neutral StrKey string of the real
+// on-chain destination.
+func encodeSNotoWithdrawArgs(txID pldtypes.Bytes32, recipient string, amount *big.Int, inputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	recipientVal, err := scValAddress(recipient)
+	if err != nil {
+		return nil, "", err
+	}
+	amountVal, err := scValI128(amount)
+	if err != nil {
+		return nil, "", err
+	}
+	inputsVal, err := scValBytes32Vec(inputs)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, recipientVal, amountVal, inputsVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":     txID.String(),
+		"recipient": recipient,
+		"amount":    amount.String(),
+		"inputs":    bytes32Strings(inputs),
+		"data":      pldtypes.HexBytes(data).String(),
 	})
 	if err != nil {
 		return nil, "", err

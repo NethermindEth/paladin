@@ -49,11 +49,23 @@ import (
 type stellarChainSubmitter struct {
 	ptm             *pubTxManager
 	channelAccounts *pldconf.ChannelAccountsConfig
-	// fundingConfirmationRetry bounds how long ensureChannelAccountFunded polls for a channel
-	// account's CreateAccountOp to confirm - a one-time cost per channel account's lifetime, so
-	// this isn't exposed as its own config knob (unlike restoreConfirmationRetry, which is on the
-	// orchestrator's hot resubmit path).
+	// fundingConfirmationRetry bounds how long a single account-funding CreateAccountOp submission
+	// is polled for confirmation before it's given up on as lost (see fundingRebuildRetry) - a
+	// one-time cost per channel account's lifetime, so this isn't exposed as its own config knob
+	// (unlike restoreConfirmationRetry, which is on the orchestrator's hot resubmit path).
 	fundingConfirmationRetry *retry.Retry
+	// fundingRebuildRetry bounds how many times ensureAccountFunded will rebuild (re-fetch the
+	// funder's sequence number, re-sign, re-submit) and await confirmation again, after a prior
+	// submission either failed outright or never confirmed within fundingConfirmationRetry's
+	// budget. A submission can go unconfirmed for reasons beyond an outright rejection: stellar-rpc
+	// only synchronously rejects a submission whose sequence is ALREADY stale against its current
+	// ledger view: two concurrent submissions can each read the same "current sequence" before
+	// either has been included in a ledger, both get accepted as pending, and whichever loses gets
+	// silently dropped from the mempool once the winner advances the account's sequence - it never
+	// surfaces as a rejection, only as a confirmation that never arrives (the same class of
+	// "transaction... since 'lost' the transaction" case the orchestrator's own stale-transaction
+	// handling documents, in_flight_transaction_stage_controller.go).
+	fundingRebuildRetry *retry.Retry
 }
 
 func newStellarChainSubmitter(ptm *pubTxManager, channelAccounts *pldconf.ChannelAccountsConfig) ChainSubmitter {
@@ -64,8 +76,12 @@ func newStellarChainSubmitter(ptm *pubTxManager, channelAccounts *pldconf.Channe
 		ptm:             ptm,
 		channelAccounts: channelAccounts,
 		fundingConfirmationRetry: retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
-			RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("2s"), MaxDelay: confutil.P("5s"), Factor: confutil.P(1.0)},
-			MaxAttempts: confutil.P(30),
+			RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("1s"), MaxDelay: confutil.P("2s"), Factor: confutil.P(1.0)},
+			MaxAttempts: confutil.P(5),
+		}),
+		fundingRebuildRetry: retry.NewRetryLimited(&pldconf.RetryConfigWithMax{
+			RetryConfig: pldconf.RetryConfig{InitialDelay: confutil.P("100ms"), MaxDelay: confutil.P("1s"), Factor: confutil.P(1.5)},
+			MaxAttempts: confutil.P(10),
 		}),
 	}
 }
@@ -163,46 +179,79 @@ func (s *stellarChainSubmitter) ensureAccountFunded(ctx context.Context, account
 	}
 
 	startingBalance := confutil.StringNotEmpty(s.channelAccounts.StartingBalance, *pldconf.StellarClientDefaults.ChannelAccounts.StartingBalance)
-	funderInfo, err := s.ptm.baseLedger.GetAccountInfo(ctx, *funderAddr)
-	if err != nil {
-		return fmt.Errorf("failed to look up channel account funder %s: %w", funderAddr, err)
-	}
-	if funderInfo.OrderingKey == nil {
-		return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
-	}
-	funderAccount := txnbuild.NewSimpleAccount(funderAddr.String(), int64(funderInfo.OrderingKey.Uint64())-1) //nolint:gosec // sequence numbers are always positive
-	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
-		SourceAccount:        &funderAccount,
-		IncrementSequenceNum: true,
-		Operations: []txnbuild.Operation{&txnbuild.CreateAccount{
-			SourceAccount: funderAddr.String(),
-			Destination:   account.String(),
-			Amount:        startingBalance,
-		}},
-		BaseFee:       txnbuild.MinBaseFee,
-		Preconditions: txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
-	})
-	if err != nil {
-		return err
-	}
-	rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, *funderAddr, tx)
-	if err != nil {
-		return err
-	}
-	result, err := s.Submit(ctx, &PreparedSubmission{RawTransaction: rawTransaction, TransactionHash: &txHash})
-	if err != nil {
-		return fmt.Errorf("failed to submit account funding transaction for %s: %w", account, err)
-	}
-	if result.TxHash == nil {
-		return i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
-	}
-	return s.fundingConfirmationRetry.Do(ctx, func(attempt int) (bool, error) {
-		txResult, err := s.ptm.baseLedger.GetTransactionResult(ctx, *result.TxHash)
-		if err != nil {
-			return true, err
+
+	// Multiple channel-account pools can need bootstrapping from the SAME funder identity at the
+	// same time (e.g. a deploy's own identity plus a fresh per-deploy nonce identity - see
+	// AssignOrderingKeys' own doc comment) with no in-process coordination over the funder's
+	// sequence number. Two concurrent submissions built from the same "current sequence" collide.
+	// stellar-rpc only synchronously rejects (txBAD_SEQ, Submit's own SubmissionOutcomeNonceTooLow
+	// translation) a submission whose sequence is ALREADY stale against its current ledger view -
+	// if both submissions are built before either has been included in a ledger, both look valid at
+	// submission time and are accepted as pending; the eventual loser is then silently dropped from
+	// the mempool once the winner's inclusion advances the funder's sequence, never surfacing as a
+	// rejection, only as a confirmation that never arrives. So rebuilding has to be driven by BOTH
+	// an outright submission rejection AND a confirmation that doesn't show up in time - reproduced
+	// by TestStellarEnsureAccountFundedDoesNotRetryOnBadSeq (rejection case) and
+	// TestStellarEnsureAccountFundedRebuildsWhenConfirmationNeverArrives (silently-lost case).
+	return s.fundingRebuildRetry.Do(ctx, func(attempt int) (bool, error) {
+		if _, err := s.ptm.baseLedger.GetAccountInfo(ctx, account); err == nil {
+			// Created either by an earlier attempt of this same loop, or by a concurrent bootstrap
+			// of the same account, since we last checked.
+			return false, nil
 		}
-		if !txResult.Success {
-			return false, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreTransactionFailed, *result.TxHash)
+
+		funderInfo, err := s.ptm.baseLedger.GetAccountInfo(ctx, *funderAddr)
+		if err != nil {
+			return true, fmt.Errorf("failed to look up channel account funder %s: %w", funderAddr, err)
+		}
+		if funderInfo.OrderingKey == nil {
+			return false, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+		}
+		funderAccount := txnbuild.NewSimpleAccount(funderAddr.String(), int64(funderInfo.OrderingKey.Uint64())-1) //nolint:gosec // sequence numbers are always positive
+		tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+			SourceAccount:        &funderAccount,
+			IncrementSequenceNum: true,
+			Operations: []txnbuild.Operation{&txnbuild.CreateAccount{
+				SourceAccount: funderAddr.String(),
+				Destination:   account.String(),
+				Amount:        startingBalance,
+			}},
+			BaseFee:       txnbuild.MinBaseFee,
+			Preconditions: txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
+		})
+		if err != nil {
+			return false, err
+		}
+		rawTransaction, txHash, err := s.signAndSerializeStellarTx(ctx, *funderAddr, tx)
+		if err != nil {
+			return false, err
+		}
+		result, err := s.Submit(ctx, &PreparedSubmission{RawTransaction: rawTransaction, TransactionHash: &txHash})
+		if err != nil {
+			return true, fmt.Errorf("failed to submit account funding transaction for %s: %w", account, err)
+		}
+		if result.Outcome == SubmissionOutcomeNonceTooLow {
+			return true, fmt.Errorf("account funding transaction for %s rejected: funder %s sequence number already used by a concurrent submission", account, funderAddr)
+		}
+		if result.TxHash == nil {
+			return false, i18n.NewError(ctx, msgs.MsgInvalidStateMissingTXHash)
+		}
+
+		confirmErr := s.fundingConfirmationRetry.Do(ctx, func(attempt int) (bool, error) {
+			txResult, err := s.ptm.baseLedger.GetTransactionResult(ctx, *result.TxHash)
+			if err != nil {
+				return true, err
+			}
+			if !txResult.Success {
+				return false, i18n.NewError(ctx, msgs.MsgPublicTxMgrRestoreTransactionFailed, *result.TxHash)
+			}
+			return false, nil
+		})
+		if confirmErr != nil {
+			// Retryable: rebuild with a freshly-read funder sequence rather than continuing to poll
+			// a hash that may have been silently lost to a concurrent submission (see doc comment
+			// above).
+			return true, confirmErr
 		}
 		return false, nil
 	})

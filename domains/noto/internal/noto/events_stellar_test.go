@@ -94,6 +94,12 @@ func randStellarAddress(t *testing.T) string {
 	return addr
 }
 
+func scI128Val(amount int64) xdr.ScVal {
+	parts := xdr.Int128Parts{Hi: 0, Lo: xdr.Uint64(amount)} //nolint:gosec // test fixture, amount always non-negative
+	val, _ := xdr.NewScVal(xdr.ScValTypeScvI128, parts)
+	return val
+}
+
 func scAddressVal(t *testing.T, strkeyAddr string) xdr.ScVal {
 	t.Helper()
 	addr, err := scspec.AddressFromStrkey(strkeyAddr)
@@ -113,10 +119,13 @@ func TestStellarEventSelectorsMatchExpectedNames(t *testing.T) {
 	assert.Equal(t, stellarEventSelector("delegate_lock").String(), stellarDelegateLockSelector)
 	assert.Equal(t, stellarEventSelector("unlock").String(), stellarUnlockSelector)
 	assert.Equal(t, stellarEventSelector("cancel_unlock").String(), stellarCancelUnlockSelector)
+	assert.Equal(t, stellarEventSelector("deposit").String(), stellarDepositSelector)
+	assert.Equal(t, stellarEventSelector("withdraw").String(), stellarWithdrawSelector)
 	assert.NotEqual(t, stellarTransferSelector, stellarLockSelector)
 	assert.NotEqual(t, stellarLockSelector, stellarUnlockSelector)
 	assert.NotEqual(t, stellarPrepareUnlockSelector, stellarDelegateLockSelector)
 	assert.NotEqual(t, stellarUnlockSelector, stellarCancelUnlockSelector)
+	assert.NotEqual(t, stellarDepositSelector, stellarWithdrawSelector)
 }
 
 func TestDecodeStellarTransferEvent(t *testing.T) {
@@ -342,6 +351,69 @@ func TestDecodeStellarCancelUnlockEvent(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("cancel_unlock"), scBytes32Val(lockID)}, scVecVal(scBytes32Val(txID)))}
 		_, err := decodeStellarCancelUnlockEvent(ctx, ev)
+		assert.ErrorContains(t, err, "expected 4 elements")
+	})
+}
+
+func TestDecodeStellarDepositEvent(t *testing.T) {
+	ctx := context.Background()
+	txID := randBytes32(t)
+	from := randStellarAddress(t)
+	output := randBytes32(t)
+	data := []byte{0x0a}
+
+	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
+		[]xdr.ScVal{scSymbol("deposit"), scBytes32Val(txID)},
+		scVecVal(scAddressVal(t, from), scI128Val(1000), scBytes32VecVal(output), scBytesVal(data)),
+	)}
+	got, err := decodeStellarDepositEvent(ctx, ev)
+	require.NoError(t, err)
+	assert.Equal(t, txID, got.TxId)
+	assert.Equal(t, from, got.From)
+	assert.Equal(t, int64(1000), got.Amount.Int64())
+	assert.Equal(t, []pldtypes.Bytes32{output}, got.Outputs)
+	assert.Equal(t, pldtypes.HexBytes(data), got.Data)
+
+	t.Run("data vec wrong length", func(t *testing.T) {
+		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
+			[]xdr.ScVal{scSymbol("deposit"), scBytes32Val(txID)}, scVecVal(scAddressVal(t, from)))}
+		_, err := decodeStellarDepositEvent(ctx, ev)
+		assert.ErrorContains(t, err, "expected 4 elements")
+	})
+
+	t.Run("amount not an i128", func(t *testing.T) {
+		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
+			[]xdr.ScVal{scSymbol("deposit"), scBytes32Val(txID)},
+			scVecVal(scAddressVal(t, from), scBytesVal([]byte{0x01}), scBytes32VecVal(output), scBytesVal(data)),
+		)}
+		_, err := decodeStellarDepositEvent(ctx, ev)
+		assert.ErrorContains(t, err, "amount")
+	})
+}
+
+func TestDecodeStellarWithdrawEvent(t *testing.T) {
+	ctx := context.Background()
+	txID := randBytes32(t)
+	recipient := randStellarAddress(t)
+	input := randBytes32(t)
+	data := []byte{0x0b}
+
+	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
+		[]xdr.ScVal{scSymbol("withdraw"), scBytes32Val(txID)},
+		scVecVal(scAddressVal(t, recipient), scI128Val(500), scBytes32VecVal(input), scBytesVal(data)),
+	)}
+	got, err := decodeStellarWithdrawEvent(ctx, ev)
+	require.NoError(t, err)
+	assert.Equal(t, txID, got.TxId)
+	assert.Equal(t, recipient, got.Recipient)
+	assert.Equal(t, int64(500), got.Amount.Int64())
+	assert.Equal(t, []pldtypes.Bytes32{input}, got.Inputs)
+	assert.Equal(t, pldtypes.HexBytes(data), got.Data)
+
+	t.Run("data vec wrong length", func(t *testing.T) {
+		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
+			[]xdr.ScVal{scSymbol("withdraw"), scBytes32Val(txID)}, scVecVal(scAddressVal(t, recipient)))}
+		_, err := decodeStellarWithdrawEvent(ctx, ev)
 		assert.ErrorContains(t, err, "expected 4 elements")
 	})
 }

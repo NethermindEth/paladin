@@ -406,6 +406,10 @@ type NotoStellarDomainConfig struct {
 	// are deliberately not the same address as RegistryAddress above.
 	SnotoFactoryAddress string
 	SnotoWasmHash       string
+	// SacAddress is domains/noto/pkg/types.DomainConfig's StellarSacAddress - optional, left empty
+	// unless a test backs deposit/withdraw with a real issued asset (see that field's own doc
+	// comment for the "harmless inert placeholder" fallback when unset).
+	SacAddress string
 }
 
 // ABI for the config field in the PaladinRegisterSmartContract_V0 event

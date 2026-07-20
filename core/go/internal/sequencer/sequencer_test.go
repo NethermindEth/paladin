@@ -18,6 +18,7 @@ package sequencer
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -388,6 +389,72 @@ func TestSequencerManager_evaluateDeployment_ResumeProceedsWhenNotYetDispatched(
 
 	err := sm.evaluateDeployment(ctx, mockDomain, tx, true)
 	require.NoError(t, err)
+}
+
+// TestSequencerManager_evaluateDeployment_ConcurrentResumeDoubleSubmits reproduces a live failure
+// against a genuinely cold-started Stellar network: pollForIncompleteTransactions's periodic/
+// startup scan (meant for genuine crash recovery, per its own doc comment) can pick up a deploy
+// transaction that's simply still in-flight in THIS process (e.g. still waiting on Stellar's
+// channel-account funding inside ValidateTransaction), not actually stuck. The existing resume
+// guard (ResumeSkipsAlreadyDispatched above) only helps once the original attempt has reached
+// PersistDeployDispatchBatch; before that, QueryPublicTxForTransactions still returns empty, so
+// the resumed attempt proceeds to independently re-run PrepareDeploy+ValidateTransaction
+// concurrently with the still-running original - fine for EVM's idempotent-ish CREATE, but fatal
+// for Soroban's create_contract_with_constructor (deterministic deployer+salt address), observed
+// live as "contract already exists".
+func TestSequencerManager_evaluateDeployment_ConcurrentResumeDoubleSubmits(t *testing.T) {
+	ctx := context.Background()
+	mocks := newSequencerLifecycleTestMocks(t)
+	sm := newSequencerManagerForTesting(t, mocks)
+
+	mockDomain := componentsmocks.NewDomain(t)
+	tx := goodDeployTxForEvaluate()
+	from := pldtypes.RandAddress()
+
+	mockDomain.EXPECT().PrepareDeploy(ctx, tx).Return(nil)
+	mocks.keyManager.EXPECT().ResolveEthAddressBatchNewDatabaseTX(ctx, []string{"signer"}).Return([]*pldtypes.EthAddress{from}, nil)
+	// The resume's own guard check: still empty, since the original hasn't persisted a dispatch
+	// yet (it's deliberately blocked inside ValidateTransaction below).
+	mocks.publicTxManager.EXPECT().QueryPublicTxForTransactions(ctx, mock.Anything, []uuid.UUID{tx.ID}, mock.Anything).
+		Return(map[uuid.UUID][]*pldapi.PublicTx{}, nil).Once()
+
+	originalStarted := make(chan struct{})
+	releaseOriginal := make(chan struct{})
+	var mu sync.Mutex
+	validateCalls := 0
+	mocks.publicTxManager.EXPECT().ValidateTransaction(ctx, nil, mock.Anything).RunAndReturn(
+		func(_ context.Context, _ persistence.DBTX, _ *components.PublicTxSubmission) error {
+			mu.Lock()
+			validateCalls++
+			first := validateCalls == 1
+			mu.Unlock()
+			if first {
+				close(originalStarted)
+				<-releaseOriginal
+			}
+			return nil
+		},
+	)
+	mocks.syncPoints.EXPECT().PersistDeployDispatchBatch(ctx, mock.Anything, mock.Anything).Return(nil)
+
+	var originalErr, resumedErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		originalErr = sm.evaluateDeployment(ctx, mockDomain, tx, false)
+	}()
+	go func() {
+		defer wg.Done()
+		<-originalStarted
+		resumedErr = sm.evaluateDeployment(ctx, mockDomain, tx, true)
+		close(releaseOriginal)
+	}()
+	wg.Wait()
+
+	require.NoError(t, originalErr)
+	require.NoError(t, resumedErr)
+	assert.Equal(t, 1, validateCalls, "expected the resumed attempt to detect the original still in-flight in this process and skip, not double-submit")
 }
 
 func TestSequencerManager_revertDeploy_FinalizeRetry(t *testing.T) {

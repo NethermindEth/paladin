@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math/big"
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
@@ -51,6 +52,8 @@ var (
 	stellarDelegateLockSelector  = stellarEventSelector("delegate_lock").String()
 	stellarUnlockSelector        = stellarEventSelector("unlock").String()
 	stellarCancelUnlockSelector  = stellarEventSelector("cancel_unlock").String()
+	stellarDepositSelector       = stellarEventSelector("deposit").String()
+	stellarWithdrawSelector      = stellarEventSelector("withdraw").String()
 )
 
 // stellarEventPayload mirrors the JSON shape delivered in ev.DataJson for a Stellar event
@@ -67,8 +70,6 @@ type stellarEventPayload struct {
 
 // handleStellarEventV1 is the Stellar counterpart to handleV1Event's EVM `switch
 // ev.SoliditySignature` - dispatches by raw selector (ev.Signature) onto SNoto's on-chain events.
-// deposit/withdraw are deliberately not handled here yet - see this domain's own tracked
-// follow-up work.
 func (n *Noto) handleStellarEventV1(ctx context.Context, ev *prototk.OnChainEvent, res *prototk.HandleEventBatchResponse, req *prototk.HandleEventBatchRequest, useNullifier bool, smtForStates *smt.MerkleTreeSpec) error {
 	switch ev.Signature {
 	case stellarTransferSelector:
@@ -124,6 +125,24 @@ func (n *Noto) handleStellarEventV1(ctx context.Context, ev *prototk.OnChainEven
 		}
 		log.L(ctx).Infof("Processing 'cancel_unlock' event in batch %s", req.BatchId)
 		return n.applyLockSpentOrCancelledEvent(ctx, ev, lockCancelled, res, req)
+
+	case stellarDepositSelector:
+		deposit, err := decodeStellarDepositEvent(ctx, ev)
+		if err != nil {
+			log.L(ctx).Warnf("Ignoring malformed deposit event in batch %s: %s", req.BatchId, err)
+			return nil
+		}
+		log.L(ctx).Infof("Processing 'deposit' event in batch %s", req.BatchId)
+		return n.applyStellarDepositEvent(ctx, ev, deposit, res)
+
+	case stellarWithdrawSelector:
+		withdraw, err := decodeStellarWithdrawEvent(ctx, ev)
+		if err != nil {
+			log.L(ctx).Warnf("Ignoring malformed withdraw event in batch %s: %s", req.BatchId, err)
+			return nil
+		}
+		log.L(ctx).Infof("Processing 'withdraw' event in batch %s", req.BatchId)
+		return n.applyStellarWithdrawEvent(ctx, ev, withdraw, res)
 
 	default:
 		log.L(ctx).Infof("Skipping '%s' event in batch %s", ev.Signature, req.BatchId)
@@ -548,4 +567,161 @@ func decodeStellarCancelUnlockEvent(ctx context.Context, ev *prototk.OnChainEven
 		Outputs: cancelOutputs,
 		TxData:  data,
 	}, nil
+}
+
+// scValToI128 expects an I128 ScVal (SNoto's deposit/withdraw "amount" shape) - the inverse of
+// scValI128 (chainio_stellar.go). Amounts in this codebase are always non-negative (validated
+// on-chain via `amount <= 0` panics), so Hi is always itself non-negative.
+func scValToI128(val xdr.ScVal) (*big.Int, error) {
+	if val.Type != xdr.ScValTypeScvI128 || val.I128 == nil {
+		return nil, fmt.Errorf("expected an I128 value")
+	}
+	result := new(big.Int).SetInt64(int64(val.I128.Hi))
+	result.Lsh(result, 64)
+	result.Or(result, new(big.Int).SetUint64(uint64(val.I128.Lo)))
+	return result, nil
+}
+
+// stellarDepositEvent/stellarWithdrawEvent are decoded shapes local to this file - unlike
+// transfer/lock/unlock/prepare_unlock/delegate_lock/cancel_unlock, deposit/withdraw have no EVM
+// equivalent at all (Stellar-only real SAC shield/unshield), so there's no existing EVM event
+// struct to decode into.
+type stellarDepositEvent struct {
+	TxId    pldtypes.Bytes32
+	From    string
+	Amount  *big.Int
+	Outputs []pldtypes.Bytes32
+	Data    pldtypes.HexBytes
+}
+
+type stellarWithdrawEvent struct {
+	TxId      pldtypes.Bytes32
+	Recipient string
+	Amount    *big.Int
+	Inputs    []pldtypes.Bytes32
+	Data      pldtypes.HexBytes
+}
+
+// decodeStellarDepositEvent decodes SNoto's on-chain `deposit` event (topics = ["deposit", tx_id],
+// data = vec![from, amount, outputs, data] - soroban/contracts/snoto/src/lib.rs's `Deposit`
+// struct).
+func decodeStellarDepositEvent(ctx context.Context, ev *prototk.OnChainEvent) (*stellarDepositEvent, error) {
+	payload, err := decodeStellarEventPayload(ev)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Topics) < 2 {
+		return nil, fmt.Errorf("expected at least 2 topics (symbol, tx_id), got %d", len(payload.Topics))
+	}
+	txIDVal, err := decodeStellarScVal(ctx, payload.Topics[1])
+	if err != nil {
+		return nil, fmt.Errorf("tx_id topic: %w", err)
+	}
+	txID, err := scValToBytes32(txIDVal)
+	if err != nil {
+		return nil, fmt.Errorf("tx_id topic: %w", err)
+	}
+
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	if err != nil {
+		return nil, err
+	}
+	from, err := scValToAddressString(vec[0])
+	if err != nil {
+		return nil, fmt.Errorf("event data[0] (from): %w", err)
+	}
+	amount, err := scValToI128(vec[1])
+	if err != nil {
+		return nil, fmt.Errorf("event data[1] (amount): %w", err)
+	}
+	outputs, err := scValToBytes32Vec(vec[2])
+	if err != nil {
+		return nil, fmt.Errorf("event data[2] (outputs): %w", err)
+	}
+	data, err := scValToBytes(vec[3])
+	if err != nil {
+		return nil, fmt.Errorf("event data[3] (data): %w", err)
+	}
+
+	return &stellarDepositEvent{
+		TxId:    txID,
+		From:    from,
+		Amount:  amount,
+		Outputs: outputs,
+		Data:    data,
+	}, nil
+}
+
+// decodeStellarWithdrawEvent decodes SNoto's on-chain `withdraw` event (topics = ["withdraw",
+// tx_id], data = vec![recipient, amount, inputs, data] - soroban/contracts/snoto/src/lib.rs's
+// `Withdraw` struct).
+func decodeStellarWithdrawEvent(ctx context.Context, ev *prototk.OnChainEvent) (*stellarWithdrawEvent, error) {
+	payload, err := decodeStellarEventPayload(ev)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Topics) < 2 {
+		return nil, fmt.Errorf("expected at least 2 topics (symbol, tx_id), got %d", len(payload.Topics))
+	}
+	txIDVal, err := decodeStellarScVal(ctx, payload.Topics[1])
+	if err != nil {
+		return nil, fmt.Errorf("tx_id topic: %w", err)
+	}
+	txID, err := scValToBytes32(txIDVal)
+	if err != nil {
+		return nil, fmt.Errorf("tx_id topic: %w", err)
+	}
+
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	if err != nil {
+		return nil, err
+	}
+	recipient, err := scValToAddressString(vec[0])
+	if err != nil {
+		return nil, fmt.Errorf("event data[0] (recipient): %w", err)
+	}
+	amount, err := scValToI128(vec[1])
+	if err != nil {
+		return nil, fmt.Errorf("event data[1] (amount): %w", err)
+	}
+	inputs, err := scValToBytes32Vec(vec[2])
+	if err != nil {
+		return nil, fmt.Errorf("event data[2] (inputs): %w", err)
+	}
+	data, err := scValToBytes(vec[3])
+	if err != nil {
+		return nil, fmt.Errorf("event data[3] (data): %w", err)
+	}
+
+	return &stellarWithdrawEvent{
+		TxId:      txID,
+		Recipient: recipient,
+		Amount:    amount,
+		Inputs:    inputs,
+		Data:      data,
+	}, nil
+}
+
+// applyStellarDepositEvent applies a decoded Deposit event to the batch response - a mint-shaped
+// confirmation (new outputs confirmed, nothing spent), no EVM counterpart to share with.
+func (n *Noto) applyStellarDepositEvent(ctx context.Context, ev *prototk.OnChainEvent, deposit *stellarDepositEvent, res *prototk.HandleEventBatchResponse) error {
+	txData, err := n.decodeTransactionDataV1(ctx, deposit.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, deposit.TxId, txData.InfoStates, res)
+	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(deposit.TxId, deposit.Outputs)...)
+	return nil
+}
+
+// applyStellarWithdrawEvent applies a decoded Withdraw event to the batch response - a burn-shaped
+// confirmation (inputs spent, nothing new confirmed), no EVM counterpart to share with.
+func (n *Noto) applyStellarWithdrawEvent(ctx context.Context, ev *prototk.OnChainEvent, withdraw *stellarWithdrawEvent, res *prototk.HandleEventBatchResponse) error {
+	txData, err := n.decodeTransactionDataV1(ctx, withdraw.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, withdraw.TxId, txData.InfoStates, res)
+	res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(withdraw.TxId, withdraw.Inputs)...)
+	return nil
 }

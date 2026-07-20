@@ -116,6 +116,21 @@ type LockParams struct {
 	Data   pldtypes.HexBytes    `json:"data"`
 }
 
+// DepositParams/WithdrawParams are Stellar-only (chapter 14 §14.1 / SNoto's real SAC shield/
+// unshield, soroban/contracts/snoto/src/lib.rs's deposit/withdraw) - no EVM equivalent exists,
+// unlike every other params struct in this file.
+type DepositParams struct {
+	From   string               `json:"from"` // chain-neutral lookup: real on-chain SAC source AND off-chain recipient of the new outputs
+	Amount *pldtypes.HexUint256 `json:"amount"`
+	Data   pldtypes.HexBytes    `json:"data"`
+}
+
+type WithdrawParams struct {
+	Recipient string               `json:"recipient"` // chain-neutral lookup: real on-chain SAC destination
+	Amount    *pldtypes.HexUint256 `json:"amount"`
+	Data      pldtypes.HexBytes    `json:"data"`
+}
+
 type PrepareUnlockParams struct {
 	UnlockParams
 	UnlockData pldtypes.HexBytes `json:"unlockData"`

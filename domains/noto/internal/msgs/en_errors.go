@@ -82,4 +82,5 @@ var (
 	MsgUnknownSignPayload                 = pde("PD200042", "Sign payload type '%s' not recognized")
 	MsgNullifierGenerationFailed          = pde("PD200043", "Failed to generate nullifier for coin")
 	MsgSignatureVerificationFailed        = pde("PD200044", "Signature for '%s' did not verify against expected verifier '%s'")
+	MsgOperationChainOnly                 = pde("PD200045", "'%s' is a %s-only operation")
 )

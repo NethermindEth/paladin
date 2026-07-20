@@ -37,6 +37,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/verifiers"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
+	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -149,10 +150,21 @@ func TestStellarComponentTest(t *testing.T) {
 	fixtures := loadStellarFixtures(t)
 	ctx := t.Context()
 
+	// The real SAC (Stellar Asset Contract) backing deposit/withdraw's shield/unshield must be
+	// derived and set BEFORE any node starts: StellarSacAddress is a per-node domain-plugin config
+	// value (domains/noto/pkg/types/config.go), applied to every SNoto instance that node ever
+	// deploys - unlike RegistryAddress/SnotoFactoryAddress it has no per-deploy-transaction
+	// equivalent a client could vary later. issuer/asset are otherwise entirely independent of any
+	// Paladin node (see stellar_asset_test.go's own doc comments).
+	issuer := generateAndFundIssuer(t)
+	sacAddress := deploySACForAsset(t, ctx, issuer, "USDX")
+	asset := &txnbuild.CreditAsset{Code: "USDX", Issuer: issuer.Address()}
+
 	domainConfig := &domains.NotoStellarDomainConfig{
 		RegistryAddress:     fixtures.SaladinFactoryAddress,
 		SnotoFactoryAddress: fixtures.SnotoFactoryAddress,
 		SnotoWasmHash:       fixtures.SnotoWasmHash,
+		SacAddress:          sacAddress,
 	}
 
 	// domainRegistryAddress (nil here) is the EVM-shaped parameter every other domainConfig case
@@ -375,4 +387,61 @@ func TestStellarComponentTest(t *testing.T) {
 	// analogous race for EVM and handles it the same way - by giving the restarted node comfortably
 	// more time than the internal resend interval, not by changing that interval itself.
 	waitForSuccessfulReceipt(t, ctx, party3.GetClient(), transferWhileDownTx.ID(), 60*time.Second)
+
+	// Custom asset trustlines live check (chapter 14 §14.1's deposit/withdraw prerequisite): proves
+	// core/go/pkg/baseledger/stellar/classic_ops.go's BuildChangeTrustPayload/
+	// EncodeClassicOperations/DecodeClassicOperations codec - fully implemented and unit-tested but,
+	// until now, never actually called by anything - round-trips correctly against a real Stellar
+	// classic ChangeTrust operation, signed by a genuine Paladin-managed identity via keymgr_sign
+	// (the only way to get such a signature: Paladin's own domain-transaction pipeline never
+	// constructs a classic operation itself). Deliberately runs LAST, after the restart/resync
+	// drill: it adds real wall-clock time and extra indexed ledgers (3 parties' friendbot funding,
+	// ChangeTrust, and Payment operations), which was found to erode the restart drill's own tight
+	// timing margin (see that drill's own comment on ReliableMessageResend) when run beforehand.
+	rpc, blClient := newStellarRPCClient(t, ctx)
+
+	for _, party := range []struct {
+		client   pldclient.PaladinClient
+		identity string
+	}{
+		{notary.GetClient(), notary.GetIdentity()},
+		{party2.GetClient(), party2.GetIdentity()},
+		{party3.GetClient(), party3.GetIdentity()},
+	} {
+		trustorAddr, err := party.client.PTX().ResolveVerifier(ctx, party.identity, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+		require.NoError(t, err)
+		chainAddr, err := pldtypes.NewStellarAccountAddress(trustorAddr)
+		require.NoError(t, err)
+
+		beforeStatus, err := blClient.CheckTrustline(ctx, chainAddr, asset)
+		require.NoError(t, err)
+		require.False(t, beforeStatus.Exists)
+
+		establishTrustlineAndFund(t, ctx, rpc, blClient, party.client, party.identity, asset, issuer, "1000")
+
+		afterStatus, err := blClient.CheckTrustline(ctx, chainAddr, asset)
+		require.NoError(t, err)
+		require.True(t, afterStatus.Exists)
+		require.True(t, afterStatus.Authorized)
+	}
+
+	// withdraw's own live test (chapter 14 C2) is NOT included here yet. Chaining a further
+	// Paladin-submitted base-ledger transaction (a second mint, or withdraw itself) after this
+	// trustline loop repeatedly hit the same symptom: a transaction confirmed via direct
+	// getTransaction RPC query against stellar_quickstart (status "SUCCESS") nonetheless never
+	// gets recognized as confirmed by Paladin's own public-tx-manager tracking loop, sitting in
+	// the "tracking" stage indefinitely (tested up to 3 minutes; the chain closes ledgers every
+	// ~1s, so this isn't simple pacing). It first appeared to correlate specifically with the raw
+	// classic ChangeTrust/Payment operations this loop submits directly via
+	// baseledgerstellar.Client.Submit (bypassing Paladin's own publictxmgr) - but a later plain
+	// rerun of this same test (unchanged, no new operations added) hit the identical symptom on
+	// its own, so the true trigger is unconfirmed: it may be that interaction, or it may be
+	// degradation on this session's local stellar_quickstart chain (177,000+ ledgers and growing
+	// across many hours/reruns) unrelated to this test's own content. Either way, it's not
+	// implicated in handler_withdraw.go/handler_deposit.go's own correctness - the transactions
+	// that hung were pre-existing, untouched code paths (mint/the trustline loop's own classic
+	// ops), never new deposit/withdraw code. Root-causing this (likely in
+	// core/go/internal/publictxmgr's Stellar tracking/polling path, or possibly just needing a
+	// fresh chain) is out of scope here - tracked as a separate follow-up, alongside the actual
+	// withdraw/deposit live-test once it's understood.
 }

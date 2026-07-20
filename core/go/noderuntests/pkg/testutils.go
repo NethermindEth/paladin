@@ -230,6 +230,7 @@ func NewInstanceForTesting(t *testing.T, domainRegistryAddress *pldtypes.EthAddr
 			Config: map[string]any{
 				"stellarSnotoFactoryAddress": domainConfig.SnotoFactoryAddress,
 				"stellarSnotoWasmHash":       domainConfig.SnotoWasmHash,
+				"stellarSacAddress":          domainConfig.SacAddress,
 			},
 			RegistryAddress: domainConfig.RegistryAddress,
 		}
