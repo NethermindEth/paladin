@@ -89,8 +89,19 @@ type chainIO interface {
 	EncodeLock(ctx context.Context, contract *ethtypes.Address0xHex, inputs, outputs []*types.NotoCoin, lockedOutputs []*types.NotoLockedCoin) (ethtypes.HexBytes0xPrefix, error)
 	EncodeUnlock(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs []*types.NotoLockedCoin, outputs []*types.NotoCoin) (ethtypes.HexBytes0xPrefix, error)
 	UnlockHashFromIDsV0(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs, outputs []string, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error)
-	UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (pldtypes.Bytes32, error)
-	EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.EthAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error)
+	// purpose distinguishes the spend-commitment vs cancel-commitment hash ("spend"/"cancel") -
+	// EVM's single EIP-712 "Unlock" type doesn't need the distinction (ignored there), but SNoto's
+	// on-chain check_commitment (soroban/contracts/snoto/src/lib.rs) uses two different type_names
+	// ("snoto.Unlock"/"snoto.CancelUnlock") for the identical UnlockPayload tuple shape.
+	// realContractID is the genuine deployed Soroban contract address (tx.Transaction.ContractInfo.
+	// ContractAddress) - ignored by evmChainIO (whose "contract" param above already is the real
+	// EVM address), but required by stellarChainIO since check_commitment recomputes this digest
+	// on-chain from current_contract_id(env) and must match byte-for-byte (unlike EncodeLock/
+	// EncodeUnlock's off-chain-only digests, which are safe with placeholderContractID).
+	UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes, purpose string, realContractID string) (pldtypes.Bytes32, error)
+	// delegate is chain-neutral (chapter 14 step 7) - evmChainIO derives the EVM address for its
+	// EIP-712 "address" field; stellarChainIO uses the StrKey string directly in its digest payload.
+	EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.ChainAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error)
 
 	// SelectFactoryABI/SelectInterfaceABI pick the on-chain contract build for deploy/invoke -
 	// today's factoryV0/V1/V2Build switch in PrepareDeploy and getInterfaceABI.

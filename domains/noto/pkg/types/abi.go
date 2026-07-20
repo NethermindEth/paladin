@@ -165,10 +165,10 @@ type PrepareBurnUnlockParams struct {
 }
 
 type DelegateLockParams struct {
-	LockID   pldtypes.Bytes32     `json:"lockId"`
-	Unlock   *UnlockPublicParams  `json:"unlock,omitempty"` // Required for V0, omitted for V1
-	Delegate *pldtypes.EthAddress `json:"delegate"`
-	Data     pldtypes.HexBytes    `json:"data"`
+	LockID   pldtypes.Bytes32    `json:"lockId"`
+	Unlock   *UnlockPublicParams `json:"unlock,omitempty"` // Required for V0, omitted for V1
+	Delegate string              `json:"delegate"`         // chain-neutral lookup, resolved in Assemble/Endorse (chapter 14 step 7)
+	Data     pldtypes.HexBytes   `json:"data"`
 }
 
 type UnlockRecipient struct {

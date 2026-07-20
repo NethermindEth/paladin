@@ -219,10 +219,16 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
         &lock_id,
         &spend_commitment,
         &cancel_commitment,
+        &Bytes::new(&env),
     );
 
     let satom_id = env.register(Contract, ());
-    snoto_client.delegate_lock(&BytesN::from_array(&env, &[106u8; 32]), &lock_id, &satom_id);
+    snoto_client.delegate_lock(
+        &BytesN::from_array(&env, &[106u8; 32]),
+        &lock_id,
+        &satom_id,
+        &Bytes::new(&env),
+    );
 
     let unlock_args = soroban_sdk::vec![
         &env,

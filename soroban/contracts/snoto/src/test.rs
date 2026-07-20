@@ -201,10 +201,11 @@ fn lock_lifecycle_spend() {
         &lock_id,
         &spend_commitment,
         &cancel_commitment,
+        &Bytes::new(&s.env),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
 
     client.unlock(
         &state_id(&s.env, 107),
@@ -297,12 +298,14 @@ fn lock_lifecycle_cancel() {
         &lock_id,
         &spend_commitment,
         &cancel_commitment,
+        &Bytes::new(&s.env),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
 
     client.cancel_unlock(
+        &state_id(&s.env, 108),
         &lock_id,
         &Vec::from_array(&s.env, [locked_output]),
         &Vec::from_array(&s.env, [cancel_output]),
@@ -351,10 +354,11 @@ fn unlock_rejects_wrong_preimage() {
         &lock_id,
         &spend_commitment,
         &cancel_commitment,
+        &Bytes::new(&s.env),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate);
+    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
 
     // Wrong output (doesn't match the committed spend_output) must be rejected.
     client.unlock(

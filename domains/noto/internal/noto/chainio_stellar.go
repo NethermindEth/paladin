@@ -317,16 +317,109 @@ func (s *stellarChainIO) EncodeUnlock(ctx context.Context, contract *ethtypes.Ad
 	return ethtypes.HexBytes0xPrefix(digest[:]), nil
 }
 
+// V0 is EVM-only (never extended to Stellar - decodeStellarConfig always sets NotoVariantV1), so
+// this stays a stub: nothing on the Stellar path ever calls it.
 func (s *stellarChainIO) UnlockHashFromIDsV0(ctx context.Context, contract *ethtypes.Address0xHex, lockedInputs, lockedOutputs, outputs []string, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return nil, fmt.Errorf("stellarChainIO: UnlockHashFromIDsV0 not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+	return nil, fmt.Errorf("stellarChainIO: UnlockHashFromIDsV0 not yet implemented (Stellar variant is always V1 - decodeStellarConfig)")
 }
 
-func (s *stellarChainIO) UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (pldtypes.Bytes32, error) {
-	return pldtypes.Bytes32{}, fmt.Errorf("stellarChainIO: UnlockHashFromIDsV1 not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+// unlockPayloadTypeName maps the shared "spend"/"cancel" purpose to the on-chain type_name
+// check_commitment (soroban/contracts/snoto/src/lib.rs) actually recomputes against - two
+// distinct names for the identical UnlockPayload(lock_id, locked_inputs, outputs, data) tuple
+// shape, matching unlock's "snoto.Unlock" vs cancel_unlock's "snoto.CancelUnlock" call sites.
+func unlockPayloadTypeName(purpose string) (string, error) {
+	switch purpose {
+	case "spend":
+		return "snoto.Unlock", nil
+	case "cancel":
+		return "snoto.CancelUnlock", nil
+	default:
+		return "", fmt.Errorf("stellarChainIO: unknown unlock commitment purpose %q", purpose)
+	}
 }
 
-func (s *stellarChainIO) EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.EthAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
-	return nil, fmt.Errorf("stellarChainIO: EncodeDelegateLock not yet implemented (mint-only walking skeleton, chapter 14 step 4)")
+// UnlockHashFromIDsV1 computes the spend_commitment/cancel_commitment SNoto's prepare_unlock
+// takes as direct BytesN<32> args - the real contract address is required here (not
+// placeholderContractID), since check_commitment recomputes this exact digest on-chain from
+// current_contract_id(env) and must match byte-for-byte.
+func (s *stellarChainIO) UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes, purpose string, realContractID string) (pldtypes.Bytes32, error) {
+	typeName, err := unlockPayloadTypeName(purpose)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	lockedInputsB32, err := parseBytes32List(ctx, lockedInputs)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	outputsB32, err := parseBytes32List(ctx, outputs)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	lockedInputsVal, err := scValBytes32Vec(lockedInputsB32)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	outputsVal, err := scValBytes32Vec(outputsB32)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	payload, err := scValVec([]xdr.ScVal{lockIDVal, lockedInputsVal, outputsVal, dataVal})
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	payloadXDR, err := marshalScVal(payload)
+	if err != nil {
+		return pldtypes.Bytes32{}, err
+	}
+	return saladintypes.DigestXDR(s.networkPassphrase, realContractID, typeName, payloadXDR)
+}
+
+// EncodeDelegateLock hashes (lockId, delegate, data) - the off-chain endorsement payload the
+// sender signs, exercised regardless of chain kind since Assemble/Endorse run unconditionally
+// (see this file's own doc comment). delegate is chain-neutral; its StrKey string form is used
+// directly (mirrors encodeCoinScVal's owner encoding), unlike EVM's raw "address" field.
+func (s *stellarChainIO) EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.ChainAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
+	contractID, err := placeholderContractID(contract)
+	if err != nil {
+		return nil, err
+	}
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return nil, err
+	}
+	var delegateStr string
+	if delegate != nil {
+		delegateStr = delegate.String()
+	}
+	delegateVal, err := scValString(delegateStr)
+	if err != nil {
+		return nil, err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := scValVec([]xdr.ScVal{lockIDVal, delegateVal, dataVal})
+	if err != nil {
+		return nil, err
+	}
+	payloadXDR, err := marshalScVal(payload)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := saladintypes.DigestXDR(s.networkPassphrase, contractID, "snoto.DelegateLock", payloadXDR)
+	if err != nil {
+		return nil, err
+	}
+	return ethtypes.HexBytes0xPrefix(digest[:]), nil
 }
 
 // SelectFactoryABI/SelectInterfaceABI are not applicable to Soroban at all - there's no ABI
@@ -500,6 +593,137 @@ func encodeSNotoUnlockArgs(txID, lockID pldtypes.Bytes32, lockedInputs, outputs 
 		"locked_inputs": bytes32Strings(lockedInputs),
 		"outputs":       bytes32Strings(outputs),
 		"data":          pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoCancelUnlockArgs builds the real Soroban call args for SNoto's
+// `cancel_unlock(tx_id, lock_id, locked_inputs, cancel_outputs, data)`
+// (soroban/contracts/snoto/src/lib.rs) - mirrors encodeSNotoUnlockArgs exactly (same shape, same
+// no-signature-slot reasoning: the cancel-commitment digest is recomputed on-chain from
+// (lock_id, locked_inputs, cancel_outputs, data) only, not passed in).
+func encodeSNotoCancelUnlockArgs(txID, lockID pldtypes.Bytes32, lockedInputs, cancelOutputs []pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	lockedInputsVal, err := scValBytes32Vec(lockedInputs)
+	if err != nil {
+		return nil, "", err
+	}
+	cancelOutputsVal, err := scValBytes32Vec(cancelOutputs)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, lockIDVal, lockedInputsVal, cancelOutputsVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":          txID.String(),
+		"lock_id":        lockID.String(),
+		"locked_inputs":  bytes32Strings(lockedInputs),
+		"cancel_outputs": bytes32Strings(cancelOutputs),
+		"data":           pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoPrepareUnlockArgs builds the real Soroban call args for SNoto's
+// `prepare_unlock(tx_id, lock_id, spend_commitment, cancel_commitment, data)`
+// (soroban/contracts/snoto/src/lib.rs) - locked_inputs/outputs aren't passed on-chain at all, only
+// baked into the commitment digests themselves (spendCommitment/cancelCommitment, computed via
+// UnlockHashFromIDsV1), mirroring EVM's own updateLock args shape.
+func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitment pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	spendCommitmentVal, err := scValBytes(spendCommitment[:])
+	if err != nil {
+		return nil, "", err
+	}
+	cancelCommitmentVal, err := scValBytes(cancelCommitment[:])
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, lockIDVal, spendCommitmentVal, cancelCommitmentVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":             txID.String(),
+		"lock_id":           lockID.String(),
+		"spend_commitment":  spendCommitment.String(),
+		"cancel_commitment": cancelCommitment.String(),
+		"data":              pldtypes.HexBytes(data).String(),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), string(argsJSONBytes), nil
+}
+
+// encodeSNotoDelegateLockArgs builds the real Soroban call args for SNoto's
+// `delegate_lock(tx_id, lock_id, delegate, data)` (soroban/contracts/snoto/src/lib.rs). delegate is
+// the resolved chain-neutral StrKey string (chapter 14 step 7's Delegate migration).
+func encodeSNotoDelegateLockArgs(txID, lockID pldtypes.Bytes32, delegate string, data []byte) (argsXDR []byte, argsJSON string, err error) {
+	txIDVal, err := scValBytes(txID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	lockIDVal, err := scValBytes(lockID[:])
+	if err != nil {
+		return nil, "", err
+	}
+	delegateVal, err := scValAddress(delegate)
+	if err != nil {
+		return nil, "", err
+	}
+	dataVal, err := scValBytes(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	args := xdr.ScVec{txIDVal, lockIDVal, delegateVal, dataVal}
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, args); err != nil {
+		return nil, "", err
+	}
+
+	argsJSONBytes, err := json.Marshal(map[string]any{
+		"tx_id":    txID.String(),
+		"lock_id":  lockID.String(),
+		"delegate": delegate,
+		"data":     pldtypes.HexBytes(data).String(),
 	})
 	if err != nil {
 		return nil, "", err

@@ -96,6 +96,11 @@ pub struct Lock {
     pub data: Bytes,
 }
 
+/// `data` carries Paladin's off-chain info-states manifest (encodeTransactionData), same role as
+/// transfer/lock/unlock's own `data` field - required so the Go event indexer can confirm the
+/// prepared lock's info states (chapter 14 step 7). Paladin's own state transition (the new
+/// LockInfo with spend/cancel commitments set) already happened off-chain during Assemble; nothing
+/// about `data` is checked on-chain here, mirroring lock/transfer/unlock's own opaque treatment.
 #[contractevent(topics = ["prepare_unlock"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrepareUnlock {
@@ -104,8 +109,10 @@ pub struct PrepareUnlock {
     pub tx_id: BytesN<32>,
     pub spend_commitment: BytesN<32>,
     pub cancel_commitment: BytesN<32>,
+    pub data: Bytes,
 }
 
+/// See `PrepareUnlock`'s own doc comment for why `data` is here too.
 #[contractevent(topics = ["delegate_lock"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DelegateLock {
@@ -113,6 +120,7 @@ pub struct DelegateLock {
     pub lock_id: BytesN<32>,
     pub tx_id: BytesN<32>,
     pub delegate: Address,
+    pub data: Bytes,
 }
 
 #[contractevent(topics = ["unlock"], data_format = "vec")]
@@ -126,11 +134,15 @@ pub struct Unlock {
     pub data: Bytes,
 }
 
+/// `tx_id` exists purely for Paladin's off-chain confirmation correlation, same reason `unlock`
+/// needed it added (see this module's own doc comment) - `lock_id` alone identifies the *lock*,
+/// not this specific cancel transaction.
 #[contractevent(topics = ["cancel_unlock"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CancelUnlock {
     #[topic]
     pub lock_id: BytesN<32>,
+    pub tx_id: BytesN<32>,
     pub locked_inputs: Vec<BytesN<32>>,
     pub cancel_outputs: Vec<BytesN<32>>,
     pub data: Bytes,
@@ -266,6 +278,7 @@ impl Contract {
         lock_id: BytesN<32>,
         spend_commitment: BytesN<32>,
         cancel_commitment: BytesN<32>,
+        data: Bytes,
     ) {
         let notary = storage::notary(&env);
         notary.require_auth();
@@ -284,11 +297,18 @@ impl Contract {
             tx_id,
             spend_commitment,
             cancel_commitment,
+            data,
         }
         .publish(&env);
     }
 
-    pub fn delegate_lock(env: Env, tx_id: BytesN<32>, lock_id: BytesN<32>, delegate: Address) {
+    pub fn delegate_lock(
+        env: Env,
+        tx_id: BytesN<32>,
+        lock_id: BytesN<32>,
+        delegate: Address,
+        data: Bytes,
+    ) {
         let mut lock = storage::get_lock(&env, &lock_id).unwrap_or_else(|| panic!("no such lock"));
         lock.delegate.require_auth();
         if lock.spend_commitment.is_none() || lock.cancel_commitment.is_none() {
@@ -302,6 +322,7 @@ impl Contract {
             lock_id,
             tx_id,
             delegate,
+            data,
         }
         .publish(&env);
     }
@@ -346,6 +367,7 @@ impl Contract {
 
     pub fn cancel_unlock(
         env: Env,
+        tx_id: BytesN<32>,
         lock_id: BytesN<32>,
         locked_inputs: Vec<BytesN<32>>,
         cancel_outputs: Vec<BytesN<32>>,
@@ -353,6 +375,7 @@ impl Contract {
     ) {
         let lock = storage::get_lock(&env, &lock_id).unwrap_or_else(|| panic!("no such lock"));
         lock.delegate.require_auth();
+        storage::mark_tx_used(&env, &tx_id);
 
         check_commitment(
             &env,
@@ -372,6 +395,7 @@ impl Contract {
 
         CancelUnlock {
             lock_id,
+            tx_id,
             locked_inputs,
             cancel_outputs,
             data,

@@ -24,6 +24,7 @@ import (
 
 	"github.com/LFDT-Paladin/paladin/common/go/pkg/log"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/scspec"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/smt"
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -44,9 +45,12 @@ func stellarEventSelector(topic0Symbol string) pldtypes.Bytes32 {
 // eventSignatures[EventTransfer] etc lookups, since Stellar events carry no SoliditySignature at
 // all (see handleV1Event's own doc comment on why this dispatch is by raw selector instead).
 var (
-	stellarTransferSelector = stellarEventSelector("transfer").String()
-	stellarLockSelector     = stellarEventSelector("lock").String()
-	stellarUnlockSelector   = stellarEventSelector("unlock").String()
+	stellarTransferSelector      = stellarEventSelector("transfer").String()
+	stellarLockSelector          = stellarEventSelector("lock").String()
+	stellarPrepareUnlockSelector = stellarEventSelector("prepare_unlock").String()
+	stellarDelegateLockSelector  = stellarEventSelector("delegate_lock").String()
+	stellarUnlockSelector        = stellarEventSelector("unlock").String()
+	stellarCancelUnlockSelector  = stellarEventSelector("cancel_unlock").String()
 )
 
 // stellarEventPayload mirrors the JSON shape delivered in ev.DataJson for a Stellar event
@@ -62,10 +66,9 @@ type stellarEventPayload struct {
 }
 
 // handleStellarEventV1 is the Stellar counterpart to handleV1Event's EVM `switch
-// ev.SoliditySignature` - dispatches by raw selector (ev.Signature) onto the three SNoto on-chain
-// events with complete, tested Stellar invoke code on both Go and Rust sides (chapter 14's scoped
-// slice: transfer/lock/unlock). prepare_unlock/delegate_lock/cancel_unlock/deposit/withdraw are
-// deliberately not handled here yet - see this domain's own tracked follow-up work.
+// ev.SoliditySignature` - dispatches by raw selector (ev.Signature) onto SNoto's on-chain events.
+// deposit/withdraw are deliberately not handled here yet - see this domain's own tracked
+// follow-up work.
 func (n *Noto) handleStellarEventV1(ctx context.Context, ev *prototk.OnChainEvent, res *prototk.HandleEventBatchResponse, req *prototk.HandleEventBatchRequest, useNullifier bool, smtForStates *smt.MerkleTreeSpec) error {
 	switch ev.Signature {
 	case stellarTransferSelector:
@@ -86,6 +89,24 @@ func (n *Noto) handleStellarEventV1(ctx context.Context, ev *prototk.OnChainEven
 		log.L(ctx).Infof("Processing 'lock' event in batch %s", req.BatchId)
 		return n.applyLockCreatedEvent(ctx, ev, lockCreated, res)
 
+	case stellarPrepareUnlockSelector:
+		lockUpdated, err := decodeStellarPrepareUnlockEvent(ctx, ev)
+		if err != nil {
+			log.L(ctx).Warnf("Ignoring malformed prepare_unlock event in batch %s: %s", req.BatchId, err)
+			return nil
+		}
+		log.L(ctx).Infof("Processing 'prepare_unlock' event in batch %s", req.BatchId)
+		return n.applyLockUpdatedEvent(ctx, ev, lockUpdated, res)
+
+	case stellarDelegateLockSelector:
+		lockDelegated, err := decodeStellarDelegateLockEvent(ctx, ev)
+		if err != nil {
+			log.L(ctx).Warnf("Ignoring malformed delegate_lock event in batch %s: %s", req.BatchId, err)
+			return nil
+		}
+		log.L(ctx).Infof("Processing 'delegate_lock' event in batch %s", req.BatchId)
+		return n.applyLockDelegatedEvent(ctx, ev, lockDelegated, res)
+
 	case stellarUnlockSelector:
 		lockSpent, err := decodeStellarUnlockEvent(ctx, ev)
 		if err != nil {
@@ -94,6 +115,15 @@ func (n *Noto) handleStellarEventV1(ctx context.Context, ev *prototk.OnChainEven
 		}
 		log.L(ctx).Infof("Processing 'unlock' event in batch %s", req.BatchId)
 		return n.applyLockSpentOrCancelledEvent(ctx, ev, lockSpent, res, req)
+
+	case stellarCancelUnlockSelector:
+		lockCancelled, err := decodeStellarCancelUnlockEvent(ctx, ev)
+		if err != nil {
+			log.L(ctx).Warnf("Ignoring malformed cancel_unlock event in batch %s: %s", req.BatchId, err)
+			return nil
+		}
+		log.L(ctx).Infof("Processing 'cancel_unlock' event in batch %s", req.BatchId)
+		return n.applyLockSpentOrCancelledEvent(ctx, ev, lockCancelled, res, req)
 
 	default:
 		log.L(ctx).Infof("Skipping '%s' event in batch %s", ev.Signature, req.BatchId)
@@ -160,6 +190,16 @@ func scValToBytes32Vec(val xdr.ScVal) ([]pldtypes.Bytes32, error) {
 		result[i] = b32
 	}
 	return result, nil
+}
+
+// scValToAddressString expects an Address ScVal (SNoto's delegate_lock "delegate" field shape),
+// decoding it to its StrKey string form - the chain-neutral representation, matching
+// stellarEventsJSON's "string" type declaration for this field (noto.go).
+func scValToAddressString(val xdr.ScVal) (string, error) {
+	if val.Type != xdr.ScValTypeScvAddress || val.Address == nil {
+		return "", fmt.Errorf("expected an Address value")
+	}
+	return scspec.AddressToStrkey(*val.Address)
 }
 
 // decodeStellarEventDataVec XDR-decodes ev.DataJson's "data" field (the full data_format="vec"
@@ -298,6 +338,107 @@ func decodeStellarLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*Not
 	}, nil
 }
 
+// decodeStellarPrepareUnlockEvent decodes SNoto's on-chain `prepare_unlock` event (topics =
+// ["prepare_unlock", lock_id], data = vec![tx_id, spend_commitment, cancel_commitment, data] -
+// soroban/contracts/snoto/src/lib.rs's `PrepareUnlock` struct) into the same NotoLockUpdated_Event
+// shape the EVM path produces, so applyLockUpdatedEvent can be shared unchanged.
+// spend_commitment/cancel_commitment are decoded (to validate the event's shape) but not carried
+// into NotoLockUpdated_Event - that struct has no field for them, since off-chain confirmation
+// bookkeeping never needs them (only unlock/cancel_unlock's own on-chain check_commitment
+// recomputes and checks them later). Owner/Contents/OldLockState/NewLockState are left nil/zero -
+// SNoto has no lock-info-state concept at all - applyLockUpdatedEvent's own guards make this safe.
+func decodeStellarPrepareUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockUpdated_Event, error) {
+	payload, err := decodeStellarEventPayload(ev)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Topics) < 2 {
+		return nil, fmt.Errorf("expected at least 2 topics (symbol, lock_id), got %d", len(payload.Topics))
+	}
+	lockIDVal, err := decodeStellarScVal(ctx, payload.Topics[1])
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+	lockID, err := scValToBytes32(lockIDVal)
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	if err != nil {
+		return nil, err
+	}
+	txID, err := scValToBytes32(vec[0])
+	if err != nil {
+		return nil, fmt.Errorf("event data[0] (tx_id): %w", err)
+	}
+	if _, err := scValToBytes32(vec[1]); err != nil {
+		return nil, fmt.Errorf("event data[1] (spend_commitment): %w", err)
+	}
+	if _, err := scValToBytes32(vec[2]); err != nil {
+		return nil, fmt.Errorf("event data[2] (cancel_commitment): %w", err)
+	}
+	data, err := scValToBytes(vec[3])
+	if err != nil {
+		return nil, fmt.Errorf("event data[3] (data): %w", err)
+	}
+
+	return &NotoLockUpdated_Event{
+		TxId:   txID,
+		LockID: lockID,
+		Data:   data,
+	}, nil
+}
+
+// decodeStellarDelegateLockEvent decodes SNoto's on-chain `delegate_lock` event (topics =
+// ["delegate_lock", lock_id], data = vec![tx_id, delegate, data] - soroban/contracts/snoto/src/
+// lib.rs's `DelegateLock` struct) into the same NotoLockDelegated_Event shape the EVM path
+// produces, so applyLockDelegatedEvent can be shared unchanged. delegate is decoded (to validate
+// the event's shape) but not carried into NotoLockDelegated_Event - PreviousSpender/NewSpender are
+// EVM-only *pldtypes.EthAddress fields (chapter 14 step 7's Delegate migration keeps them that way,
+// since they decode a real EVM event ABI); the Spender-field state transition already happened
+// off-chain during Assemble. OldLockState/NewLockState are left zero -
+// applyLockDelegatedEvent's own guards make this safe.
+func decodeStellarDelegateLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockDelegated_Event, error) {
+	payload, err := decodeStellarEventPayload(ev)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Topics) < 2 {
+		return nil, fmt.Errorf("expected at least 2 topics (symbol, lock_id), got %d", len(payload.Topics))
+	}
+	lockIDVal, err := decodeStellarScVal(ctx, payload.Topics[1])
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+	lockID, err := scValToBytes32(lockIDVal)
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 3)
+	if err != nil {
+		return nil, err
+	}
+	txID, err := scValToBytes32(vec[0])
+	if err != nil {
+		return nil, fmt.Errorf("event data[0] (tx_id): %w", err)
+	}
+	if _, err := scValToAddressString(vec[1]); err != nil {
+		return nil, fmt.Errorf("event data[1] (delegate): %w", err)
+	}
+	data, err := scValToBytes(vec[2])
+	if err != nil {
+		return nil, fmt.Errorf("event data[2] (data): %w", err)
+	}
+
+	return &NotoLockDelegated_Event{
+		TxId:   txID,
+		LockID: lockID,
+		Data:   data,
+	}, nil
+}
+
 // decodeStellarUnlockEvent decodes SNoto's on-chain `unlock` event (topics = ["unlock", lock_id],
 // data = vec![tx_id, locked_inputs, outputs, data] - soroban/contracts/snoto/src/lib.rs's `Unlock`
 // struct) into the same NotoLockSpentOrCancelled_Event shape the EVM path produces, so
@@ -351,6 +492,60 @@ func decodeStellarUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*N
 		LockID:  lockID,
 		Inputs:  lockedInputs,
 		Outputs: outputs,
+		TxData:  data,
+	}, nil
+}
+
+// decodeStellarCancelUnlockEvent decodes SNoto's on-chain `cancel_unlock` event (topics =
+// ["cancel_unlock", lock_id], data = vec![tx_id, locked_inputs, cancel_outputs, data] -
+// soroban/contracts/snoto/src/lib.rs's `CancelUnlock` struct) into the same
+// NotoLockSpentOrCancelled_Event shape decodeStellarUnlockEvent produces, so
+// applyLockSpentOrCancelledEvent can be shared unchanged - mirrors that decoder exactly (same
+// reasoning for tx_id living in the data vec, not the topic; same Spender/OldLockState nil/zero
+// treatment).
+func decodeStellarCancelUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockSpentOrCancelled_Event, error) {
+	payload, err := decodeStellarEventPayload(ev)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload.Topics) < 2 {
+		return nil, fmt.Errorf("expected at least 2 topics (symbol, lock_id), got %d", len(payload.Topics))
+	}
+	lockIDVal, err := decodeStellarScVal(ctx, payload.Topics[1])
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+	lockID, err := scValToBytes32(lockIDVal)
+	if err != nil {
+		return nil, fmt.Errorf("lock_id topic: %w", err)
+	}
+
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	if err != nil {
+		return nil, err
+	}
+	txID, err := scValToBytes32(vec[0])
+	if err != nil {
+		return nil, fmt.Errorf("event data[0] (tx_id): %w", err)
+	}
+	lockedInputs, err := scValToBytes32Vec(vec[1])
+	if err != nil {
+		return nil, fmt.Errorf("event data[1] (locked_inputs): %w", err)
+	}
+	cancelOutputs, err := scValToBytes32Vec(vec[2])
+	if err != nil {
+		return nil, fmt.Errorf("event data[2] (cancel_outputs): %w", err)
+	}
+	data, err := scValToBytes(vec[3])
+	if err != nil {
+		return nil, fmt.Errorf("event data[3] (data): %w", err)
+	}
+
+	return &NotoLockSpentOrCancelled_Event{
+		TxId:    txID,
+		LockID:  lockID,
+		Inputs:  lockedInputs,
+		Outputs: cancelOutputs,
 		TxData:  data,
 	}, nil
 }

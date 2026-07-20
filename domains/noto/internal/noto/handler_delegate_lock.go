@@ -44,16 +44,17 @@ func (h *delegateLockHandler) ValidateParams(ctx context.Context, config *types.
 	if config.IsV0() && delegateParams.Unlock == nil {
 		return nil, i18n.NewError(ctx, msgs.MsgParameterRequired, "unlock")
 	}
-	if delegateParams.Delegate.IsZero() {
+	if delegateParams.Delegate == "" {
 		return nil, i18n.NewError(ctx, msgs.MsgInvalidDelegate, delegateParams.Delegate)
 	}
 	return &delegateParams, nil
 }
 
 func (h *delegateLockHandler) Init(ctx context.Context, tx *types.ParsedTransaction, req *prototk.InitTransactionRequest) (*prototk.InitTransactionResponse, error) {
+	params := tx.Params.(*types.DelegateLockParams)
 	notary := tx.DomainConfig.NotaryLookup
 	return &prototk.InitTransactionResponse{
-		RequiredVerifiers: h.noto.ethAddressVerifiers(notary, tx.Transaction.From),
+		RequiredVerifiers: h.noto.ethAddressVerifiers(notary, tx.Transaction.From, params.Delegate),
 	}, nil
 }
 
@@ -65,6 +66,11 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 		return nil, err
 	}
 	notaryID, senderID := ids.notary, ids.sender
+
+	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", params.Delegate, req.ResolvedVerifiers)
+	if err != nil {
+		return nil, err
+	}
 
 	// Load the existing lock
 	var lockedInputStates []*prototk.StateRef // V0 only
@@ -95,7 +101,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 	var outputStates []*prototk.NewState
 	var lock *preparedLockInfo
 	if tx.DomainConfig.IsV0() {
-		lock, err = h.noto.prepareLockInfo_V0(params.LockID, &senderID.chainAddress, evmChainAddressPtr(params.Delegate), infoDistribution)
+		lock, err = h.noto.prepareLockInfo_V0(params.LockID, &senderID.chainAddress, &delegateID.chainAddress, infoDistribution)
 		if err == nil {
 			infoStates = append(infoStates, lock.state) // in V0 lock states were just published as info
 		}
@@ -103,7 +109,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 		newLock := *existingLock.lockInfo
 		newLock.Salt = pldtypes.RandBytes32()
 		newLock.Replaces = existingLock.id
-		newLock.Spender = evmChainAddressPtr(params.Delegate)
+		newLock.Spender = &delegateID.chainAddress
 		lock, err = h.noto.prepareLockInfo_V1(&newLock, identityList{notaryID, senderID})
 		if err == nil {
 			inputStates = append(inputStates, existingLock.stateRef)
@@ -116,7 +122,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 
 	// This approval may leak the requesting signing identity on-chain, if the data is empty/static.
 	// As apart from the 'data' (which is held off-chain in an info-state) all other parameters are written directly.
-	encodedApproval, err := h.noto.encodeDelegateLock(ctx, tx.ContractAddress, params.LockID, params.Delegate, params.Data)
+	encodedApproval, err := h.noto.encodeDelegateLock(ctx, tx.ContractAddress, params.LockID, &delegateID.chainAddress, params.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +179,13 @@ func (h *delegateLockHandler) Endorse(ctx context.Context, tx *types.ParsedTrans
 		return nil, err
 	}
 
+	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", params.Delegate, req.ResolvedVerifiers)
+	if err != nil {
+		return nil, err
+	}
+
 	// Notary checks the signature from the sender, then submits the transaction
-	encodedApproval, err := h.noto.encodeDelegateLock(ctx, tx.ContractAddress, params.LockID, params.Delegate, params.Data)
+	encodedApproval, err := h.noto.encodeDelegateLock(ctx, tx.ContractAddress, params.LockID, &delegateID.chainAddress, params.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +206,11 @@ func (h *delegateLockHandler) baseLedgerInvoke(ctx context.Context, tx *types.Pa
 	}
 
 	txData, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", inParams.Delegate, req.ResolvedVerifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +243,7 @@ func (h *delegateLockHandler) baseLedgerInvoke(ctx context.Context, tx *types.Pa
 		paramsJSON, err = json.Marshal(&NotoDelegateLock_V0_Params{
 			TxId:       req.Transaction.TransactionId,
 			UnlockHash: &unlockHashBytes32,
-			Delegate:   inParams.Delegate,
+			Delegate:   delegateID.address,
 			Signature:  signature.Payload,
 			Data:       txData,
 		})
@@ -243,7 +259,7 @@ func (h *delegateLockHandler) baseLedgerInvoke(ctx context.Context, tx *types.Pa
 			paramsJSON, err = json.Marshal(&DelegateLockParams{
 				LockID:       inParams.LockID,
 				DelegateArgs: delegateInputsEncoded,
-				NewSpender:   inParams.Delegate,
+				NewSpender:   delegateID.address,
 				Data:         txData,
 			})
 		}
@@ -266,6 +282,10 @@ func (h *delegateLockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTr
 	if err != nil {
 		return nil, err
 	}
+	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", inParams.Delegate, req.ResolvedVerifiers)
+	if err != nil {
+		return nil, err
+	}
 
 	encodedCall, err := baseTransaction.encode(ctx)
 	if err != nil {
@@ -274,7 +294,7 @@ func (h *delegateLockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTr
 	params := &ApproveUnlockHookParams{
 		Sender:   senderID.address,
 		LockID:   inParams.LockID,
-		Delegate: inParams.Delegate,
+		Delegate: delegateID.address,
 		Data:     inParams.Data,
 		Prepared: PreparedTransaction{
 			ContractAddress: (*pldtypes.EthAddress)(tx.ContractAddress),
@@ -299,7 +319,54 @@ func (h *delegateLockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTr
 	}, nil
 }
 
+// stellarBaseLedgerInvokeDelegateLock builds a real SorobanInvoke for SNoto's actual
+// `delegate_lock(tx_id, lock_id, delegate, data)` (chapter 13 §13.2). Only the V1+ path is
+// exercised, same as every other Stellar handler this phase - V0 never runs on Stellar
+// (decodeStellarConfig always sets NotoVariantV1), so ValidateParams's V0-only `params.Unlock`
+// requirement never applies here.
+func (h *delegateLockHandler) stellarBaseLedgerInvokeDelegateLock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	inParams := tx.Params.(*types.DelegateLockParams)
+
+	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", inParams.Delegate, req.ResolvedVerifiers)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	realContractID := tx.Transaction.ContractInfo.ContractAddress
+	argsXDR, argsJSON, err := encodeSNotoDelegateLockArgs(txID, inParams.LockID, delegateID.chainAddress.String(), data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   realContractID,
+					FunctionName: "delegate_lock",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *delegateLockHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvokeDelegateLock(ctx, tx, req)
+	}
+
 	baseTransaction, err := h.baseLedgerInvoke(ctx, tx, req)
 	if err != nil {
 		return nil, err

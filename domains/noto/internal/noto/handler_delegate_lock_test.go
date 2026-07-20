@@ -50,6 +50,7 @@ func TestDelegateLock(t *testing.T) {
 
 	notaryAddress := "0x1000000000000000000000000000000000000000"
 	delegateAddress := "0x2000000000000000000000000000000000000000"
+	delegateLookup := "delegate@node1"
 	senderKey, err := secp256k1.GenerateSecp256k1KeyPair()
 	require.NoError(t, err)
 
@@ -110,16 +111,17 @@ func TestDelegateLock(t *testing.T) {
 			"lockId": "%s",
 			"delegate": "%s",
 			"data": "0x1234"
-		}`, lockID, delegateAddress),
+		}`, lockID, delegateLookup),
 	}
 
 	initRes, err := n.InitTransaction(ctx, &prototk.InitTransactionRequest{
 		Transaction: tx,
 	})
 	require.NoError(t, err)
-	require.Len(t, initRes.RequiredVerifiers, 2)
+	require.Len(t, initRes.RequiredVerifiers, 3)
 	assert.Equal(t, "notary@node1", initRes.RequiredVerifiers[0].Lookup)
 	assert.Equal(t, "sender@node1", initRes.RequiredVerifiers[1].Lookup)
+	assert.Equal(t, delegateLookup, initRes.RequiredVerifiers[2].Lookup)
 
 	verifiers := []*prototk.ResolvedVerifier{
 		{
@@ -133,6 +135,12 @@ func TestDelegateLock(t *testing.T) {
 			Algorithm:    algorithms.ECDSA_SECP256K1,
 			VerifierType: verifiers.ETH_ADDRESS,
 			Verifier:     senderKey.Address.String(),
+		},
+		{
+			Lookup:       delegateLookup,
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+			Verifier:     delegateAddress,
 		},
 	}
 
@@ -153,7 +161,7 @@ func TestDelegateLock(t *testing.T) {
 	assert.Equal(t, "0x1234", outputInfo.Data.String())
 	lockInfoState := assembleRes.AssembledTransaction.OutputStates[0]
 
-	encodedDelegate, err := n.encodeDelegateLock(ctx, ethtypes.MustNewAddress(contractAddress), lockID, pldtypes.MustEthAddress(delegateAddress), pldtypes.MustParseHexBytes("0x1234"))
+	encodedDelegate, err := n.encodeDelegateLock(ctx, ethtypes.MustNewAddress(contractAddress), lockID, evmChainAddressPtr(pldtypes.MustEthAddress(delegateAddress)), pldtypes.MustParseHexBytes("0x1234"))
 	require.NoError(t, err)
 	signature, err := senderKey.SignDirect(encodedDelegate)
 	require.NoError(t, err)
@@ -347,6 +355,7 @@ func TestDelegateLock_V0(t *testing.T) {
 
 	notaryAddress := "0x1000000000000000000000000000000000000000"
 	delegateAddress := "0x2000000000000000000000000000000000000000"
+	delegateLookup := "delegate@node1"
 	senderKey, err := secp256k1.GenerateSecp256k1KeyPair()
 	require.NoError(t, err)
 
@@ -392,16 +401,17 @@ func TestDelegateLock_V0(t *testing.T) {
 			},
 			"delegate": "%s",
 			"data": "0x1234"
-		}`, lockID, inputCoin.ID, delegateAddress),
+		}`, lockID, inputCoin.ID, delegateLookup),
 	}
 
 	initRes, err := n.InitTransaction(ctx, &prototk.InitTransactionRequest{
 		Transaction: tx,
 	})
 	require.NoError(t, err)
-	require.Len(t, initRes.RequiredVerifiers, 2)
+	require.Len(t, initRes.RequiredVerifiers, 3)
 	assert.Equal(t, "notary@node1", initRes.RequiredVerifiers[0].Lookup)
 	assert.Equal(t, "sender@node1", initRes.RequiredVerifiers[1].Lookup)
+	assert.Equal(t, delegateLookup, initRes.RequiredVerifiers[2].Lookup)
 
 	verifiers := []*prototk.ResolvedVerifier{
 		{
@@ -415,6 +425,12 @@ func TestDelegateLock_V0(t *testing.T) {
 			Algorithm:    algorithms.ECDSA_SECP256K1,
 			VerifierType: verifiers.ETH_ADDRESS,
 			Verifier:     senderKey.Address.String(),
+		},
+		{
+			Lookup:       delegateLookup,
+			Algorithm:    algorithms.ECDSA_SECP256K1,
+			VerifierType: verifiers.ETH_ADDRESS,
+			Verifier:     delegateAddress,
 		},
 	}
 
@@ -441,7 +457,7 @@ func TestDelegateLock_V0(t *testing.T) {
 	assert.Equal(t, lockID, lockInfo.LockID)
 	assert.Equal(t, []string{"notary@node1", "sender@node1"}, assembleRes.AssembledTransaction.InfoStates[1].DistributionList)
 
-	encodedLock, err := n.encodeDelegateLock(ctx, ethtypes.MustNewAddress(contractAddress), lockID, pldtypes.MustEthAddress(delegateAddress), pldtypes.MustParseHexBytes("0x1234"))
+	encodedLock, err := n.encodeDelegateLock(ctx, ethtypes.MustNewAddress(contractAddress), lockID, evmChainAddressPtr(pldtypes.MustEthAddress(delegateAddress)), pldtypes.MustParseHexBytes("0x1234"))
 	require.NoError(t, err)
 	signature, err := senderKey.SignDirect(encodedLock)
 	require.NoError(t, err)

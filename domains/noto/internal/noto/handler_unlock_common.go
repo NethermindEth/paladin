@@ -224,11 +224,12 @@ func (h *lockCommon) buildPrepareUnlockParams(ctx context.Context, tx *types.Par
 	var cancelCommitment pldtypes.Bytes32
 	var updateLockArgs []byte
 
-	spendCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedInputs, useNullifiers), endorsableStateIDs(ctx, spendOutputs, false), spendData)
+	realContractID := tx.Transaction.ContractInfo.ContractAddress
+	spendCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedInputs, useNullifiers), endorsableStateIDs(ctx, spendOutputs, false), spendData, "spend", realContractID)
 	if err != nil {
 		return nil, err
 	}
-	cancelCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedInputs, useNullifiers), endorsableStateIDs(ctx, cancelOutputs, false), cancelData)
+	cancelCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedInputs, useNullifiers), endorsableStateIDs(ctx, cancelOutputs, false), cancelData, "cancel", realContractID)
 	if err != nil {
 		return nil, err
 	}
@@ -306,11 +307,12 @@ func (h *lockCommon) buildCreateLockParams(ctx context.Context, tx *types.Parsed
 	var cancelCommitment pldtypes.Bytes32
 	var createLockArgs []byte
 
-	spendCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedOutputs, false), endorsableStateIDs(ctx, spendOutputs, false), spendData)
+	realContractID := tx.Transaction.ContractInfo.ContractAddress
+	spendCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedOutputs, false), endorsableStateIDs(ctx, spendOutputs, false), spendData, "spend", realContractID)
 	if err != nil {
 		return nil, err
 	}
-	cancelCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedOutputs, false), endorsableStateIDs(ctx, cancelOutputs, false), cancelData)
+	cancelCommitment, err = h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, lockID, spendTxId.String(), endorsableStateIDs(ctx, lockedOutputs, false), endorsableStateIDs(ctx, cancelOutputs, false), cancelData, "cancel", realContractID)
 	if err != nil {
 		return nil, err
 	}

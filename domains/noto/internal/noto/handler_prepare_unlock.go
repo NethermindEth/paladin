@@ -353,7 +353,78 @@ func (h *prepareUnlockHandler) hookInvoke(ctx context.Context, tx *types.ParsedT
 	}, nil
 }
 
+// stellarBaseLedgerInvokePrepareUnlock builds a real SorobanInvoke for SNoto's actual
+// `prepare_unlock(tx_id, lock_id, spend_commitment, cancel_commitment, data)` (chapter 13 §13.2).
+// Only the V1+ (basic notary mode) lock-transition path is exercised, same as every other Stellar
+// handler this phase - V0 never runs on Stellar (decodeStellarConfig always sets NotoVariantV1).
+// spend_commitment/cancel_commitment are computed the same way buildPrepareUnlockParams computes
+// them for EVM's updateLock (same UnlockHashFromIDsV1 call, same lockTransition-derived
+// SpendTxId/SpendData/CancelData), just with the "spend"/"cancel" purpose distinguishing the two
+// on-chain type_names and the real contract address (not placeholderContractID) - see
+// UnlockHashFromIDsV1's own doc comment for why.
+func (h *prepareUnlockHandler) stellarBaseLedgerInvokePrepareUnlock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	inParams := tx.Params.(*types.PrepareUnlockParams)
+
+	senderID, err := h.noto.findEthAddressVerifier(ctx, "sender", tx.Transaction.From, req.ResolvedVerifiers)
+	if err != nil {
+		return nil, err
+	}
+
+	lockTransition, spendOutputs, cancelOutputs, err := h.noto.decodeV1LockTransitionWithOutputs(ctx, LOCK_UPDATE, senderID, &inParams.LockID, req.InputStates, req.OutputStates, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	lockedInputStates := h.noto.filterSchema(req.ReadStates, []string{h.noto.lockedCoinSchema.Id})
+	lockedInputs := endorsableStateIDs(ctx, lockedInputStates, false)
+	spendOutputIDs := endorsableStateIDs(ctx, spendOutputs, false)
+	cancelOutputIDs := endorsableStateIDs(ctx, cancelOutputs, false)
+
+	spendTxId := lockTransition.newLockInfo.SpendTxId
+	realContractID := tx.Transaction.ContractInfo.ContractAddress
+	spendCommitment, err := h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, inParams.LockID, spendTxId.String(), lockedInputs, spendOutputIDs, lockTransition.newLockInfo.SpendData, "spend", realContractID)
+	if err != nil {
+		return nil, err
+	}
+	cancelCommitment, err := h.noto.unlockHashFromIDs_V1(ctx, tx.ContractAddress, inParams.LockID, spendTxId.String(), lockedInputs, cancelOutputIDs, lockTransition.newLockInfo.CancelData, "cancel", realContractID)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
+	if err != nil {
+		return nil, err
+	}
+	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
+	if err != nil {
+		return nil, err
+	}
+
+	argsXDR, argsJSON, err := encodeSNotoPrepareUnlockArgs(txID, inParams.LockID, spendCommitment, cancelCommitment, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.PrepareTransactionResponse{
+		ChainTransaction: &prototk.PreparedChainTransaction{
+			Type: prototk.PreparedChainTransaction_PUBLIC,
+			Payload: &prototk.PreparedChainTransaction_Soroban{
+				Soroban: &prototk.SorobanInvoke{
+					ContractId:   realContractID,
+					FunctionName: "prepare_unlock",
+					ArgsXdr:      argsXDR,
+					ArgsJson:     argsJSON,
+				},
+			},
+		},
+	}, nil
+}
+
 func (h *prepareUnlockHandler) Prepare(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
+	if h.noto.getChainIO().ChainKind() == "stellar" {
+		return h.stellarBaseLedgerInvokePrepareUnlock(ctx, tx, req)
+	}
+
 	baseTransaction, err := h.baseLedgerInvoke(ctx, tx, req)
 	if err != nil {
 		return nil, err

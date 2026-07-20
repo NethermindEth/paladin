@@ -211,7 +211,7 @@ func (e *evmChainIO) UnlockHashFromIDsV0(ctx context.Context, contract *ethtypes
 	})
 }
 
-func (e *evmChainIO) UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (encoded pldtypes.Bytes32, err error) {
+func (e *evmChainIO) UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes, purpose string, realContractID string) (encoded pldtypes.Bytes32, err error) {
 	msg := map[string]any{
 		"txId":         txId,
 		"lockedInputs": stringToAny(lockedInputs),
@@ -232,14 +232,21 @@ func (e *evmChainIO) UnlockHashFromIDsV1(ctx context.Context, contract *ethtypes
 	return encoded, err
 }
 
-func (e *evmChainIO) EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.EthAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
+func (e *evmChainIO) EncodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.ChainAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
+	var delegateAddr *pldtypes.EthAddress
+	if delegate != nil {
+		var err error
+		if delegateAddr, err = delegate.EthAddress(); err != nil {
+			return nil, err
+		}
+	}
 	return eip712.EncodeTypedDataV4(ctx, &eip712.TypedData{
 		Types:       NotoDelegateLockTypeSet,
 		PrimaryType: "DelegateLock",
 		Domain:      e.eip712Domain(contract),
 		Message: map[string]any{
 			"lockId":   lockID,
-			"delegate": delegate,
+			"delegate": delegateAddr,
 			"data":     data,
 		},
 	})

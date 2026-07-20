@@ -110,14 +110,9 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		log.L(ctx).Infof("Processing '%s' event in batch %s", ev.SoliditySignature, req.BatchId)
 		var lockUpdated NotoLockUpdated_Event
 		if err := json.Unmarshal([]byte(ev.DataJson), &lockUpdated); err == nil {
-			txData, err := n.decodeTransactionDataV1(ctx, lockUpdated.Data)
-			if err != nil {
+			if err := n.applyLockUpdatedEvent(ctx, ev, &lockUpdated, res); err != nil {
 				return err
 			}
-			n.recordTransactionInfo(ev, lockUpdated.TxId, txData.InfoStates, res)
-			res.ReadStates = append(res.ReadStates, n.parseStatesFromEvent(lockUpdated.TxId, lockUpdated.Contents)...)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockUpdated.TxId, []pldtypes.Bytes32{lockUpdated.OldLockState})...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockUpdated.TxId, []pldtypes.Bytes32{lockUpdated.NewLockState})...)
 		} else {
 			log.L(ctx).Warnf("Ignoring malformed LockUpdated event in batch %s: %s", req.BatchId, err)
 		}
@@ -137,13 +132,9 @@ func (n *Noto) handleV1Event(ctx context.Context, ev *prototk.OnChainEvent, res 
 		log.L(ctx).Infof("Processing '%s' event in batch %s", ev.SoliditySignature, req.BatchId)
 		var lockDelegated NotoLockDelegated_Event
 		if err := json.Unmarshal([]byte(ev.DataJson), &lockDelegated); err == nil {
-			txData, err := n.decodeTransactionDataV1(ctx, lockDelegated.Data)
-			if err != nil {
+			if err := n.applyLockDelegatedEvent(ctx, ev, &lockDelegated, res); err != nil {
 				return err
 			}
-			n.recordTransactionInfo(ev, lockDelegated.TxId, txData.InfoStates, res)
-			res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockDelegated.TxId, []pldtypes.Bytes32{lockDelegated.OldLockState})...)
-			res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockDelegated.TxId, []pldtypes.Bytes32{lockDelegated.NewLockState})...)
 		} else {
 			log.L(ctx).Warnf("Ignoring malformed LockDelegated event in batch %s: %s", req.BatchId, err)
 		}
@@ -205,6 +196,56 @@ func (n *Noto) applyLockCreatedEvent(ctx context.Context, ev *prototk.OnChainEve
 	res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, lockCreated.Contents)...)
 	if !lockCreated.NewLockState.IsZero() {
 		res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockCreated.TxId, []pldtypes.Bytes32{lockCreated.NewLockState})...)
+	}
+	return nil
+}
+
+// applyLockUpdatedEvent applies a decoded LockUpdated event (EVM's updateLock/SNoto's
+// prepare_unlock) to the batch response. Shared between the EVM and Stellar dispatch paths - see
+// applyTransferEvent's comment for why the split exists.
+//
+// SNoto's on-chain PrepareUnlock event has no equivalent of EVM's "Contents"/"OldLockState"/
+// "NewLockState" fields (no lock-info-state concept at all on Stellar - the commitments live in
+// native contract storage keyed by lock_id, not a Paladin state), so a Stellar-decoded
+// NotoLockUpdated_Event leaves all three zero/empty-valued. Guarding on IsZero()/empty here (rather
+// than requiring Stellar's decoder to fabricate placeholder IDs) stops bogus all-zero state IDs
+// from being recorded as genuine states, mirroring applyLockCreatedEvent's own guard.
+func (n *Noto) applyLockUpdatedEvent(ctx context.Context, ev *prototk.OnChainEvent, lockUpdated *NotoLockUpdated_Event, res *prototk.HandleEventBatchResponse) error {
+	txData, err := n.decodeTransactionDataV1(ctx, lockUpdated.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, lockUpdated.TxId, txData.InfoStates, res)
+	if len(lockUpdated.Contents) > 0 {
+		res.ReadStates = append(res.ReadStates, n.parseStatesFromEvent(lockUpdated.TxId, lockUpdated.Contents)...)
+	}
+	if !lockUpdated.OldLockState.IsZero() {
+		res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockUpdated.TxId, []pldtypes.Bytes32{lockUpdated.OldLockState})...)
+	}
+	if !lockUpdated.NewLockState.IsZero() {
+		res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockUpdated.TxId, []pldtypes.Bytes32{lockUpdated.NewLockState})...)
+	}
+	return nil
+}
+
+// applyLockDelegatedEvent applies a decoded LockDelegated event (EVM's delegateLock/SNoto's
+// delegate_lock) to the batch response. Shared between the EVM and Stellar dispatch paths - see
+// applyTransferEvent's comment for why the split exists.
+//
+// OldLockState/NewLockState.IsZero() guard the same way applyLockUpdatedEvent's do: SNoto's
+// on-chain DelegateLock event has no lock-info-state ref equivalent, so a Stellar-decoded
+// NotoLockDelegated_Event leaves both zero-valued.
+func (n *Noto) applyLockDelegatedEvent(ctx context.Context, ev *prototk.OnChainEvent, lockDelegated *NotoLockDelegated_Event, res *prototk.HandleEventBatchResponse) error {
+	txData, err := n.decodeTransactionDataV1(ctx, lockDelegated.Data)
+	if err != nil {
+		return err
+	}
+	n.recordTransactionInfo(ev, lockDelegated.TxId, txData.InfoStates, res)
+	if !lockDelegated.OldLockState.IsZero() {
+		res.SpentStates = append(res.SpentStates, n.parseStatesFromEvent(lockDelegated.TxId, []pldtypes.Bytes32{lockDelegated.OldLockState})...)
+	}
+	if !lockDelegated.NewLockState.IsZero() {
+		res.ConfirmedStates = append(res.ConfirmedStates, n.parseStatesFromEvent(lockDelegated.TxId, []pldtypes.Bytes32{lockDelegated.NewLockState})...)
 	}
 	return nil
 }

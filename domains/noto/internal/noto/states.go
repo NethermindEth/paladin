@@ -679,11 +679,11 @@ func (n *Noto) unlockHashFromIDs_V0(ctx context.Context, contract *ethtypes.Addr
 	return n.getChainIO().UnlockHashFromIDsV0(ctx, contract, lockedInputs, lockedOutputs, outputs, data)
 }
 
-func (n *Noto) unlockHashFromIDs_V1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes) (pldtypes.Bytes32, error) {
-	return n.getChainIO().UnlockHashFromIDsV1(ctx, contract, lockID, txId, lockedInputs, outputs, data)
+func (n *Noto) unlockHashFromIDs_V1(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, txId string, lockedInputs, outputs []string, data pldtypes.HexBytes, purpose string, realContractID string) (pldtypes.Bytes32, error) {
+	return n.getChainIO().UnlockHashFromIDsV1(ctx, contract, lockID, txId, lockedInputs, outputs, data, purpose, realContractID)
 }
 
-func (n *Noto) encodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.EthAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
+func (n *Noto) encodeDelegateLock(ctx context.Context, contract *ethtypes.Address0xHex, lockID pldtypes.Bytes32, delegate *pldtypes.ChainAddress, data pldtypes.HexBytes) (ethtypes.HexBytes0xPrefix, error) {
 	return n.getChainIO().EncodeDelegateLock(ctx, contract, lockID, delegate, data)
 }
 

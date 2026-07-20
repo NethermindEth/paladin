@@ -257,6 +257,90 @@ func TestStellarComponentTest(t *testing.T) {
 	waitForSuccessfulReceipt(t, ctx, party2.GetClient(), transferTx.ID(), 30*time.Second)
 	waitForSuccessfulReceipt(t, ctx, party3.GetClient(), transferTx.ID(), 30*time.Second)
 
+	// Lock/prepareUnlock/delegateLock live check (chapter 14 step 7): proves
+	// stellarBaseLedgerInvokePrepareUnlock's spend/cancel commitment digests and
+	// stellarBaseLedgerInvokeDelegateLock's real on-chain call both encode correctly against SNoto's
+	// actual `prepare_unlock`/`delegate_lock` functions - only verifiable live, same as every other
+	// digest-matching risk this chapter has hit. Doesn't chain into an actual delegate-submitted
+	// unlock afterward: once delegateLock hands the lock to party3, SNoto's on-chain `unlock` would
+	// need party3.require_auth() satisfied by a non-invoker Soroban authorization entry - real
+	// second-signer support that doesn't exist yet (tracked separately, alongside deposit's own
+	// need for the same capability).
+	lockFn := types.NotoABI.Functions()["lock"]
+	require.NotNil(t, lockFn)
+	prepareUnlockFn := types.NotoABI.Functions()["prepareUnlock"]
+	require.NotNil(t, prepareUnlockFn)
+	delegateLockFn := types.NotoABI.Functions()["delegateLock"]
+	require.NotNil(t, delegateLockFn)
+
+	lockTx := party2.GetClient().ForABI(ctx, abi.ABI{lockFn}).
+		Private().
+		Domain("noto").
+		IdempotencyKey("lock1").
+		From(party2.GetIdentityLocator()).
+		ToChainAddress(contractAddress).
+		Function("lock").
+		Inputs(pldtypes.RawJSON(`{
+			"amount": "20",
+			"data": "0x"
+		}`)).
+		Send().Wait(60 * time.Second)
+	require.NoError(t, lockTx.Error())
+	waitForSuccessfulReceipt(t, ctx, notary.GetClient(), lockTx.ID(), 30*time.Second)
+	waitForSuccessfulReceipt(t, ctx, party2.GetClient(), lockTx.ID(), 30*time.Second)
+
+	lockDomainReceiptJSON, err := notary.GetClient().PTX().GetDomainReceipt(ctx, "noto", lockTx.ID())
+	require.NoError(t, err)
+	var lockDomainReceipt struct {
+		States struct {
+			LockedOutputs []struct {
+				Data struct {
+					LockID pldtypes.Bytes32 `json:"lockId"`
+				} `json:"data"`
+			} `json:"lockedOutputs"`
+		} `json:"states"`
+	}
+	require.NoError(t, json.Unmarshal(lockDomainReceiptJSON, &lockDomainReceipt))
+	require.Len(t, lockDomainReceipt.States.LockedOutputs, 1)
+	lockID := lockDomainReceipt.States.LockedOutputs[0].Data.LockID
+	require.False(t, lockID.IsZero())
+
+	prepareUnlockTx := party2.GetClient().ForABI(ctx, abi.ABI{prepareUnlockFn}).
+		Private().
+		Domain("noto").
+		IdempotencyKey("prepareUnlock1").
+		From(party2.GetIdentityLocator()).
+		ToChainAddress(contractAddress).
+		Function("prepareUnlock").
+		Inputs(pldtypes.RawJSON(`{
+			"lockId": "` + lockID.String() + `",
+			"from": "` + party2.GetIdentityLocator() + `",
+			"recipients": [{"to": "` + party3.GetIdentityLocator() + `", "amount": "20"}],
+			"unlockData": "0x",
+			"data": "0x"
+		}`)).
+		Send().Wait(60 * time.Second)
+	require.NoError(t, prepareUnlockTx.Error())
+	waitForSuccessfulReceipt(t, ctx, notary.GetClient(), prepareUnlockTx.ID(), 30*time.Second)
+	waitForSuccessfulReceipt(t, ctx, party2.GetClient(), prepareUnlockTx.ID(), 30*time.Second)
+
+	delegateLockTx := party2.GetClient().ForABI(ctx, abi.ABI{delegateLockFn}).
+		Private().
+		Domain("noto").
+		IdempotencyKey("delegateLock1").
+		From(party2.GetIdentityLocator()).
+		ToChainAddress(contractAddress).
+		Function("delegateLock").
+		Inputs(pldtypes.RawJSON(`{
+			"lockId": "` + lockID.String() + `",
+			"delegate": "` + party3.GetIdentityLocator() + `",
+			"data": "0x"
+		}`)).
+		Send().Wait(60 * time.Second)
+	require.NoError(t, delegateLockTx.Error())
+	waitForSuccessfulReceipt(t, ctx, notary.GetClient(), delegateLockTx.ID(), 30*time.Second)
+	waitForSuccessfulReceipt(t, ctx, party2.GetClient(), delegateLockTx.ID(), 30*time.Second)
+
 	// Restart/resync drill (mirrors coordinationtest's own stop/sleep/restart pattern): stop
 	// party3, send it a transfer while it's down, restart it, and confirm it catches up and gets
 	// a receipt via the same reliable-messaging/state-distribution machinery, proving this works
