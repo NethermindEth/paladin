@@ -12,14 +12,16 @@ use soroban_env_host::xdr::{ScBytes, ScString, ScSymbol, ScVal, ScVec, VecM};
 use crate::domain::decode_contract_address;
 
 pub fn encode_scval(value: &serde_json::Value) -> Result<ScVal, String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| format!("expected a tagged {{\"type\":...,\"value\":...}} object, got {value}"))?;
+    let obj = value.as_object().ok_or_else(|| {
+        format!("expected a tagged {{\"type\":...,\"value\":...}} object, got {value}")
+    })?;
     let ty = obj
         .get("type")
         .and_then(|v| v.as_str())
         .ok_or("tagged scval value missing \"type\"")?;
-    let val = obj.get("value").ok_or("tagged scval value missing \"value\"")?;
+    let val = obj
+        .get("value")
+        .ok_or("tagged scval value missing \"value\"")?;
     match ty {
         "void" => Ok(ScVal::Void),
         "bool" => val
@@ -30,33 +32,38 @@ pub fn encode_scval(value: &serde_json::Value) -> Result<ScVal, String> {
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .map(ScVal::U32)
-            .ok_or_else(|| format!("scval type \"u32\": expected a non-negative integer fitting u32, got {val}")),
+            .ok_or_else(|| {
+                format!(
+                    "scval type \"u32\": expected a non-negative integer fitting u32, got {val}"
+                )
+            }),
         "i32" => val
             .as_i64()
             .and_then(|n| i32::try_from(n).ok())
             .map(ScVal::I32)
-            .ok_or_else(|| format!("scval type \"i32\": expected an integer fitting i32, got {val}")),
+            .ok_or_else(|| {
+                format!("scval type \"i32\": expected an integer fitting i32, got {val}")
+            }),
         // u64/i64 accept either a JSON number or a decimal string, since a full-range u64/i64
         // doesn't always round-trip through JSON numbers cleanly.
-        "u64" => parse_u64(val)
-            .map(ScVal::U64)
-            .ok_or_else(|| format!("scval type \"u64\": expected an integer or decimal string, got {val}")),
-        "i64" => parse_i64(val)
-            .map(ScVal::I64)
-            .ok_or_else(|| format!("scval type \"i64\": expected an integer or decimal string, got {val}")),
+        "u64" => parse_u64(val).map(ScVal::U64).ok_or_else(|| {
+            format!("scval type \"u64\": expected an integer or decimal string, got {val}")
+        }),
+        "i64" => parse_i64(val).map(ScVal::I64).ok_or_else(|| {
+            format!("scval type \"i64\": expected an integer or decimal string, got {val}")
+        }),
         "symbol" => {
-            let s = val
-                .as_str()
-                .ok_or_else(|| format!("scval type \"symbol\": expected a JSON string, got {val}"))?;
-            Ok(ScVal::Symbol(ScSymbol(
-                s.try_into()
-                    .map_err(|_| format!("\"{s}\" is not a valid Soroban symbol"))?,
-            )))
+            let s = val.as_str().ok_or_else(|| {
+                format!("scval type \"symbol\": expected a JSON string, got {val}")
+            })?;
+            Ok(ScVal::Symbol(ScSymbol(s.try_into().map_err(|_| {
+                format!("\"{s}\" is not a valid Soroban symbol")
+            })?)))
         }
         "string" => {
-            let s = val
-                .as_str()
-                .ok_or_else(|| format!("scval type \"string\": expected a JSON string, got {val}"))?;
+            let s = val.as_str().ok_or_else(|| {
+                format!("scval type \"string\": expected a JSON string, got {val}")
+            })?;
             Ok(ScVal::String(ScString(
                 s.try_into()
                     .map_err(|_| "failed to build ScString".to_string())?,
@@ -65,9 +72,9 @@ pub fn encode_scval(value: &serde_json::Value) -> Result<ScVal, String> {
         // Hex-encoded, arbitrary length - covers both Bytes and BytesN<N> (the XDR wire shape is
         // identical; the fixed-size constraint is an SDK-side check, not a distinct ScVal variant).
         "bytes" => {
-            let s = val
-                .as_str()
-                .ok_or_else(|| format!("scval type \"bytes\": expected a hex JSON string, got {val}"))?;
+            let s = val.as_str().ok_or_else(|| {
+                format!("scval type \"bytes\": expected a hex JSON string, got {val}")
+            })?;
             let bytes = hex::decode(s.trim_start_matches("0x"))
                 .map_err(|e| format!("scval type \"bytes\": invalid hex \"{s}\": {e}"))?;
             Ok(ScVal::Bytes(ScBytes(
@@ -80,9 +87,9 @@ pub fn encode_scval(value: &serde_json::Value) -> Result<ScVal, String> {
         // cross-contract call argument needs; account addresses ("G...") aren't wired since nothing
         // in this chapter's exit criterion needs them yet.
         "address" => {
-            let s = val
-                .as_str()
-                .ok_or_else(|| format!("scval type \"address\": expected a contract strkey string, got {val}"))?;
+            let s = val.as_str().ok_or_else(|| {
+                format!("scval type \"address\": expected a contract strkey string, got {val}")
+            })?;
             Ok(ScVal::Address(soroban_env_host::xdr::ScAddress::Contract(
                 decode_contract_address(s)?,
             )))
@@ -95,20 +102,22 @@ pub fn encode_scval(value: &serde_json::Value) -> Result<ScVal, String> {
                 .iter()
                 .map(encode_scval)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(ScVal::Vec(Some(ScVec(VecM::try_from(encoded).map_err(
-                |_| "failed to build ScVec".to_string(),
-            )?))))
+            Ok(ScVal::Vec(Some(ScVec(
+                VecM::try_from(encoded).map_err(|_| "failed to build ScVec".to_string())?,
+            ))))
         }
         other => Err(format!("unsupported scval json type \"{other}\"")),
     }
 }
 
 fn parse_u64(val: &serde_json::Value) -> Option<u64> {
-    val.as_u64().or_else(|| val.as_str().and_then(|s| s.parse().ok()))
+    val.as_u64()
+        .or_else(|| val.as_str().and_then(|s| s.parse().ok()))
 }
 
 fn parse_i64(val: &serde_json::Value) -> Option<i64> {
-    val.as_i64().or_else(|| val.as_str().and_then(|s| s.parse().ok()))
+    val.as_i64()
+        .or_else(|| val.as_str().and_then(|s| s.parse().ok()))
 }
 
 #[cfg(test)]
@@ -131,7 +140,8 @@ mod tests {
             ScVal::U32(5)
         );
         assert_eq!(
-            encode_scval(&serde_json::json!({"type": "u64", "value": "18446744073709551615"})).unwrap(),
+            encode_scval(&serde_json::json!({"type": "u64", "value": "18446744073709551615"}))
+                .unwrap(),
             ScVal::U64(u64::MAX)
         );
         assert_eq!(
@@ -162,7 +172,10 @@ mod tests {
             panic!("expected a Vec");
         };
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0], ScVal::Bytes(ScBytes([7u8; 32].to_vec().try_into().unwrap())));
+        assert_eq!(
+            items[0],
+            ScVal::Bytes(ScBytes([7u8; 32].to_vec().try_into().unwrap()))
+        );
         // Round trip through XDR to make sure nothing about the encoding is malformed.
         let _ = xdr_hex(&encoded);
     }
@@ -170,7 +183,9 @@ mod tests {
     #[test]
     fn rejects_untagged_values() {
         assert!(encode_scval(&serde_json::json!(5)).is_err());
-        assert!(encode_scval(&serde_json::json!({"type": "u32", "value": "not a number"})).is_err());
+        assert!(
+            encode_scval(&serde_json::json!({"type": "u32", "value": "not a number"})).is_err()
+        );
         assert!(encode_scval(&serde_json::json!({"type": "nonsense", "value": 1})).is_err());
     }
 }

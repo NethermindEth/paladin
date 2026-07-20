@@ -42,6 +42,7 @@ type testDomainManager struct {
 	domains              map[string]plugintk.Plugin
 	domainRegistered     func(name string, toDomain components.DomainManagerToDomain) (fromDomain plugintk.DomainCallbacks, err error)
 	findAvailableStates  func(context.Context, *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error)
+	findStates           func(context.Context, *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error)
 	encodeData           func(context.Context, *prototk.EncodeDataRequest) (*prototk.EncodeDataResponse, error)
 	decodeData           func(context.Context, *prototk.DecodeDataRequest) (*prototk.DecodeDataResponse, error)
 	recoverSigner        func(context.Context, *prototk.RecoverSignerRequest) (*prototk.RecoverSignerResponse, error)
@@ -54,6 +55,10 @@ type testDomainManager struct {
 
 func (tp *testDomainManager) FindAvailableStates(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
 	return tp.findAvailableStates(ctx, req)
+}
+
+func (tp *testDomainManager) FindStates(ctx context.Context, req *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error) {
+	return tp.findStates(ctx, req)
 }
 
 func (tp *testDomainManager) EncodeData(ctx context.Context, req *prototk.EncodeDataRequest) (*prototk.EncodeDataResponse, error) {

@@ -464,6 +464,39 @@ func (d *domain) FindAvailableStates(ctx context.Context, req *prototk.FindAvail
 
 }
 
+func (d *domain) FindStates(ctx context.Context, req *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error) {
+	c, err := d.checkInFlight(ctx, req.StateQueryContext, false)
+	if err != nil {
+		return nil, err
+	}
+
+	dcInfo := c.dCtx.Info()
+	ctx = log.WithLogField(ctx, "domain", dcInfo.DomainName)
+	ctx = log.WithLogField(ctx, "contract", dcInfo.ContractAddress.String())
+	ctx = log.WithLogField(ctx, "schema", req.SchemaId)
+	log.L(ctx).Debugf("Domain callback FindStates")
+
+	var jq query.QueryJSON
+	if err = json.Unmarshal([]byte(req.QueryJson), &jq); err != nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgDomainInvalidQueryJSON)
+	}
+
+	schemaID, err := pldtypes.ParseBytes32(req.SchemaId)
+	if err != nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgDomainInvalidSchemaID, req.SchemaId)
+	}
+
+	states, err := d.dm.stateStore.FindContractStates(ctx, c.dbTX, dcInfo.DomainName, &dcInfo.ContractAddress, schemaID, &jq, pldapi.StateStatusAll)
+	if err != nil {
+		return nil, err
+	}
+
+	return &prototk.FindStatesResponse{
+		States: toProtoStates(states),
+	}, nil
+
+}
+
 func mapStateLockType(t pldapi.StateLockType) prototk.StateLock_StateLockType {
 	switch t {
 	case pldapi.StateLockTypeCreate:

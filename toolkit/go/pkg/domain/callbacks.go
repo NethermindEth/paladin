@@ -26,6 +26,7 @@ var _ plugintk.DomainCallbacks = &MockDomainCallbacks{}
 
 type MockDomainCallbacks struct {
 	MockFindAvailableStates func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error)
+	MockFindStates          func(ctx context.Context, req *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error)
 	MockLocalNodeName       func() (*prototk.LocalNodeNameResponse, error)
 	MockValidateStates      func(ctx context.Context, req *prototk.ValidateStatesRequest) (*prototk.ValidateStatesResponse, error)
 	MockReverseKeyLookup    func(ctx context.Context, req *prototk.ReverseKeyLookupRequest) (*prototk.ReverseKeyLookupResponse, error)
@@ -34,6 +35,13 @@ type MockDomainCallbacks struct {
 
 func (dc *MockDomainCallbacks) FindAvailableStates(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
 	return dc.MockFindAvailableStates(ctx, req)
+}
+
+func (dc *MockDomainCallbacks) FindStates(ctx context.Context, req *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error) {
+	if dc.MockFindStates != nil {
+		return dc.MockFindStates(ctx, req)
+	}
+	return nil, nil
 }
 
 func (dc *MockDomainCallbacks) EncodeData(ctx context.Context, req *prototk.EncodeDataRequest) (*prototk.EncodeDataResponse, error) {

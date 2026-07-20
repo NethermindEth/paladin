@@ -53,6 +53,16 @@ impl PaladinClient {
         }
     }
 
+    pub async fn find_states(
+        &self,
+        req: pb::FindStatesRequest,
+    ) -> Result<pb::FindStatesResponse, String> {
+        match self.call(RequestFromDomain::FindStates(req)).await? {
+            ResponseToDomain::FindStatesRes(res) => Ok(res),
+            other => Err(format!("unexpected response_to_domain variant: {other:?}")),
+        }
+    }
+
     pub async fn get_states_by_id(
         &self,
         req: pb::GetStatesByIdRequest,

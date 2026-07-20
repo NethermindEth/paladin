@@ -51,6 +51,7 @@ type DomainAPI interface {
 
 type DomainCallbacks interface {
 	FindAvailableStates(context.Context, *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error)
+	FindStates(context.Context, *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error)
 	EncodeData(context.Context, *prototk.EncodeDataRequest) (*prototk.EncodeDataResponse, error)
 	DecodeData(context.Context, *prototk.DecodeDataRequest) (*prototk.DecodeDataResponse, error)
 	RecoverSigner(ctx context.Context, req *prototk.RecoverSignerRequest) (*prototk.RecoverSignerResponse, error)
@@ -249,6 +250,17 @@ func (dp *domainHandler) FindAvailableStates(ctx context.Context, req *prototk.F
 	}))
 	return responseToPluginAs(ctx, res, err, func(msg *prototk.DomainMessage_FindAvailableStatesRes) *prototk.FindAvailableStatesResponse {
 		return msg.FindAvailableStatesRes
+	})
+}
+
+func (dp *domainHandler) FindStates(ctx context.Context, req *prototk.FindStatesRequest) (*prototk.FindStatesResponse, error) {
+	res, err := dp.proxy.RequestFromPlugin(ctx, dp.Wrap(&prototk.DomainMessage{
+		RequestFromDomain: &prototk.DomainMessage_FindStates{
+			FindStates: req,
+		},
+	}))
+	return responseToPluginAs(ctx, res, err, func(msg *prototk.DomainMessage_FindStatesRes) *prototk.FindStatesResponse {
+		return msg.FindStatesRes
 	})
 }
 

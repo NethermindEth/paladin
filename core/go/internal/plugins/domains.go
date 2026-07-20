@@ -71,6 +71,15 @@ func (br *domainBridge) RequestReply(ctx context.Context, reqMsg plugintk.Plugin
 				}
 			},
 		)
+	case *prototk.DomainMessage_FindStates:
+		return callManagerImpl(ctx, req.FindStates,
+			br.manager.FindStates,
+			func(resMsg *prototk.DomainMessage, res *prototk.FindStatesResponse) {
+				resMsg.ResponseToDomain = &prototk.DomainMessage_FindStatesRes{
+					FindStatesRes: res,
+				}
+			},
+		)
 	case *prototk.DomainMessage_EncodeData:
 		return callManagerImpl(ctx, req.EncodeData,
 			br.manager.EncodeData,

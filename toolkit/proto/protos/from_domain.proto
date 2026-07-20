@@ -32,6 +32,16 @@ message FindAvailableStatesResponse {
   repeated StoredState states = 1;
 }
 
+message FindStatesRequest {
+  string state_query_context = 1; // Must hold a valid state query context to perform a query
+  string schema_id = 2; // The ID of the schema
+  string query_json = 3; // The query specification in JSON
+}
+
+message FindStatesResponse {
+  repeated StoredState states = 1;
+}
+
 enum EncodingType {
   TUPLE = 0;
   FUNCTION_CALL_DATA = 1;

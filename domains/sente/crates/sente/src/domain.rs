@@ -34,7 +34,7 @@
 //!     bootstrap or understand an *external* contract's own genesis/business state the way it does
 //!     its own `SenteEntry`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -49,7 +49,7 @@ use soroban_env_host::xdr::{
     WriteXdr,
 };
 
-use crate::info::{InfoState, INFO_STATE_ABI_SCHEMA_JSON};
+use crate::info::{InfoState, TransitionManifest, INFO_STATE_ABI_SCHEMA_JSON};
 
 /// `toolkit/go/pkg/algorithms.EDDSA_ED25519` ("eddsa" + ":" + "ed25519").
 const SIGN_ALGORITHM: &str = "eddsa:ed25519";
@@ -197,9 +197,11 @@ fn contract_strkey(address: &ScAddress) -> Result<String, String> {
 /// throwaway diagnostic test against `soroban_sdk::IntoVal` during this phase's development.
 fn data_key_scval(name: &str) -> ScVal {
     ScVal::Vec(Some(ScVec(
-        vec![ScVal::Symbol(ScSymbol(name.try_into().expect("valid symbol")))]
-            .try_into()
-            .expect("single-element vec"),
+        vec![ScVal::Symbol(ScSymbol(
+            name.try_into().expect("valid symbol"),
+        ))]
+        .try_into()
+        .expect("single-element vec"),
     )))
 }
 
@@ -236,12 +238,10 @@ pub fn genesis_instance_val(
             .try_into()
             .map_err(|_| "failed to build members ScVec".to_string())?,
     )));
-    let passphrase_val = ScVal::Bytes(ScBytes(
-        network_passphrase
-            .to_vec()
-            .try_into()
-            .map_err(|_| "network passphrase too long for ScBytes".to_string())?,
-    ));
+    let passphrase_val =
+        ScVal::Bytes(ScBytes(network_passphrase.to_vec().try_into().map_err(
+            |_| "network passphrase too long for ScBytes".to_string(),
+        )?));
     let root_val = ScVal::Bytes(ScBytes([0u8; 32].to_vec().try_into().unwrap()));
     let map = ScMap(
         vec![
@@ -506,9 +506,10 @@ fn encode_atom_operation(call: &ExternalCallJson) -> Result<ScVal, String> {
     let entries = vec![
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol("args".try_into().unwrap())),
-            val: ScVal::Vec(Some(ScVec(args.try_into().map_err(|_| {
-                "failed to build AtomOperation.args ScVec".to_string()
-            })?))),
+            val: ScVal::Vec(Some(ScVec(
+                args.try_into()
+                    .map_err(|_| "failed to build AtomOperation.args ScVec".to_string())?,
+            ))),
         },
         ScMapEntry {
             key: ScVal::Symbol(ScSymbol("contract".try_into().unwrap())),
@@ -594,9 +595,13 @@ fn build_invoke_host_fn(invoke: &InvokeJson) -> Result<HostFunction, String> {
         .iter()
         .map(crate::scval_json::encode_scval)
         .collect::<Result<Vec<_>, _>>()?;
-    let function_name = ScSymbol(invoke.function.as_str().try_into().map_err(|_| {
-        format!("\"{}\" is not a valid Soroban symbol", invoke.function)
-    })?);
+    let function_name = ScSymbol(
+        invoke
+            .function
+            .as_str()
+            .try_into()
+            .map_err(|_| format!("\"{}\" is not a valid Soroban symbol", invoke.function))?,
+    );
     Ok(HostFunction::InvokeContract(InvokeContractArgs {
         contract_address: ScAddress::Contract(contract_id),
         function_name,
@@ -665,7 +670,10 @@ fn run_invocation(
         .map(|e| {
             Ok::<_, String>((
                 e.to_ledger_entry().map_err(|err| err.to_string())?,
-                Some(sente_host::protocol_floor_live_until(e.durability, ledger_info)),
+                Some(sente_host::protocol_floor_live_until(
+                    e.durability,
+                    ledger_info,
+                )),
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -688,32 +696,100 @@ fn run_invocation(
     .map_err(|e| e.to_string())
 }
 
-/// Converts a real invocation's write footprint (`modified_entries`) into the new/updated
-/// `SenteEntry` states it produces - the generalization of this phase's single hardcoded `Root`
-/// entry to Sente's documented long-term per-ledger-entry model ("What Pente does, translated",
-/// `saladin-book/part-2-saladin/14-domain-ports.md` §14.3). Each entry's `seq` continues from
-/// whatever `prior_entries` already tracked for the same `(contract_id, key_xdr)` slot, or starts
-/// at `0` for a slot never tracked before. Deletions (`state_after: None`) are skipped - nothing in
-/// this phase's scope removes a tracked entry.
+#[derive(Debug, Clone, Default)]
+struct TransitionStateChanges {
+    spent_state_ids: Vec<String>,
+    output_entries: Vec<sente_host::SenteEntry>,
+}
+
+fn entry_identity(entry: &sente_host::SenteEntry) -> String {
+    format!(
+        "{}|{}|{:?}",
+        entry.contract_id, entry.key_xdr, entry.durability
+    )
+}
+
+fn find_prior_by_entry<'a>(
+    prior_entries: &'a [PriorEntry],
+    entry: &sente_host::SenteEntry,
+) -> Option<&'a PriorEntry> {
+    let identity = entry_identity(entry);
+    prior_entries
+        .iter()
+        .find(|p| entry_identity(&p.entry) == identity)
+}
+
+/// Converts a real invocation's write footprint into UTXO effects. Updates consume the old note and
+/// create a seq+1 note, creates only produce a note, and deletes only consume the old note. Slot
+/// identity includes durability because Soroban's ledger key does too.
 fn convert_modified_entries(
     modified_entries: &[soroban_simulation::simulation::LedgerEntryDiff],
-    prior_entries: &[sente_host::SenteEntry],
-) -> Result<Vec<sente_host::SenteEntry>, String> {
-    let mut result = Vec::new();
+    prior_entries: &[PriorEntry],
+) -> Result<TransitionStateChanges, String> {
+    let mut changes = TransitionStateChanges::default();
+    let mut spent = HashSet::new();
+
     for diff in modified_entries {
-        let Some(state_after) = &diff.state_after else {
-            continue;
+        let prior = match &diff.state_before {
+            Some(state_before) => {
+                let before = sente_host::SenteEntry::from_ledger_entry(state_before, 0)
+                    .map_err(|e| e.to_string())?;
+                let prior = find_prior_by_entry(prior_entries, &before).ok_or_else(|| {
+                    format!(
+                        "modified entry {} was not present in prior Sente state",
+                        entry_identity(&before)
+                    )
+                })?;
+                if spent.insert(prior.id.clone()) {
+                    changes.spent_state_ids.push(prior.id.clone());
+                }
+                Some(prior)
+            }
+            None => None,
         };
-        let mut entry = sente_host::SenteEntry::from_ledger_entry(state_after, 0)
-            .map_err(|e| e.to_string())?;
-        entry.seq = prior_entries
-            .iter()
-            .find(|p| p.contract_id == entry.contract_id && p.key_xdr == entry.key_xdr)
-            .map(|p| p.seq + 1)
-            .unwrap_or(0);
-        result.push(entry);
+
+        if let Some(state_after) = &diff.state_after {
+            let mut entry = sente_host::SenteEntry::from_ledger_entry(state_after, 0)
+                .map_err(|e| e.to_string())?;
+            entry.seq = prior.map(|p| p.entry.seq + 1).unwrap_or(0);
+            changes.output_entries.push(entry);
+        }
     }
+
+    Ok(changes)
+}
+
+fn transition_manifest(changes: &TransitionStateChanges) -> Result<TransitionManifest, String> {
+    Ok(TransitionManifest {
+        spent_state_ids: changes.spent_state_ids.clone(),
+        output_state_json: changes
+            .output_entries
+            .iter()
+            .map(|e| serde_json::to_string(e).map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn sorted_state_json(entries: &[sente_host::SenteEntry]) -> Result<Vec<String>, String> {
+    let mut result = entries
+        .iter()
+        .map(|e| serde_json::to_string(e).map_err(|err| err.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    result.sort();
     Ok(result)
+}
+
+fn parse_endorsable_entries(
+    states: &[pb::EndorsableState],
+    label: &str,
+) -> Result<Vec<sente_host::SenteEntry>, String> {
+    states
+        .iter()
+        .map(|s| {
+            serde_json::from_str(&s.state_data_json)
+                .map_err(|e| format!("invalid {label} SenteEntry JSON: {e}"))
+        })
+        .collect()
 }
 
 /// Generalizes `derive_new_root` for a transition that carries a real business-contract invocation:
@@ -738,6 +814,16 @@ fn derive_new_root_from_invocation(
 struct PriorEntry {
     id: String,
     entry: sente_host::SenteEntry,
+}
+
+struct StoredSenteEntry {
+    id: String,
+    entry: sente_host::SenteEntry,
+}
+
+struct DurableTransitionStates {
+    spent_state_ids: Vec<String>,
+    output_state_ids: Vec<String>,
 }
 
 /// Per-group state, populated once at `InitContract` (paged in whenever a sequencer loads this
@@ -767,6 +853,7 @@ pub struct SenteDomain {
     config: Mutex<Option<SenteConfig>>,
     contracts: Mutex<HashMap<String, GroupState>>,
     fixed_signing_identity: Mutex<String>,
+    pending_transitions: Mutex<HashMap<String, TransitionManifest>>,
 }
 
 impl SenteDomain {
@@ -778,6 +865,7 @@ impl SenteDomain {
             config: Mutex::new(None),
             contracts: Mutex::new(HashMap::new()),
             fixed_signing_identity: Mutex::new(String::new()),
+            pending_transitions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -802,11 +890,9 @@ impl SenteDomain {
     /// S3 genesis needs this domain's `SenteConfig` (factory addresses, wasm hash, network
     /// passphrase) - set once from `ConfigureDomainRequest.config_json` and required from then on.
     fn config(&self) -> Result<SenteConfig, String> {
-        self.config
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "sente config not set - configure_domain's config_json is missing or empty".to_string())
+        self.config.lock().unwrap().clone().ok_or_else(|| {
+            "sente config not set - configure_domain's config_json is missing or empty".to_string()
+        })
     }
 
     /// Returns each member's raw (un-scoped) identity locator alongside the group-scoped verifier
@@ -817,7 +903,9 @@ impl SenteDomain {
     fn group_members(&self, contract_address: &str) -> Result<Vec<(String, String)>, String> {
         let contracts = self.contracts.lock().unwrap();
         let group = contracts.get(contract_address).ok_or_else(|| {
-            format!("unknown contract {contract_address} - init_contract not yet called for this group")
+            format!(
+                "unknown contract {contract_address} - init_contract not yet called for this group"
+            )
         })?;
         let salt_hex = group.salt.trim_start_matches("0x");
         Ok(group
@@ -846,6 +934,88 @@ impl SenteDomain {
                 Ok(PriorEntry { id: s.id, entry })
             })
             .collect()
+    }
+
+    async fn find_states(
+        &self,
+        state_query_context: &str,
+        schema_id: String,
+    ) -> Result<Vec<pb::StoredState>, String> {
+        Ok(self
+            .client
+            .find_states(pb::FindStatesRequest {
+                state_query_context: state_query_context.to_string(),
+                schema_id,
+                query_json: "{}".to_string(),
+            })
+            .await?
+            .states)
+    }
+
+    async fn durable_transition_states(
+        &self,
+        state_query_context: &str,
+        transaction_id: &str,
+        root_output: &sente_host::SenteEntry,
+    ) -> Result<Option<DurableTransitionStates>, String> {
+        let info_schema_id = self.info_schema_id()?;
+        let info_states = self
+            .find_states(state_query_context, info_schema_id)
+            .await?;
+        let Some(info) = info_states
+            .iter()
+            .filter_map(|state| serde_json::from_str::<InfoState>(&state.data_json).ok())
+            .find(|info| info.transaction_id == transaction_id)
+        else {
+            return Ok(None);
+        };
+        let manifest = info.transition_manifest().map_err(|e| e.to_string())?;
+
+        let entry_schema_id = self.schema_id()?;
+        let entries = self
+            .find_states(state_query_context, entry_schema_id)
+            .await?
+            .into_iter()
+            .map(|state| {
+                let entry: sente_host::SenteEntry = serde_json::from_str(&state.data_json)
+                    .map_err(|e| format!("invalid SenteEntry state data: {e}"))?;
+                Ok(StoredSenteEntry {
+                    id: state.id,
+                    entry,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        let mut output_state_ids = Vec::new();
+        let root_id = entries
+            .iter()
+            .find(|stored| stored.entry == *root_output)
+            .ok_or("transition event: persisted root output state not found")?
+            .id
+            .clone();
+        output_state_ids.push(root_id);
+
+        for output_json in &manifest.output_state_json {
+            let expected: sente_host::SenteEntry = serde_json::from_str(output_json)
+                .map_err(|e| format!("invalid manifest SenteEntry state data: {e}"))?;
+            let id = entries
+                .iter()
+                .find(|stored| stored.entry == expected)
+                .ok_or_else(|| {
+                    format!(
+                        "transition event: persisted output state not found for {}",
+                        entry_identity(&expected)
+                    )
+                })?
+                .id
+                .clone();
+            output_state_ids.push(id);
+        }
+
+        Ok(Some(DurableTransitionStates {
+            spent_state_ids: manifest.spent_state_ids,
+            output_state_ids,
+        }))
     }
 }
 
@@ -938,7 +1108,9 @@ impl DomainHandler for SenteDomain {
         &self,
         req: pb::PrepareDeployRequest,
     ) -> Result<pb::PrepareDeployResponse, String> {
-        let transaction = req.transaction.ok_or("prepare_deploy: transaction not set")?;
+        let transaction = req
+            .transaction
+            .ok_or("prepare_deploy: transaction not set")?;
         let config = self.config()?;
         let params: DeployConstructorParams =
             serde_json::from_str(&transaction.constructor_params_json)
@@ -987,9 +1159,11 @@ impl DomainHandler for SenteDomain {
             ScVal::Bytes(ScBytes(wasm_hash_bytes.try_into().map_err(|_| {
                 "senteWasmHash config must decode to exactly 32 bytes".to_string()
             })?)),
-            ScVal::Vec(Some(ScVec(members_scval.try_into().map_err(|_| {
-                "failed to build members ScVec".to_string()
-            })?))),
+            ScVal::Vec(Some(ScVec(
+                members_scval
+                    .try_into()
+                    .map_err(|_| "failed to build members ScVec".to_string())?,
+            ))),
             ScVal::Bytes(ScBytes(
                 config
                     .network_passphrase
@@ -1079,8 +1253,8 @@ impl DomainHandler for SenteDomain {
             valid: true,
             contract_config: Some(pb::ContractConfig {
                 contract_config_json: "{}".to_string(),
-                coordinator_selection: pb::contract_config::CoordinatorSelection::CoordinatorEndorser
-                    as i32,
+                coordinator_selection:
+                    pb::contract_config::CoordinatorSelection::CoordinatorEndorser as i32,
                 static_coordinator: None,
                 coordinator_endorser_candidates: members,
                 submitter_selection: pb::contract_config::SubmitterSelection::SubmitterCoordinator
@@ -1176,8 +1350,8 @@ impl DomainHandler for SenteDomain {
         // re-execution is genuinely detectable during endorsement.
         let mut new_root = derive_new_root(&old_root, &transaction.transaction_id);
         let mut invoke_json = String::new();
-        let mut extra_output_entries: Vec<sente_host::SenteEntry> = vec![];
-        let mut extra_input_refs: Vec<pb::StateRef> = vec![];
+        let mut state_changes = TransitionStateChanges::default();
+        let has_invoke = invoke.is_some();
         if let Some(invoke) = &invoke {
             let ledger_info = soroban_env_host::e2e_testutils::default_ledger_info();
             let all_prior_entries: Vec<sente_host::SenteEntry> =
@@ -1196,10 +1370,7 @@ impl DomainHandler for SenteDomain {
                     assembly_result: pb::assemble_transaction_response::Result::Revert as i32,
                     assembled_transaction: None,
                     attestation_plan: vec![],
-                    revert_reason: Some(format!(
-                        "invocation failed: {:?}",
-                        result.invoke_result
-                    )),
+                    revert_reason: Some(format!("invocation failed: {:?}", result.invoke_result)),
                 });
             }
             let invocation_digest = sente_host::digest(&result).map_err(|e| e.to_string())?;
@@ -1208,21 +1379,8 @@ impl DomainHandler for SenteDomain {
                 &transaction.transaction_id,
                 &invocation_digest,
             );
-            extra_output_entries =
-                convert_modified_entries(&result.modified_entries, &all_prior_entries)?;
+            state_changes = convert_modified_entries(&result.modified_entries, &prior)?;
             invoke_json = serde_json::to_string(invoke).map_err(|e| e.to_string())?;
-            extra_input_refs = extra_output_entries
-                .iter()
-                .filter_map(|e| {
-                    prior
-                        .iter()
-                        .find(|p| p.entry.contract_id == e.contract_id && p.entry.key_xdr == e.key_xdr)
-                        .map(|p| pb::StateRef {
-                            id: p.id.clone(),
-                            schema_id: schema_id.clone(),
-                        })
-                })
-                .collect();
         }
 
         let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root, external_calls_scval)?;
@@ -1240,7 +1398,7 @@ impl DomainHandler for SenteDomain {
         )?;
         let new_entry = sente_host::SenteEntry {
             contract_id: contract_id_base64.clone(),
-            key_xdr: instance_key_base64,
+            key_xdr: instance_key_base64.clone(),
             val_xdr: BASE64.encode(
                 new_instance_val
                     .to_xdr(Limits::none())
@@ -1250,6 +1408,7 @@ impl DomainHandler for SenteDomain {
             seq: prior_group_entry.entry.seq + 1,
         };
 
+        let manifest = transition_manifest(&state_changes)?;
         let info = InfoState::new(
             transaction.transaction_id.clone(),
             contract_id_base64,
@@ -1258,15 +1417,42 @@ impl DomainHandler for SenteDomain {
             on_chain_digest,
             external_calls_json,
             invoke_json,
-        );
+        )
+        .with_transition_manifest(manifest.clone())
+        .map_err(|e| e.to_string())?;
         let info_json = serde_json::to_string(&info).map_err(|e| e.to_string())?;
         let signing_payload = info.signing_payload().map_err(|e| e.to_string())?;
+        self.pending_transitions
+            .lock()
+            .unwrap()
+            .insert(transaction.transaction_id.clone(), manifest);
 
         let mut input_states = vec![pb::StateRef {
             id: prior_group_entry.id.clone(),
             schema_id: schema_id.clone(),
         }];
-        input_states.extend(extra_input_refs);
+        let mut input_ids = HashSet::from([prior_group_entry.id.clone()]);
+        for id in &state_changes.spent_state_ids {
+            if input_ids.insert(id.clone()) {
+                input_states.push(pb::StateRef {
+                    id: id.clone(),
+                    schema_id: schema_id.clone(),
+                });
+            }
+        }
+
+        let read_states = if has_invoke {
+            prior
+                .iter()
+                .filter(|p| !input_ids.contains(&p.id))
+                .map(|p| pb::StateRef {
+                    id: p.id.clone(),
+                    schema_id: schema_id.clone(),
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         let mut output_states = vec![pb::NewState {
             schema_id: schema_id.clone(),
@@ -1275,7 +1461,7 @@ impl DomainHandler for SenteDomain {
             id: None,
             nullifier_specs: vec![],
         }];
-        for entry in &extra_output_entries {
+        for entry in &state_changes.output_entries {
             output_states.push(pb::NewState {
                 schema_id: schema_id.clone(),
                 state_data_json: serde_json::to_string(entry).map_err(|e| e.to_string())?,
@@ -1289,7 +1475,7 @@ impl DomainHandler for SenteDomain {
             assembly_result: pb::assemble_transaction_response::Result::Ok as i32,
             assembled_transaction: Some(pb::AssembledTransaction {
                 input_states,
-                read_states: vec![],
+                read_states,
                 output_states,
                 info_states: vec![pb::NewState {
                     schema_id: self.info_schema_id()?,
@@ -1352,21 +1538,30 @@ impl DomainHandler for SenteDomain {
         if req.inputs.is_empty() {
             return Err("endorse_transaction: no input state provided".to_string());
         }
-        let prior_entries: Vec<sente_host::SenteEntry> = req
+        let input_entries = parse_endorsable_entries(&req.inputs, "input")?;
+        let read_entries = parse_endorsable_entries(&req.reads, "read")?;
+        let mut snapshot_entries = input_entries.clone();
+        snapshot_entries.extend(read_entries);
+        let prior_refs: Vec<PriorEntry> = req
             .inputs
             .iter()
-            .map(|input| {
-                serde_json::from_str(&input.state_data_json)
-                    .map_err(|e| format!("invalid SenteEntry JSON: {e}"))
+            .chain(req.reads.iter())
+            .map(|state| {
+                let entry: sente_host::SenteEntry = serde_json::from_str(&state.state_data_json)
+                    .map_err(|e| format!("invalid prior SenteEntry JSON: {e}"))?;
+                Ok(PriorEntry {
+                    id: state.id.clone(),
+                    entry,
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let input_ids: HashSet<String> = req.inputs.iter().map(|state| state.id.clone()).collect();
         let instance_key_base64 = instance_key_xdr_base64();
-        let prior_group_entry = prior_entries
+        let prior_group_entry = input_entries
             .iter()
             .find(|e| e.contract_id == info.contract_id && e.key_xdr == instance_key_base64)
             .ok_or("endorse_transaction: no group instance entry among input states")?;
-        let old_root_actual =
-            decode_root(&prior_group_entry.val().map_err(|e| e.to_string())?)?;
+        let old_root_actual = decode_root(&prior_group_entry.val().map_err(|e| e.to_string())?)?;
 
         if old_root_actual != info.old_root {
             return Ok(pb::EndorseTransactionResponse {
@@ -1383,9 +1578,7 @@ impl DomainHandler for SenteDomain {
         let contract_id_bytes = BASE64
             .decode(&info.contract_id)
             .map_err(|e| format!("invalid contract_id: {e}"))
-            .and_then(|bytes| {
-                ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string())
-            })
+            .and_then(|bytes| ScAddress::from_xdr(bytes, Limits::none()).map_err(|e| e.to_string()))
             .and_then(|addr| match addr {
                 ScAddress::Contract(cid) => Ok(cid.0 .0),
                 other => Err(format!("expected a contract ScAddress, got {other:?}")),
@@ -1399,6 +1592,7 @@ impl DomainHandler for SenteDomain {
         // detection Phase 1/2 already proved for the fixed test scenario, now for real business
         // logic.
         let invoke = parse_invoke(&info.invoke_json)?;
+        let mut state_changes = TransitionStateChanges::default();
         let expected_new_root = match &invoke {
             None => derive_new_root(&old_root_actual, &info.transaction_id),
             Some(invoke) => {
@@ -1406,7 +1600,7 @@ impl DomainHandler for SenteDomain {
                 let code_fixture = invoke_code_fixture(invoke, &ledger_info)?;
                 let result = run_invocation(
                     invoke,
-                    &prior_entries,
+                    &snapshot_entries,
                     &code_fixture,
                     &ledger_info,
                     &info.transaction_id,
@@ -1419,6 +1613,20 @@ impl DomainHandler for SenteDomain {
                         revert_reason: Some(format!(
                             "re-execution failed: {:?}",
                             result.invoke_result
+                        )),
+                    });
+                }
+                state_changes = convert_modified_entries(&result.modified_entries, &prior_refs)?;
+                if let Some(id) = state_changes
+                    .spent_state_ids
+                    .iter()
+                    .find(|id| !input_ids.contains(*id))
+                {
+                    return Ok(pb::EndorseTransactionResponse {
+                        endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                        payload: None,
+                        revert_reason: Some(format!(
+                            "modified state {id} was supplied as a read state, not an input state"
                         )),
                     });
                 }
@@ -1439,6 +1647,41 @@ impl DomainHandler for SenteDomain {
                     hex::encode(expected_new_root),
                     hex::encode(info.new_root)
                 )),
+            });
+        }
+
+        let expected_manifest = transition_manifest(&state_changes)?;
+        let actual_manifest = info.transition_manifest().map_err(|e| e.to_string())?;
+        if expected_manifest != actual_manifest {
+            return Ok(pb::EndorseTransactionResponse {
+                endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                payload: None,
+                revert_reason: Some("transition manifest mismatch".to_string()),
+            });
+        }
+
+        let new_instance_val = with_updated_root(
+            &prior_group_entry.val().map_err(|e| e.to_string())?,
+            info.new_root,
+        )?;
+        let mut expected_outputs = vec![sente_host::SenteEntry {
+            contract_id: info.contract_id.clone(),
+            key_xdr: instance_key_base64.clone(),
+            val_xdr: BASE64.encode(
+                new_instance_val
+                    .to_xdr(Limits::none())
+                    .map_err(|e| e.to_string())?,
+            ),
+            durability: sente_host::EntryDurability::Persistent,
+            seq: prior_group_entry.seq + 1,
+        }];
+        expected_outputs.extend(state_changes.output_entries.clone());
+        let actual_outputs = parse_endorsable_entries(&req.outputs, "output")?;
+        if sorted_state_json(&expected_outputs)? != sorted_state_json(&actual_outputs)? {
+            return Ok(pb::EndorseTransactionResponse {
+                endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                payload: None,
+                revert_reason: Some("output states mismatch".to_string()),
             });
         }
 
@@ -1467,6 +1710,11 @@ impl DomainHandler for SenteDomain {
                 )),
             });
         }
+
+        self.pending_transitions
+            .lock()
+            .unwrap()
+            .insert(info.transaction_id.clone(), expected_manifest);
 
         Ok(pb::EndorseTransactionResponse {
             endorsement_result: pb::endorse_transaction_response::Result::Sign as i32,
@@ -1623,6 +1871,7 @@ impl DomainHandler for SenteDomain {
 
         let mut new_states = Vec::new();
         let mut spent_states = Vec::new();
+        let mut confirmed_states = Vec::new();
         let mut transactions_complete = Vec::new();
 
         for event in &req.events {
@@ -1664,8 +1913,11 @@ impl DomainHandler for SenteDomain {
                 let wasm_hash: [u8; 32] = wasm_hash_bytes.try_into().map_err(|_| {
                     "senteWasmHash config must decode to exactly 32 bytes".to_string()
                 })?;
-                let genesis_val =
-                    genesis_instance_val(wasm_hash, &member_pubkeys, passphrase_bytes.0.as_slice())?;
+                let genesis_val = genesis_instance_val(
+                    wasm_hash,
+                    &member_pubkeys,
+                    passphrase_bytes.0.as_slice(),
+                )?;
                 let genesis_entry = sente_host::SenteEntry {
                     contract_id: contract_id_base64.clone(),
                     key_xdr: instance_key_base64.clone(),
@@ -1690,6 +1942,7 @@ impl DomainHandler for SenteDomain {
             } else if selector == transition_selector {
                 // topics = [transition symbol, tx_id, old_root]; data = [new_root, external_call_count].
                 let tx_id = scval_bytes32(&payload.topic(1)?)?;
+                let transaction_id = paladin_transaction_id(tx_id);
                 let data = payload.data()?;
                 let ScVal::Vec(Some(fields)) = &data else {
                     return Err("transition event data: expected a Vec".to_string());
@@ -1728,19 +1981,72 @@ impl DomainHandler for SenteDomain {
                     seq: prior_entry.entry.seq + 1,
                 };
 
-                spent_states.push(pb::StateUpdate {
-                    id: prior_entry.id.clone(),
-                    transaction_id: paladin_transaction_id(tx_id),
-                });
-                new_states.push(pb::NewConfirmedState {
-                    schema_id: schema_id.clone(),
-                    state_data_json: serde_json::to_string(&new_entry)
-                        .map_err(|e| e.to_string())?,
-                    id: None,
-                    transaction_id: paladin_transaction_id(tx_id),
-                });
+                if let Some(durable) = self
+                    .durable_transition_states(
+                        &req.state_query_context,
+                        &transaction_id,
+                        &new_entry,
+                    )
+                    .await?
+                {
+                    spent_states.push(pb::StateUpdate {
+                        id: prior_entry.id.clone(),
+                        transaction_id: transaction_id.clone(),
+                    });
+                    for id in durable.spent_state_ids {
+                        spent_states.push(pb::StateUpdate {
+                            id,
+                            transaction_id: transaction_id.clone(),
+                        });
+                    }
+                    for id in durable.output_state_ids {
+                        confirmed_states.push(pb::StateUpdate {
+                            id,
+                            transaction_id: transaction_id.clone(),
+                        });
+                    }
+                    self.pending_transitions
+                        .lock()
+                        .unwrap()
+                        .remove(&transaction_id);
+                } else {
+                    spent_states.push(pb::StateUpdate {
+                        id: prior_entry.id.clone(),
+                        transaction_id: transaction_id.clone(),
+                    });
+                    new_states.push(pb::NewConfirmedState {
+                        schema_id: schema_id.clone(),
+                        state_data_json: serde_json::to_string(&new_entry)
+                            .map_err(|e| e.to_string())?,
+                        id: None,
+                        transaction_id: transaction_id.clone(),
+                    });
+
+                    if let Some(manifest) = self
+                        .pending_transitions
+                        .lock()
+                        .unwrap()
+                        .remove(&transaction_id)
+                    {
+                        for id in manifest.spent_state_ids {
+                            spent_states.push(pb::StateUpdate {
+                                id,
+                                transaction_id: transaction_id.clone(),
+                            });
+                        }
+                        for state_data_json in manifest.output_state_json {
+                            new_states.push(pb::NewConfirmedState {
+                                schema_id: schema_id.clone(),
+                                state_data_json,
+                                id: None,
+                                transaction_id: transaction_id.clone(),
+                            });
+                        }
+                    }
+                }
+
                 transactions_complete.push(pb::CompletedTransaction {
-                    transaction_id: paladin_transaction_id(tx_id),
+                    transaction_id: transaction_id.clone(),
                     location: Some(event.location.clone().unwrap_or_default()),
                     chain_location: None,
                 });
@@ -1752,7 +2058,7 @@ impl DomainHandler for SenteDomain {
             transactions_complete,
             spent_states,
             read_states: vec![],
-            confirmed_states: vec![],
+            confirmed_states,
             info_states: vec![],
             new_states,
         })
@@ -2039,7 +2345,11 @@ mod tests {
         let ScVal::Map(Some(op)) = &external_calls[0] else {
             panic!("expected an AtomOperation ScMap");
         };
-        assert_eq!(op.len(), 3, "AtomOperation must have exactly args/contract/function");
+        assert_eq!(
+            op.len(),
+            3,
+            "AtomOperation must have exactly args/contract/function"
+        );
         assert_eq!(
             op[0].key,
             ScVal::Symbol(ScSymbol("args".try_into().unwrap()))
@@ -2076,7 +2386,11 @@ mod tests {
         format!("0x{}", hex::encode(val.to_xdr(Limits::none()).unwrap()))
     }
 
-    fn genesis_event_json(tx_id: [u8; 32], member_pubkeys: &[[u8; 32]], passphrase: &[u8]) -> String {
+    fn genesis_event_json(
+        tx_id: [u8; 32],
+        member_pubkeys: &[[u8; 32]],
+        passphrase: &[u8],
+    ) -> String {
         let topics = vec![
             scval_hex(&ScVal::Symbol(ScSymbol("genesis".try_into().unwrap()))),
             scval_hex(&ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap()))),
@@ -2100,7 +2414,9 @@ mod tests {
         let topics = vec![
             scval_hex(&ScVal::Symbol(ScSymbol("transition".try_into().unwrap()))),
             scval_hex(&ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap()))),
-            scval_hex(&ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap()))),
+            scval_hex(&ScVal::Bytes(ScBytes(
+                old_root.to_vec().try_into().unwrap(),
+            ))),
         ];
         let data = scval_hex(&ScVal::Vec(Some(ScVec(
             vec![
@@ -2218,23 +2534,34 @@ mod tests {
         tokio::spawn(async move {
             while let Some(msg) = to_core_rx.recv().await {
                 let Some(header) = msg.header else { continue };
-                if let Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) =
-                    msg.request_from_domain
-                {
-                    fake_core_client.resolve_test(
-                        &header.message_id,
-                        Ok(pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
-                            pb::FindAvailableStatesResponse {
-                                states: vec![pb::StoredState {
-                                    id: "prior-0".to_string(),
-                                    schema_id: "SenteEntry".to_string(),
-                                    created_at: 0,
-                                    data_json: prior_entry_json.clone(),
-                                    locks: vec![],
-                                }],
-                            },
-                        )),
-                    );
+                match msg.request_from_domain {
+                    Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) => {
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(
+                                pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
+                                    pb::FindAvailableStatesResponse {
+                                        states: vec![pb::StoredState {
+                                            id: "prior-0".to_string(),
+                                            schema_id: "SenteEntry".to_string(),
+                                            created_at: 0,
+                                            data_json: prior_entry_json.clone(),
+                                            locks: vec![],
+                                        }],
+                                    },
+                                ),
+                            ),
+                        );
+                    }
+                    Some(pb::domain_message::RequestFromDomain::FindStates(_)) => {
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(pb::domain_message::ResponseToDomain::FindStatesRes(
+                                pb::FindStatesResponse { states: vec![] },
+                            )),
+                        );
+                    }
+                    _ => {}
                 }
             }
         });
@@ -2317,26 +2644,37 @@ mod tests {
         tokio::spawn(async move {
             while let Some(msg) = to_core_rx.recv().await {
                 let Some(header) = msg.header else { continue };
-                if let Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) =
-                    msg.request_from_domain
-                {
-                    let states = prior_states
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| pb::StoredState {
-                            id: format!("prior-{i}"),
-                            schema_id: "SenteEntry".to_string(),
-                            created_at: 0,
-                            data_json: serde_json::to_string(e).unwrap(),
-                            locks: vec![],
-                        })
-                        .collect();
-                    fake_core_client.resolve_test(
-                        &header.message_id,
-                        Ok(pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
-                            pb::FindAvailableStatesResponse { states },
-                        )),
-                    );
+                match msg.request_from_domain {
+                    Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) => {
+                        let states = prior_states
+                            .iter()
+                            .enumerate()
+                            .map(|(i, e)| pb::StoredState {
+                                id: format!("prior-{i}"),
+                                schema_id: "SenteEntry".to_string(),
+                                created_at: 0,
+                                data_json: serde_json::to_string(e).unwrap(),
+                                locks: vec![],
+                            })
+                            .collect();
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(
+                                pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
+                                    pb::FindAvailableStatesResponse { states },
+                                ),
+                            ),
+                        );
+                    }
+                    Some(pb::domain_message::RequestFromDomain::FindStates(_)) => {
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(pb::domain_message::ResponseToDomain::FindStatesRes(
+                                pb::FindStatesResponse { states: vec![] },
+                            )),
+                        );
+                    }
+                    _ => {}
                 }
             }
         });
@@ -2402,8 +2740,7 @@ mod tests {
         let network_passphrase = b"Test SDF Network ; September 2015";
         let group_address = ScAddress::Contract(ContractId(Hash([0x33; 32])));
         let group_address_strkey = contract_strkey(&group_address).unwrap();
-        let group_contract_id_base64 =
-            BASE64.encode(group_address.to_xdr(Limits::none()).unwrap());
+        let group_contract_id_base64 = BASE64.encode(group_address.to_xdr(Limits::none()).unwrap());
         let genesis_val =
             genesis_instance_val([0x44; 32], &[[1u8; 32]], network_passphrase).unwrap();
         let group_entry = sente_host::SenteEntry {
@@ -2503,18 +2840,16 @@ mod tests {
             "the group's own Root entry plus the counter's own new COUNT storage entry"
         );
         // Only the group's own prior Root entry is spent as an input: bump()'s COUNT storage slot
-        // is a brand new ledger entry on this first call (the counter's own *instance* entry,
-        // tracked separately, is read but not written by bump() at all), so there is nothing prior
-        // to reference for it - exactly what a genuinely real execution's footprint should produce,
-        // not a hardcoded assumption.
+        // is a brand new ledger entry on this first call. The counter's own instance entry is
+        // still declared as a read dependency because re-execution needs it in the snapshot.
         assert_eq!(assembled.input_states.len(), 1);
+        assert_eq!(assembled.read_states.len(), 1);
 
         let counter_output = assembled
             .output_states
             .iter()
             .find(|s| {
-                let e: sente_host::SenteEntry =
-                    serde_json::from_str(&s.state_data_json).unwrap();
+                let e: sente_host::SenteEntry = serde_json::from_str(&s.state_data_json).unwrap();
                 e.contract_id == fixture.counter_instance_entry.contract_id
                     && e.key_xdr != fixture.counter_instance_entry.key_xdr
             })
@@ -2544,21 +2879,27 @@ mod tests {
                 endorsement_verifier: None,
                 transaction: Some(transaction),
                 resolved_verifiers: vec![],
-                inputs: vec![
-                    pb::EndorsableState {
-                        id: "group-0".to_string(),
-                        schema_id: "SenteEntry".to_string(),
-                        state_data_json: serde_json::to_string(&fixture.group_entry).unwrap(),
-                    },
-                    pb::EndorsableState {
-                        id: "counter-0".to_string(),
-                        schema_id: "SenteEntry".to_string(),
-                        state_data_json: serde_json::to_string(&fixture.counter_instance_entry)
-                            .unwrap(),
-                    },
-                ],
-                reads: vec![],
-                outputs: vec![],
+                inputs: vec![pb::EndorsableState {
+                    id: "prior-0".to_string(),
+                    schema_id: "SenteEntry".to_string(),
+                    state_data_json: serde_json::to_string(&fixture.group_entry).unwrap(),
+                }],
+                reads: vec![pb::EndorsableState {
+                    id: "prior-1".to_string(),
+                    schema_id: "SenteEntry".to_string(),
+                    state_data_json: serde_json::to_string(&fixture.counter_instance_entry)
+                        .unwrap(),
+                }],
+                outputs: assembled
+                    .output_states
+                    .iter()
+                    .enumerate()
+                    .map(|(i, state)| pb::EndorsableState {
+                        id: format!("output-{i}"),
+                        schema_id: state.schema_id.clone(),
+                        state_data_json: state.state_data_json.clone(),
+                    })
+                    .collect(),
                 info: vec![pb::EndorsableState {
                     id: "info-0".to_string(),
                     schema_id: "SenteInfo".to_string(),
@@ -2574,6 +2915,211 @@ mod tests {
             "endorsement must independently re-derive the same new_root and agree: {:?}",
             endorse_resp.revert_reason
         );
+
+        let event_response = fixture
+            .domain
+            .handle_event_batch(pb::HandleEventBatchRequest {
+                state_query_context: "ctx-1".to_string(),
+                batch_id: "batch-1".to_string(),
+                contract_info: Some(pb::ContractInfo {
+                    contract_address: fixture.group_address_strkey.clone(),
+                    contract_config_json: "{}".to_string(),
+                }),
+                events: vec![pb::OnChainEvent {
+                    location: Some(pb::OnChainEventLocation {
+                        transaction_hash: "0xabc".to_string(),
+                        block_number: 1,
+                        transaction_index: 0,
+                        log_index: 0,
+                    }),
+                    signature: hex::encode(stellar_event_selector("transition")),
+                    solidity_signature: String::new(),
+                    data_json: transition_event_json([0x66; 32], info.old_root, info.new_root),
+                }],
+                chain_events: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(event_response.spent_states.len(), 1);
+        assert_eq!(event_response.new_states.len(), 2);
+        assert!(event_response.new_states.iter().any(|state| {
+            let entry: sente_host::SenteEntry =
+                serde_json::from_str(&state.state_data_json).unwrap();
+            entry.contract_id == fixture.counter_instance_entry.contract_id
+                && entry.key_xdr != fixture.counter_instance_entry.key_xdr
+        }));
+    }
+
+    /// Event handling must not depend on the in-memory `pending_transitions` map: after a plugin
+    /// restart, the durable InfoState manifest and persisted output states are enough to map the
+    /// on-chain transition event back to concrete UTXO confirmations for the group's Root and all
+    /// business entries.
+    #[tokio::test]
+    async fn handle_event_batch_recovers_stateful_outputs_from_persisted_info_after_restart() {
+        let fixture = real_invocation_fixture().await;
+        let transaction = bump_transaction(&fixture, 0x66);
+
+        let assemble_resp = fixture
+            .domain
+            .assemble_transaction(pb::AssembleTransactionRequest {
+                state_query_context: "ctx-1".to_string(),
+                transaction: Some(transaction),
+                resolved_verifiers: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            assemble_resp.assembly_result,
+            pb::assemble_transaction_response::Result::Ok as i32,
+            "assembly must succeed: {:?}",
+            assemble_resp.revert_reason
+        );
+        let assembled = assemble_resp.assembled_transaction.unwrap();
+        let info_state = &assembled.info_states[0];
+        let info: InfoState = serde_json::from_str(&info_state.state_data_json).unwrap();
+
+        let persisted_info_states = vec![pb::StoredState {
+            id: "info-0".to_string(),
+            schema_id: "SenteInfo".to_string(),
+            created_at: 0,
+            data_json: info_state.state_data_json.clone(),
+            locks: vec![],
+        }];
+        let persisted_entry_states: Vec<pb::StoredState> = assembled
+            .output_states
+            .iter()
+            .enumerate()
+            .map(|(i, state)| pb::StoredState {
+                id: format!("output-{i}"),
+                schema_id: state.schema_id.clone(),
+                created_at: 0,
+                data_json: state.state_data_json.clone(),
+                locks: vec![],
+            })
+            .collect();
+        let persisted_output_ids: HashSet<String> = persisted_entry_states
+            .iter()
+            .map(|state| state.id.clone())
+            .collect();
+
+        let (client, mut to_core_rx) = PaladinClient::new_test("restart-event-test");
+        let fake_core_client = client.clone();
+        let prior_group_entry_json = serde_json::to_string(&fixture.group_entry).unwrap();
+        tokio::spawn(async move {
+            while let Some(msg) = to_core_rx.recv().await {
+                let Some(header) = msg.header else { continue };
+                match msg.request_from_domain {
+                    Some(pb::domain_message::RequestFromDomain::FindAvailableStates(_)) => {
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(
+                                pb::domain_message::ResponseToDomain::FindAvailableStatesRes(
+                                    pb::FindAvailableStatesResponse {
+                                        states: vec![pb::StoredState {
+                                            id: "prior-0".to_string(),
+                                            schema_id: "SenteEntry".to_string(),
+                                            created_at: 0,
+                                            data_json: prior_group_entry_json.clone(),
+                                            locks: vec![],
+                                        }],
+                                    },
+                                ),
+                            ),
+                        );
+                    }
+                    Some(pb::domain_message::RequestFromDomain::FindStates(req)) => {
+                        let states = match req.schema_id.as_str() {
+                            "SenteInfo" => persisted_info_states.clone(),
+                            "SenteEntry" => persisted_entry_states.clone(),
+                            _ => vec![],
+                        };
+                        fake_core_client.resolve_test(
+                            &header.message_id,
+                            Ok(pb::domain_message::ResponseToDomain::FindStatesRes(
+                                pb::FindStatesResponse { states },
+                            )),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let restarted_domain = SenteDomain::new(client);
+        restarted_domain
+            .configure_domain(pb::ConfigureDomainRequest {
+                config_json: serde_json::json!({
+                    "senteFactoryAddress": fixture.group_address_strkey,
+                    "saladinFactoryAddress": fixture.group_address_strkey,
+                    "senteWasmHash": hex::encode([0u8; 32]),
+                    "networkPassphrase": "Test SDF Network ; September 2015",
+                })
+                .to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        restarted_domain
+            .init_domain(pb::InitDomainRequest {
+                abi_state_schemas: vec![
+                    pb::StateSchema {
+                        id: "SenteEntry".to_string(),
+                        signature: "SenteEntry".to_string(),
+                    },
+                    pb::StateSchema {
+                        id: "SenteInfo".to_string(),
+                        signature: "SenteInfo".to_string(),
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        restarted_domain
+            .init_contract(pb::InitContractRequest {
+                contract_address: fixture.group_address_strkey.clone(),
+                contract_config: vec![],
+                privacy_group: Some(pb::PrivacyGroup {
+                    members: vec!["sender@node1".to_string()],
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+
+        let event_response = restarted_domain
+            .handle_event_batch(pb::HandleEventBatchRequest {
+                state_query_context: "ctx-1".to_string(),
+                batch_id: "batch-1".to_string(),
+                contract_info: Some(pb::ContractInfo {
+                    contract_address: fixture.group_address_strkey.clone(),
+                    contract_config_json: "{}".to_string(),
+                }),
+                events: vec![pb::OnChainEvent {
+                    location: Some(pb::OnChainEventLocation {
+                        transaction_hash: "0xabc".to_string(),
+                        block_number: 1,
+                        transaction_index: 0,
+                        log_index: 0,
+                    }),
+                    signature: hex::encode(stellar_event_selector("transition")),
+                    solidity_signature: String::new(),
+                    data_json: transition_event_json([0x66; 32], info.old_root, info.new_root),
+                }],
+                chain_events: vec![],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(event_response.spent_states.len(), 1);
+        assert_eq!(event_response.spent_states[0].id, "prior-0");
+        assert!(event_response.new_states.is_empty());
+        assert_eq!(event_response.confirmed_states.len(), 2);
+        let confirmed_ids: HashSet<String> = event_response
+            .confirmed_states
+            .iter()
+            .map(|state| state.id.clone())
+            .collect();
+        assert_eq!(confirmed_ids, persisted_output_ids);
     }
 
     /// The divergence half of the same proof: an endorser given a tampered `InfoState` (a
@@ -2664,8 +3210,7 @@ mod tests {
             .output_states
             .iter()
             .find(|s| {
-                let e: sente_host::SenteEntry =
-                    serde_json::from_str(&s.state_data_json).unwrap();
+                let e: sente_host::SenteEntry = serde_json::from_str(&s.state_data_json).unwrap();
                 e.contract_id == fixture.group_entry.contract_id
             })
             .unwrap();
@@ -2675,8 +3220,7 @@ mod tests {
             .output_states
             .iter()
             .find(|s| {
-                let e: sente_host::SenteEntry =
-                    serde_json::from_str(&s.state_data_json).unwrap();
+                let e: sente_host::SenteEntry = serde_json::from_str(&s.state_data_json).unwrap();
                 e.contract_id == fixture.counter_instance_entry.contract_id
                     && e.key_xdr != fixture.counter_instance_entry.key_xdr
             })
@@ -2719,8 +3263,7 @@ mod tests {
             .output_states
             .iter()
             .find(|s| {
-                let e: sente_host::SenteEntry =
-                    serde_json::from_str(&s.state_data_json).unwrap();
+                let e: sente_host::SenteEntry = serde_json::from_str(&s.state_data_json).unwrap();
                 e.contract_id == fixture.counter_instance_entry.contract_id
                     && e.key_xdr != fixture.counter_instance_entry.key_xdr
             })

@@ -106,6 +106,7 @@ message DomainMessage {
   // Request/reply exchanges initiated by the domain, to the paladin node
   oneof request_from_domain {
     FindAvailableStatesRequest   find_available_states =      2010;
+    FindStatesRequest            find_states =                2012;
     EncodeDataRequest            encode_data =                2020;
     DecodeDataRequest            decode_data =                2030;
     RecoverSignerRequest         recover_signer =             2040;
@@ -118,6 +119,7 @@ message DomainMessage {
 
   oneof response_to_domain {
     FindAvailableStatesResponse  find_available_states_res =  2011;
+    FindStatesResponse           find_states_res =            2013;
     EncodeDataResponse           encode_data_res =            2021;
     DecodeDataResponse           decode_data_res =            2031;
     RecoverSignerResponse        recover_signer_res =         2041;

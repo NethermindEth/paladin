@@ -18,6 +18,18 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Business-state UTXO effects computed from the private Soroban execution footprint.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitionManifest {
+    /// Paladin state IDs consumed by the invocation, excluding the group's own root entry.
+    #[serde(rename = "spentStateIds", default)]
+    pub spent_state_ids: Vec<String>,
+    /// New/updated `SenteEntry` JSON values produced by the invocation, excluding the group's own
+    /// root entry. These are strings to keep this crate independent from `sente-host`.
+    #[serde(rename = "outputStateJson", default)]
+    pub output_state_json: Vec<String>,
+}
+
 /// The assembling party's signature over `signing_payload()`, attached once the `AttestationType.SIGN`
 /// round-trip completes (populated after assembly, before the transaction is considered fully
 /// assembled - matching `AttestationType.SIGN`'s own doc comment in `to_domain.proto`).
@@ -62,11 +74,22 @@ pub struct InfoState {
     /// trusting `new_root`'s content-sensitivity on faith.
     #[serde(rename = "invokeJson", default)]
     pub invoke_json: String,
+    /// JSON-encoded `TransitionManifest`. Kept as a string so the ABI tuple parser can persist the
+    /// info state using a simple string component.
+    #[serde(
+        rename = "transitionManifest",
+        default = "empty_transition_manifest_json"
+    )]
+    pub transition_manifest_json: String,
     pub signature: Option<SenderSignature>,
 }
 
 fn empty_external_calls_json() -> String {
     "[]".to_string()
+}
+
+fn empty_transition_manifest_json() -> String {
+    "{}".to_string()
 }
 
 /// The ABI schema registered alongside `SENTE_ENTRY_ABI_SCHEMA_JSON` for `info_states` -
@@ -88,7 +111,8 @@ pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
     {"name": "newRoot", "type": "string"},
     {"name": "onChainDigest", "type": "string"},
     {"name": "externalCallsJson", "type": "string"},
-    {"name": "invokeJson", "type": "string"}
+    {"name": "invokeJson", "type": "string"},
+    {"name": "transitionManifest", "type": "string"}
   ]
 }"#;
 
@@ -110,8 +134,23 @@ impl InfoState {
             on_chain_digest,
             external_calls_json,
             invoke_json,
+            transition_manifest_json: empty_transition_manifest_json(),
             signature: None,
         }
+    }
+
+    pub fn with_transition_manifest(
+        mut self,
+        transition_manifest: TransitionManifest,
+    ) -> Result<Self> {
+        self.transition_manifest_json = serde_json::to_string(&transition_manifest)
+            .context("failed to serialize transition manifest")?;
+        Ok(self)
+    }
+
+    pub fn transition_manifest(&self) -> Result<TransitionManifest> {
+        serde_json::from_str(&self.transition_manifest_json)
+            .context("failed to parse transition manifest")
     }
 
     /// The digest the sender's own `AttestationType.SIGN` request asks it to sign - Sente's
@@ -129,6 +168,7 @@ impl InfoState {
             hex::encode(self.on_chain_digest),
             &self.external_calls_json,
             &self.invoke_json,
+            &self.transition_manifest_json,
         ))
         .context("failed to canonicalize info state for signing")?;
         Ok(Sha256::digest(canonical).into())
@@ -204,8 +244,7 @@ mod tests {
     fn signing_payload_changes_if_invoke_json_changes() {
         let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
         let mut tampered = base.clone();
-        tampered.invoke_json =
-            r#"{"contract":"C123","function":"bump","args":[]}"#.to_string();
+        tampered.invoke_json = r#"{"contract":"C123","function":"bump","args":[]}"#.to_string();
         assert_ne!(
             base.signing_payload().unwrap(),
             tampered.signing_payload().unwrap(),

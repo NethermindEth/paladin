@@ -62,6 +62,9 @@ type StateManager interface {
 	// Find states from outside of a domain context (noting you can reference a domain context by ID)
 	FindStates(ctx context.Context, dbTX persistence.DBTX, domainName string, schemaID pldtypes.Bytes32, query *query.QueryJSON, extQueryOptions *StateQueryOptions) (s []*pldapi.State, err error)
 
+	// Find states for a specific private contract, regardless of whether they are available unless the status says otherwise.
+	FindContractStates(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.ChainAddress, schemaID pldtypes.Bytes32, query *query.QueryJSON, status pldapi.StateStatusQualifier) (s []*pldapi.State, err error)
+
 	// GetState returns state by ID, with optional labels
 	GetStatesByID(ctx context.Context, dbTX persistence.DBTX, domainName string, contractAddress *pldtypes.ChainAddress, stateIDs []pldtypes.HexBytes, failNotFound, withLabels bool) ([]*pldapi.State, error)
 
