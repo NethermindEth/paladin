@@ -60,6 +60,8 @@ func (n *Noto) GetHandler(method string) types.DomainHandler {
 		return &prepareBurnUnlockHandler{lockCommon: lockCommon{noto: n}}
 	case "delegateLock":
 		return &delegateLockHandler{noto: n}
+	case "cancelLock", "cancelUnlock":
+		return &cancelLockHandler{lockCommon: lockCommon{noto: n}}
 	case "deposit":
 		return &depositHandler{noto: n}
 	case "withdraw":

@@ -104,7 +104,13 @@ interface INotoPrivate {
 
     function delegateLock(
         bytes32 lockId,
-        address delegate,
+        string calldata delegate,
+        bytes calldata data
+    ) external;
+
+    function cancelLock(
+        bytes32 lockId,
+        string calldata from,
         bytes calldata data
     ) external;
 

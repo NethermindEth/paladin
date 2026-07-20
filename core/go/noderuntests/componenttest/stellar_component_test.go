@@ -353,6 +353,13 @@ func TestStellarComponentTest(t *testing.T) {
 	waitForSuccessfulReceipt(t, ctx, notary.GetClient(), delegateLockTx.ID(), 30*time.Second)
 	waitForSuccessfulReceipt(t, ctx, party2.GetClient(), delegateLockTx.ID(), 30*time.Second)
 
+	// cancelLock/cancel_unlock's Go+Rust wiring is implemented and unit-tested (handler_cancel_lock.go,
+	// handler_cancel_lock_test.go), but - like this test's own unlock/delegateLock chain just above -
+	// it can't be exercised live yet: SNoto's cancel_unlock requires lock.delegate.require_auth(),
+	// and the lock's delegate is always the original party (e.g. party2), never the notary identity
+	// that actually submits transactions on-chain. That needs the same real non-invoker Soroban
+	// authorization capability deposit's own live test is blocked on (tracked separately as C3a/C3b).
+
 	// Restart/resync drill (mirrors coordinationtest's own stop/sleep/restart pattern): stop
 	// party3, send it a transfer while it's down, restart it, and confirm it catches up and gets
 	// a receipt via the same reliable-messaging/state-distribution machinery, proving this works

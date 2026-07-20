@@ -83,4 +83,7 @@ var (
 	MsgNullifierGenerationFailed          = pde("PD200043", "Failed to generate nullifier for coin")
 	MsgSignatureVerificationFailed        = pde("PD200044", "Signature for '%s' did not verify against expected verifier '%s'")
 	MsgOperationChainOnly                 = pde("PD200045", "'%s' is a %s-only operation")
+	MsgCancelLockNotSupportedV0           = pde("PD200046", "cancelLock is not supported for the V0 domain variant")
+	MsgCancelLockNoCancelPath             = pde("PD200047", "Lock '%s' has no committed cancel path")
+	MsgCancelLockHooksNotSupported        = pde("PD200048", "cancelLock is not yet supported in hooks notary mode")
 )

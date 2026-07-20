@@ -179,6 +179,18 @@ type PrepareBurnUnlockParams struct {
 	Data       pldtypes.HexBytes    `json:"data"`
 }
 
+// CancelLockParams is the chain-neutral request to invoke a lock's already-committed cancel path
+// (EVM's cancelLock/Stellar's cancel_unlock) - not to be confused with the low-level per-chain ABI
+// wrapper struct of the same name in the noto package (mirrors SpendLockParams). Unlike
+// UnlockParams there is no Recipients list: the cancel outputs were already fixed (returning the
+// full locked amount to the lock's original owner) when the lock was created or prepared - see
+// handler_cancel_lock.go.
+type CancelLockParams struct {
+	LockID pldtypes.Bytes32  `json:"lockId"`
+	From   string            `json:"from"`
+	Data   pldtypes.HexBytes `json:"data"`
+}
+
 type DelegateLockParams struct {
 	LockID   pldtypes.Bytes32    `json:"lockId"`
 	Unlock   *UnlockPublicParams `json:"unlock,omitempty"` // Required for V0, omitted for V1
