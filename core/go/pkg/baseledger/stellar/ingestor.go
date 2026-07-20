@@ -120,6 +120,7 @@ func (i *Ingestor) poll(ctx context.Context, start uint64, ch chan<- *baseledger
 	next := start
 	ticker := time.NewTicker(i.pollInterval)
 	defer ticker.Stop()
+tick:
 	for {
 		select {
 		case <-ctx.Done():
@@ -134,8 +135,11 @@ func (i *Ingestor) poll(ctx context.Context, start uint64, ch chan<- *baseledger
 		for _, l := range resp.Ledgers {
 			unit, decodeErr := decodeLedger(ctx, i.networkPassphrase, l, i.specResolver)
 			if decodeErr != nil {
-				log.L(ctx).Errorf("failed to decode ledger %d: %s", l.Sequence, decodeErr)
-				return
+				// A single unparseable/unexpected ledger must not permanently stop ingestion for
+				// the rest of this process's life - next hasn't advanced past l yet, so retrying
+				// the tick loop naturally re-fetches starting from this same ledger.
+				log.L(ctx).Errorf("failed to decode ledger %d (will retry from here): %s", l.Sequence, decodeErr)
+				continue tick
 			}
 			select {
 			case ch <- unit:
@@ -208,17 +212,27 @@ func decodeLedger(ctx context.Context, networkPassphrase string, l protocol.Ledg
 			TxIndex:    txIndex,
 		})
 
-		events, eventsErr := tx.GetContractEvents()
+		// GetTransactionEvents (not the Soroban-only GetContractEvents) is what correctly handles a
+		// classic (non-Soroban) transaction - e.g. the CreateAccountOp transactions channel-account
+		// funding submits - without erroring. It's also version-aware: TransactionMeta V1/V2 have no
+		// events, V3 only carries events for Soroban transactions (matching prior behavior here
+		// exactly), and V4+ (Stellar Protocol 23's CAP-67 "unified events") carries real
+		// per-operation events for every operation, classic or Soroban.
+		txEvents, eventsErr := tx.GetTransactionEvents()
 		if eventsErr != nil {
-			return nil, fmt.Errorf("failed to read contract events for transaction %d of ledger %d: %w", txIndex, l.Sequence, eventsErr)
+			return nil, fmt.Errorf("failed to read events for transaction %d of ledger %d: %w", txIndex, l.Sequence, eventsErr)
 		}
-		for eventIndex, event := range events {
-			indexedEvent, ok, decodeErr := decodeContractEvent(ctx, unit.Sequence, txIndex, int64(eventIndex), event, resolver)
-			if decodeErr != nil {
-				return nil, fmt.Errorf("failed to decode contract event %d of transaction %d of ledger %d: %w", eventIndex, txIndex, l.Sequence, decodeErr)
-			}
-			if ok {
-				unit.Events = append(unit.Events, indexedEvent)
+		var eventIndex int64
+		for _, opEvents := range txEvents.OperationEvents {
+			for _, event := range opEvents {
+				indexedEvent, ok, decodeErr := decodeContractEvent(ctx, unit.Sequence, txIndex, eventIndex, event, resolver)
+				if decodeErr != nil {
+					return nil, fmt.Errorf("failed to decode contract event %d of transaction %d of ledger %d: %w", eventIndex, txIndex, l.Sequence, decodeErr)
+				}
+				if ok {
+					unit.Events = append(unit.Events, indexedEvent)
+				}
+				eventIndex++
 			}
 		}
 

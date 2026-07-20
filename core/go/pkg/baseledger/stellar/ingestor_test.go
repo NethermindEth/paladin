@@ -117,6 +117,128 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+// buildTestLedgerV4Classic builds a minimal-but-valid LedgerCloseMeta with a single successful
+// classic (non-Soroban) transaction using TransactionMetaV4 - the shape stellar-core produces from
+// Protocol 23 onward (CAP-67 "unified events"), and the exact shape a CreateAccountOp transaction
+// (channel-account funding) takes on this project's own stellar_quickstart environment. Unlike
+// buildTestLedger, Ext has no SorobanData, so ingest.LedgerTransaction.IsSorobanTx() is false -
+// this is what previously made tx.GetContractEvents() error "not a soroban transaction".
+// opEvents lets callers supply per-operation contract events (or none, matching a bare
+// CreateAccountOp) via TransactionMetaV4.Operations[i].Events.
+func buildTestLedgerV4Classic(t *testing.T, sourceAddr string, opEvents [][]xdr.ContractEvent) protocol.LedgerInfo {
+	txEnv := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{
+			Tx: xdr.Transaction{
+				SourceAccount: xdr.MustMuxedAddress(sourceAddr),
+				Operations:    []xdr.Operation{},
+				Fee:           100,
+				SeqNum:        xdr.SequenceNumber(42),
+			},
+			Signatures: []xdr.DecoratedSignature{},
+		},
+	}
+	txHash, err := network.HashTransactionInEnvelope(txEnv, testPassphrase)
+	require.NoError(t, err)
+
+	operations := make([]xdr.OperationMetaV2, len(opEvents))
+	for i, events := range opEvents {
+		operations[i] = xdr.OperationMetaV2{Events: events}
+	}
+
+	txMeta := xdr.TransactionResultMeta{
+		Result: xdr.TransactionResultPair{
+			TransactionHash: xdr.Hash(txHash),
+			Result: xdr.TransactionResult{
+				Result: xdr.TransactionResultResult{Code: xdr.TransactionResultCodeTxSuccess, Results: &[]xdr.OperationResult{}},
+			},
+		},
+		TxApplyProcessing: xdr.TransactionMeta{
+			V: 4,
+			V4: &xdr.TransactionMetaV4{
+				Operations: operations,
+			},
+		},
+	}
+
+	ledgerCloseMeta := xdr.LedgerCloseMeta{
+		V: 1,
+		V1: &xdr.LedgerCloseMetaV1{
+			TxProcessing: []xdr.TransactionResultMeta{txMeta},
+			TxSet: xdr.GeneralizedTransactionSet{
+				V: 1,
+				V1TxSet: &xdr.TransactionSetV1{
+					Phases: []xdr.TransactionPhase{{
+						V: 0,
+						V0Components: &[]xdr.TxSetComponent{{
+							TxsMaybeDiscountedFee: &xdr.TxSetComponentTxsMaybeDiscountedFee{
+								Txs: []xdr.TransactionEnvelope{txEnv},
+							},
+						}},
+					}},
+				},
+			},
+		},
+	}
+	metadataXDR, err := xdr.MarshalBase64(ledgerCloseMeta)
+	require.NoError(t, err)
+
+	return protocol.LedgerInfo{
+		Hash:            "aa00000000000000000000000000000000000000000000000000000000000000"[:64],
+		Sequence:        100,
+		LedgerCloseTime: 1234567890,
+		LedgerMetadata:  metadataXDR,
+	}
+}
+
+// TestDecodeLedgerClassicTransactionV4NoEvents is the direct regression test for the live failure:
+// a classic (non-Soroban) transaction with TransactionMetaV4 and no operation events at all -
+// exactly a bare CreateAccountOp funding transaction. Before the fix, decodeLedger called the
+// Soroban-only tx.GetContractEvents(), which errors "not a soroban transaction" for this exact
+// shape - and that error, surfacing from poll(), used to permanently kill ledger ingestion for the
+// rest of the process.
+func TestDecodeLedgerClassicTransactionV4NoEvents(t *testing.T) {
+	kp := keypair.MustRandom()
+	ledger := buildTestLedgerV4Classic(t, kp.Address(), [][]xdr.ContractEvent{{}})
+
+	unit, err := decodeLedger(context.Background(), testPassphrase, ledger, nil)
+	require.NoError(t, err)
+	require.Len(t, unit.Txs, 1)
+	require.Equal(t, "SUCCESS", unit.Txs[0].Result)
+	require.Empty(t, unit.Events)
+}
+
+// TestDecodeLedgerClassicTransactionV4WithEvents proves the more complete fix: from
+// TransactionMetaV4 onward (CAP-67 unified events), a classic operation can carry real contract
+// events too, and decodeLedger must extract them rather than merely tolerating their absence.
+func TestDecodeLedgerClassicTransactionV4WithEvents(t *testing.T) {
+	kp := keypair.MustRandom()
+	var contractID xdr.ContractId
+	copy(contractID[:], []byte("contract-id-32-bytes-long!!!!!!"))
+	event := xdr.ContractEvent{
+		ContractId: &contractID,
+		Type:       xdr.ContractEventTypeContract,
+		Body: xdr.ContractEventBody{
+			V: 0,
+			V0: &xdr.ContractEventV0{
+				Topics: []xdr.ScVal{
+					{Type: xdr.ScValTypeScvSymbol, Sym: symPtr("reg")},
+				},
+				Data: xdr.ScVal{Type: xdr.ScValTypeScvBool, B: boolPtr(true)},
+			},
+		},
+	}
+	ledger := buildTestLedgerV4Classic(t, kp.Address(), [][]xdr.ContractEvent{{event}})
+
+	unit, err := decodeLedger(context.Background(), testPassphrase, ledger, nil)
+	require.NoError(t, err)
+	require.Len(t, unit.Events, 1)
+	ev := unit.Events[0]
+	require.Equal(t, int64(0), ev.TxIndex)
+	require.Equal(t, int64(0), ev.EventIndex)
+	require.Equal(t, ComputeEventSelector("reg"), ev.Selector)
+}
+
 func TestDecodeLedgerSuccessfulTransaction(t *testing.T) {
 	kp := keypair.MustRandom()
 	var contractID xdr.ContractId
@@ -313,4 +435,64 @@ func TestIngestorStreamLedgersFromTipWhenNoCheckpoint(t *testing.T) {
 	ch, err := i.StreamLedgers(ctx, baseledger.LedgerCheckpoint{})
 	require.NoError(t, err)
 	<-ch // closes when ctx is done, since no ledgers are ever returned
+}
+
+// TestIngestorPollRetriesAfterDecodeError proves poll() survives a ledger that fails to decode
+// instead of permanently closing the channel (the live bug: one classic-op ledger used to kill
+// ledger ingestion for the rest of the process). The first getLedgers call returns an unparseable
+// ledger; poll must retry from that same starting sequence (not skip past it, not die) until a
+// later call returns a good one.
+func TestIngestorPollRetriesAfterDecodeError(t *testing.T) {
+	kp := keypair.MustRandom()
+	var contractID xdr.ContractId
+	goodLedger := buildTestLedger(t, kp.Address(), contractID, true)
+	goodLedger.Sequence = 101
+
+	badLedger := protocol.LedgerInfo{
+		Hash:            "aa00000000000000000000000000000000000000000000000000000000000000"[:64],
+		Sequence:        101,
+		LedgerCloseTime: 1234567890,
+		LedgerMetadata:  "not valid base64 xdr",
+	}
+
+	var callCount int
+	requestedStarts := make(chan uint32, 10)
+	rpc := &fakeLedgerRPC{
+		getLedgers: func(ctx context.Context, req protocol.GetLedgersRequest) (protocol.GetLedgersResponse, error) {
+			select {
+			case requestedStarts <- req.StartLedger:
+			default:
+			}
+			callCount++
+			if callCount == 1 {
+				return protocol.GetLedgersResponse{Ledgers: []protocol.LedgerInfo{badLedger}}, nil
+			}
+			return protocol.GetLedgersResponse{Ledgers: []protocol.LedgerInfo{goodLedger}}, nil
+		},
+	}
+	i := NewIngestor(rpc, testPassphrase, time.Millisecond)
+
+	ch, err := i.StreamLedgers(context.Background(), baseledger.LedgerCheckpoint{Sequence: 100})
+	require.NoError(t, err)
+
+	select {
+	case start := <-requestedStarts:
+		require.EqualValues(t, 101, start)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first getLedgers request")
+	}
+	select {
+	case start := <-requestedStarts:
+		require.EqualValues(t, 101, start, "expected poll to retry from the same ledger after a decode failure, not skip past it")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for retried getLedgers request")
+	}
+
+	select {
+	case unit, ok := <-ch:
+		require.True(t, ok, "channel closed instead of delivering the ledger unit - poll died on the decode error")
+		require.Equal(t, uint64(101), unit.Sequence)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ledger unit after retry")
+	}
 }
