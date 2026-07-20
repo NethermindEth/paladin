@@ -1,0 +1,71 @@
+nodeName: node2
+db:
+  type: sqlite
+  sqlite:
+    dsn: ":memory:"
+    autoMigrate: true
+    migrationsDir: "../../db/migrations/sqlite"
+    debugQueries: false
+grpc:
+  shutdownTimeout: 0s
+rpcServer:
+  http:
+    port: 0
+    shutdownTimeout: 0s
+  ws:
+    disabled: true
+    shutdownTimeout: 0s
+baseLedger:
+  type: stellar
+  stellar:
+    url: https://soroban-testnet.stellar.org/
+    networkPassphrase: "Test SDF Network ; September 2015"
+    ingestor:
+      pollInterval: "5s" # real Stellar testnet closes ledgers roughly every 5s, unlike quickstart's ~1s
+      insertDBBatchSize: 100
+    channelAccounts:
+      poolSize: 8
+      funder: root
+      startingBalance: "5"
+wallets:
+  # bip44HardenedSegments: 5 on both wallets below - SLIP-10 ed25519 derivation (used for every
+  # Stellar/ed25519 identity resolved here) requires *all* path segments to be hardened, unlike
+  # secp256k1/EVM's default of 1 (pldconf.SignerConfigDefaults.KeyDerivation.BIP44HardenedSegments)
+  # - a plain (unhardened) segment fails with "PD020829: SLIP-10 ed25519 derivation requires all
+  # path segments to be hardened". 5 covers any path depth Paladin's identity resolution builds.
+  # Unlike stellar.node1.config.yaml's quickstart counterpart, there is no genesis/master-account
+  # relationship to preserve here - real testnet has no notion of "our own genesis account". "root"
+  # (the channel-account funder) and wallet1's identity are just arbitrary derived keypairs that
+  # need funding via testnet's real friendbot (https://friendbot.stellar.org) before first use - see
+  # stellar_component_test.go's fundRootFunderViaFriendbot/STELLAR_FRIENDBOT_URL.
+  # keySelector is listed before wallet1's catch-all below because wallet selection is
+  # first-match-wins in config order.
+  - name: root
+    keySelector: "^root$"
+    signer:
+      keyDerivation:
+        type: "bip32"
+        bip44HardenedSegments: 5
+      keyStore:
+        type: "static"
+        static:
+          keys:
+            seed:
+              encoding: hex
+              inline: baefd734b8d3e48472cff83912375fedbc7573701912fe308af730180f97d74a
+  - name: wallet1
+    keySelector: .*
+    signer:
+      keyDerivation:
+        type: "bip32"
+        bip44HardenedSegments: 5
+      keyStore:
+        type: "static"
+        static:
+          keys:
+            seed:
+              encoding: hex
+              inline: d515931ac1ab807ebdc9164ed1e32ae0111cd826d3306dfee5cb6b775173f996
+sequencerManager:
+  heartbeatInterval: "1s"
+  inactiveGracePeriod: 2

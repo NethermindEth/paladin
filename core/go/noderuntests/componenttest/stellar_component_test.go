@@ -42,6 +42,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Manual Stellar-testnet override points (chapter 14/15's "testnet manual demo" workstream): every
+// value below defaults to exactly what this suite has always hardcoded for local
+// stellar_quickstart, so no existing quickstart-based run changes behavior unless one of these env
+// vars is explicitly set. A manual testnet run sets STELLAR_NODE_CONFIG_PREFIX to "testnet"
+// (selecting config/stellar.testnet.node{1,2,3}.config.yaml - already pointed at testnet's own RPC
+// URL/passphrase), STELLAR_FIXTURES_FILE to a testnet-deployed stellar-fixtures.json, and
+// STELLAR_FRIENDBOT_URL to testnet's real friendbot (https://friendbot.stellar.org) - confirmed
+// this session to use the byte-identical API shape (GET ?addr=, same "already funded" 400-body
+// substring) as quickstart's own, so no logic changes were needed here, only these three values.
+func stellarNodeConfigPath(nodeName string) string {
+	prefix := os.Getenv("STELLAR_NODE_CONFIG_PREFIX")
+	if prefix != "" {
+		return filepath.Join("config", "stellar."+prefix+"."+nodeName+".config.yaml")
+	}
+	return filepath.Join("config", "stellar."+nodeName+".config.yaml")
+}
+
+func stellarFixturesFilePath() string {
+	if path := os.Getenv("STELLAR_FIXTURES_FILE"); path != "" {
+		return path
+	}
+	return "../../../../soroban/artifacts/stellar-fixtures.json"
+}
+
+func stellarFriendbotURL() string {
+	if url := os.Getenv("STELLAR_FRIENDBOT_URL"); url != "" {
+		return url
+	}
+	return "http://localhost:8000/friendbot"
+}
+
 // notoStellarConstructorABI describes only the fields chapter 14 step 2's stellarPrepareDeploy
 // actually reads (types.ConstructorParams's notary/notaryMode) - domains/noto/pkg/types doesn't
 // export a constructor ABI of its own (only function ABIs), the same gap the EVM-side deploy
@@ -67,7 +98,7 @@ type stellarFixtures struct {
 // provisions infrastructure and Go tests assume it's ready (testinfra:startTestInfra).
 func loadStellarFixtures(t *testing.T) stellarFixtures {
 	t.Helper()
-	data, err := os.ReadFile("../../../../soroban/artifacts/stellar-fixtures.json")
+	data, err := os.ReadFile(stellarFixturesFilePath())
 	require.NoError(t, err, "run `./gradlew :soroban:deployStellarFixtures` first (chapter 14 step 6)")
 	var f stellarFixtures
 	require.NoError(t, json.Unmarshal(data, &f))
@@ -92,7 +123,7 @@ func fundRootFunderViaFriendbot(t *testing.T, ctx context.Context, client pldcli
 	rootVerifier, err := client.PTX().ResolveVerifier(ctx, "root", algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
 	require.NoError(t, err)
 
-	resp, err := http.Get("http://localhost:8000/friendbot?addr=" + rootVerifier)
+	resp, err := http.Get(stellarFriendbotURL() + "?addr=" + rootVerifier)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -116,11 +147,12 @@ func fundRootFunderViaFriendbot(t *testing.T, ctx context.Context, client pldcli
 // keeps sqlite but makes party3's data specifically survive its own Stop()/Start() within this test.
 func writePersistentNode3Config(t *testing.T) string {
 	t.Helper()
-	orig, err := os.ReadFile("config/stellar.node3.config.yaml")
+	node3ConfigPath := stellarNodeConfigPath("node3")
+	orig, err := os.ReadFile(node3ConfigPath)
 	require.NoError(t, err)
 	dbPath := filepath.Join(t.TempDir(), "stellar-node3.sqlite")
 	rewritten := strings.Replace(string(orig), `dsn: ":memory:"`, `dsn: "`+dbPath+`"`, 1)
-	require.NotEqual(t, string(orig), rewritten, "expected to find dsn: \":memory:\" in config/stellar.node3.config.yaml")
+	require.NotEqual(t, string(orig), rewritten, "expected to find dsn: \":memory:\" in %s", node3ConfigPath)
 	newConfigPath := filepath.Join(t.TempDir(), "stellar.node3.config.yaml")
 	require.NoError(t, os.WriteFile(newConfigPath, []byte(rewritten), 0600))
 	return newConfigPath
@@ -183,8 +215,8 @@ func TestStellarComponentTest(t *testing.T) {
 	// party3 gets its own rewritten config (writePersistentNode3Config's own doc comment) so its
 	// restart later doesn't wipe its DB - both Start() calls must use this same path.
 	node3ConfigPath := writePersistentNode3Config(t)
-	notary.Start(t, domainConfig, "config/stellar.node1.config.yaml", true)
-	party2.Start(t, domainConfig, "config/stellar.node2.config.yaml", true)
+	notary.Start(t, domainConfig, stellarNodeConfigPath("node1"), true)
+	party2.Start(t, domainConfig, stellarNodeConfigPath("node2"), true)
 	party3.Start(t, domainConfig, node3ConfigPath, true)
 	t.Cleanup(func() {
 		party3.Stop(t)

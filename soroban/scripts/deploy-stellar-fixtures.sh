@@ -30,17 +30,34 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Manual Stellar-testnet override points (chapter 14/15's "testnet manual demo" workstream): every
+# value below defaults to exactly what this script has always hardcoded for local
+# stellar_quickstart, so a plain `./deploy-stellar-fixtures.sh` (or the Gradle task that wraps it)
+# is unaffected unless one of these env vars is explicitly set. For a manual testnet run:
+#   STELLAR_FIXTURE_NETWORK=testnet ./deploy-stellar-fixtures.sh
+# "testnet" is already a built-in `stellar` CLI network alias (see `stellar network ls --long`),
+# carrying its own correct RPC URL/passphrase - STELLAR_FIXTURE_RPC_URL/STELLAR_FIXTURE_PASSPHRASE
+# only matter for a genuinely custom network name the CLI doesn't already know about.
 artifacts_dir="artifacts"
-fixtures_file="$artifacts_dir/stellar-fixtures.json"
-network="stellar-quickstart-local"
-rpc_url="http://localhost:8000/soroban/rpc"
+fixtures_file="${STELLAR_FIXTURES_FILE:-$artifacts_dir/stellar-fixtures.json}"
+network="${STELLAR_FIXTURE_NETWORK:-stellar-quickstart-local}"
+rpc_url="${STELLAR_FIXTURE_RPC_URL:-http://localhost:8000/soroban/rpc}"
 # "Standalone Network ; February 2017" is the well-known passphrase for a stellar/quickstart
 # `--local` network - see testinfra/docker-compose-test.yml's stellar_quickstart service comment.
-network_passphrase="Standalone Network ; February 2017"
-deployer="stellar-fixtures-deployer"
+network_passphrase="${STELLAR_FIXTURE_PASSPHRASE:-Standalone Network ; February 2017}"
+deployer="${STELLAR_FIXTURE_DEPLOYER:-stellar-fixtures-deployer}"
 
-# Idempotent: safe to re-run against an already-running network (e.g. a second local build).
-stellar network add "$network" --rpc-url "$rpc_url" --network-passphrase "$network_passphrase" >/dev/null 2>&1 || true
+# Only register a custom network alias for a genuinely custom network name - testnet/futurenet/
+# mainnet are already built into the `stellar` CLI with their own correct RPC URL/passphrase, and
+# overwriting one of those aliases with this script's (possibly stale, quickstart-defaulted)
+# rpc_url/network_passphrase would corrupt it for every other use of that alias on this machine.
+case "$network" in
+testnet | futurenet | mainnet) ;;
+*)
+	# Idempotent: safe to re-run against an already-running network (e.g. a second local build).
+	stellar network add "$network" --rpc-url "$rpc_url" --network-passphrase "$network_passphrase" >/dev/null 2>&1 || true
+	;;
+esac
 stellar keys generate "$deployer" --network "$network" --fund --overwrite >/dev/null
 
 saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)

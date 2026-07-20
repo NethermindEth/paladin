@@ -306,7 +306,13 @@
      // Stellar quickstart --local network defaults (testinfra/docker-compose-test.yml's
      // stellar_quickstart service) - mirrors core/go/noderuntests/componenttest/config/
      // stellar.node1.config.yaml's baseLedger block verbatim, the proven precedent this reuses
-     // rather than inventing a second Stellar test config from scratch.
+     // rather than inventing a second Stellar test config from scratch. Overridable via system
+     // properties for a manual Stellar-testnet run (chapter 14/15's "testnet manual demo"
+     // workstream) - defaults are unchanged, so no existing quickstart-based run is affected
+     // unless these are explicitly set, e.g.:
+     //   -Dpaladin.test.stellar.rpcUrl=https://soroban-testnet.stellar.org/
+     //   -Dpaladin.test.stellar.networkPassphrase="Test SDF Network ; September 2015"
+     //   -Dpaladin.test.stellar.pollInterval=5s
      private String baseLedgerYaml() {
          return switch (baseLedger) {
              case EVM -> """
@@ -320,10 +326,10 @@
                      baseLedger:
                        type: stellar
                        stellar:
-                         url: http://localhost:8000/soroban/rpc
-                         networkPassphrase: "Standalone Network ; February 2017"
+                         url: %s
+                         networkPassphrase: "%s"
                          ingestor:
-                           pollInterval: "1s"
+                           pollInterval: "%s"
                            insertDBBatchSize: 100
                          channelAccounts:
                            poolSize: 8
@@ -334,7 +340,11 @@
                          fixedGasPrice:
                            maxFeePerGas: "0x0"
                            maxPriorityFeePerGas: "0x0"
-                     """;
+                     """.formatted(
+                     System.getProperty("paladin.test.stellar.rpcUrl", "http://localhost:8000/soroban/rpc"),
+                     System.getProperty("paladin.test.stellar.networkPassphrase", "Standalone Network ; February 2017"),
+                     System.getProperty("paladin.test.stellar.pollInterval", "1s")
+             );
          };
      }
  

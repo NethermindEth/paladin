@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -42,14 +43,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stellarQuickstartRPCURL/stellarQuickstartPassphrase mirror the same literals every other helper
-// in this package hardcodes (loadStellarFixtures/deploy-stellar-fixtures.sh's own network
-// constants) - the actual on-chain plumbing this file exercises (classic ChangeTrust/Payment
-// operations) is otherwise entirely independent of any Paladin node's own config.
-const (
-	stellarQuickstartRPCURL     = "http://localhost:8000/soroban/rpc"
-	stellarQuickstartPassphrase = "Standalone Network ; February 2017"
-)
+// stellarRPCURL/stellarNetworkPassphrase mirror the same values every other helper in this package
+// uses (loadStellarFixtures/deploy-stellar-fixtures.sh's own network settings) - the actual
+// on-chain plumbing this file exercises (classic ChangeTrust/Payment operations) is otherwise
+// entirely independent of any Paladin node's own config. Overridable via STELLAR_RPC_URL/
+// STELLAR_NETWORK_PASSPHRASE for a manual testnet run (see stellar_component_test.go's own
+// override-point doc comment) - default to local stellar_quickstart's values.
+func stellarRPCURL() string {
+	if url := os.Getenv("STELLAR_RPC_URL"); url != "" {
+		return url
+	}
+	return "http://localhost:8000/soroban/rpc"
+}
+
+func stellarNetworkPassphrase() string {
+	if passphrase := os.Getenv("STELLAR_NETWORK_PASSPHRASE"); passphrase != "" {
+		return passphrase
+	}
+	return "Standalone Network ; February 2017"
+}
 
 // newStellarRPCClient builds a real Stellar RPC client (and the baseledger.Client wrapping it,
 // used only for Submit/GetTransactionResult - LoadAccount is called on the raw rpc client, since
@@ -60,11 +72,11 @@ const (
 func newStellarRPCClient(t *testing.T, ctx context.Context) (*rpcclient.Client, *baseledgerstellar.Client) {
 	t.Helper()
 	rpc, closeFn, err := stellarclient.NewClient(ctx, &pldconf.StellarClientConfig{
-		HTTPClientConfig: pldconf.HTTPClientConfig{URL: stellarQuickstartRPCURL},
+		HTTPClientConfig: pldconf.HTTPClientConfig{URL: stellarRPCURL()},
 	})
 	require.NoError(t, err)
 	t.Cleanup(closeFn)
-	return rpc, baseledgerstellar.WrapClient(rpc, stellarQuickstartPassphrase, nil)
+	return rpc, baseledgerstellar.WrapClient(rpc, stellarNetworkPassphrase(), nil)
 }
 
 // generateAndFundIssuer creates a fresh ed25519 keypair (external to every Paladin node - the
@@ -86,7 +98,7 @@ func generateAndFundIssuer(t *testing.T) *keypair.Full {
 // a party to source their own classic ChangeTrust operation.
 func fundAddressViaFriendbot(t *testing.T, addr string) {
 	t.Helper()
-	resp, err := http.Get("http://localhost:8000/friendbot?addr=" + addr)
+	resp, err := http.Get(stellarFriendbotURL() + "?addr=" + addr)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -111,7 +123,7 @@ func submitClassicOpsSignedByIssuer(t *testing.T, ctx context.Context, rpc *rpcc
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
 	})
 	require.NoError(t, err)
-	tx, err = tx.Sign(stellarQuickstartPassphrase, issuer)
+	tx, err = tx.Sign(stellarNetworkPassphrase(), issuer)
 	require.NoError(t, err)
 	submitSignedStellarTx(t, ctx, blClient, tx)
 }
@@ -135,12 +147,12 @@ func submitClassicOpsSignedByParty(t *testing.T, ctx context.Context, rpc *rpccl
 	})
 	require.NoError(t, err)
 
-	hash, err := tx.Hash(stellarQuickstartPassphrase)
+	hash, err := tx.Hash(stellarNetworkPassphrase())
 	require.NoError(t, err)
 	signature, err := client.KeyManager().Sign(ctx, identity, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS, signpayloads.OPAQUE_TO_EDDSA, hash[:])
 	require.NoError(t, err)
 
-	tx, err = tx.AddSignatureBase64(stellarQuickstartPassphrase, trustorAddr, base64.StdEncoding.EncodeToString(signature))
+	tx, err = tx.AddSignatureBase64(stellarNetworkPassphrase(), trustorAddr, base64.StdEncoding.EncodeToString(signature))
 	require.NoError(t, err)
 	submitSignedStellarTx(t, ctx, blClient, tx)
 }
@@ -176,8 +188,8 @@ func deploySACForAsset(t *testing.T, ctx context.Context, issuer *keypair.Full, 
 	cmd := exec.CommandContext(ctx, "stellar", "contract", "asset", "deploy",
 		"--asset", assetCode+":"+issuer.Address(),
 		"--source-account", issuer.Seed(),
-		"--rpc-url", stellarQuickstartRPCURL,
-		"--network-passphrase", stellarQuickstartPassphrase,
+		"--rpc-url", stellarRPCURL(),
+		"--network-passphrase", stellarNetworkPassphrase(),
 	)
 	out, err := cmd.Output()
 	require.NoError(t, err, "stellar contract asset deploy failed: %s", exitErrOutput(err))
@@ -199,8 +211,8 @@ func invokeSACTransfer(t *testing.T, ctx context.Context, issuer *keypair.Full, 
 	cmd := exec.CommandContext(ctx, "stellar", "contract", "invoke",
 		"--id", sacAddress,
 		"--source-account", issuer.Seed(),
-		"--rpc-url", stellarQuickstartRPCURL,
-		"--network-passphrase", stellarQuickstartPassphrase,
+		"--rpc-url", stellarRPCURL(),
+		"--network-passphrase", stellarNetworkPassphrase(),
 		"--", "transfer",
 		"--from", issuer.Address(),
 		"--to", to,

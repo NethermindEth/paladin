@@ -203,8 +203,13 @@ public class TestSenteRealTransition {
             // however many members the group has.
             String rootVerifier = testbed.getRpcClient().request("testbed_resolveVerifier", "root", "eddsa:ed25519", "stellar_address");
             assertNotNull(rootVerifier);
+            // Overridable via -Dpaladin.test.stellar.friendbotUrl=https://friendbot.stellar.org for
+            // a manual Stellar-testnet run (chapter 14/15's "testnet manual demo" workstream) -
+            // confirmed this session that real testnet friendbot uses the byte-identical API shape
+            // (GET ?addr=, same "already funded" 400-body substring) as quickstart's own.
+            String friendbotUrl = System.getProperty("paladin.test.stellar.friendbotUrl", "http://localhost:8000/friendbot");
             var friendbotResponse = java.net.http.HttpClient.newHttpClient().send(
-                    java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:8000/friendbot?addr=" + rootVerifier)).GET().build(),
+                    java.net.http.HttpRequest.newBuilder(java.net.URI.create(friendbotUrl + "?addr=" + rootVerifier)).GET().build(),
                     java.net.http.HttpResponse.BodyHandlers.ofString());
             // The chain itself persists across test runs (only the sqlite DB behind key
             // resolution is fresh each run), so a prior run funding this same resolved index is a
