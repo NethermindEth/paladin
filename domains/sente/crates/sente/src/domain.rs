@@ -1840,6 +1840,24 @@ impl DomainHandler for SenteDomain {
         })
     }
 
+    async fn build_receipt(
+        &self,
+        req: pb::BuildReceiptRequest,
+    ) -> Result<pb::BuildReceiptResponse, String> {
+        let receipt = serde_json::json!({
+            "domain": "sente",
+            "transactionId": req.transaction_id,
+            "inputStateCount": req.input_states.len(),
+            "readStateCount": req.read_states.len(),
+            "outputStateCount": req.output_states.len(),
+            "infoStateCount": req.info_states.len(),
+            "unavailableStates": req.unavailable_states,
+        });
+        Ok(pb::BuildReceiptResponse {
+            receipt_json: receipt.to_string(),
+        })
+    }
+
     /// Turns confirmed `genesis`/`transition` events (declared via `abi_events_json` above) back
     /// into Paladin states/completions - the Go-side integration piece chapter 14 §14.3's own
     /// "what's genuinely still open" note flagged as missing. `genesis` produces the group's very

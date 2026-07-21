@@ -199,6 +199,13 @@ pub trait DomainHandler: Send + Sync + 'static {
         Err("prepare_transaction not implemented".to_string())
     }
 
+    async fn build_receipt(
+        &self,
+        _req: pb::BuildReceiptRequest,
+    ) -> Result<pb::BuildReceiptResponse, String> {
+        Err("build_receipt not implemented".to_string())
+    }
+
     async fn handle_event_batch(
         &self,
         _req: pb::HandleEventBatchRequest,
@@ -446,6 +453,10 @@ async fn dispatch(
             .prepare_transaction(req)
             .await
             .map(|res| Some(ResponseFromDomain::PrepareTransactionRes(res))),
+        Some(RequestToDomain::BuildReceipt(req)) => handler
+            .build_receipt(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::BuildReceiptRes(res))),
         Some(RequestToDomain::HandleEventBatch(req)) => handler
             .handle_event_batch(req)
             .await

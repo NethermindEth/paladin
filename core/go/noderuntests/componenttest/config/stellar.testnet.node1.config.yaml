@@ -2,7 +2,7 @@ nodeName: node1
 db:
   type: sqlite
   sqlite:
-    dsn: ":memory:"
+    dsn: "./stellar-testnet-node1.sqlite"
     autoMigrate: true
     migrationsDir: "../../db/migrations/sqlite"
     debugQueries: false
@@ -10,7 +10,7 @@ grpc:
   shutdownTimeout: 0s
 rpcServer:
   http:
-    port: 0
+    port: 31501
     shutdownTimeout: 0s
   ws:
     disabled: true
@@ -24,9 +24,9 @@ baseLedger:
       pollInterval: "5s" # real Stellar testnet closes ledgers roughly every 5s, unlike quickstart's ~1s
       insertDBBatchSize: 100
     channelAccounts:
-      poolSize: 8
+      poolSize: 2
       funder: root
-      startingBalance: "5"
+      startingBalance: "3"
 wallets:
   # bip44HardenedSegments: 5 on both wallets below - SLIP-10 ed25519 derivation (used for every
   # Stellar/ed25519 identity resolved here) requires *all* path segments to be hardened, unlike

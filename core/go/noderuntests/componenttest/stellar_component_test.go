@@ -87,9 +87,12 @@ var notoStellarConstructorABI = &abi.ABI{{
 }}
 
 type stellarFixtures struct {
-	SaladinFactoryAddress string `json:"saladinFactoryAddress"`
-	SnotoFactoryAddress   string `json:"snotoFactoryAddress"`
-	SnotoWasmHash         string `json:"snotoWasmHash"`
+	SaladinFactoryAddress     string `json:"saladinFactoryAddress"`
+	NotoSaladinFactoryAddress string `json:"notoSaladinFactoryAddress"`
+	SnotoFactoryAddress       string `json:"snotoFactoryAddress"`
+	SnotoWasmHash             string `json:"snotoWasmHash"`
+	SenteFactoryAddress       string `json:"senteFactoryAddress"`
+	SenteWasmHash             string `json:"senteWasmHash"`
 }
 
 // loadStellarFixtures reads the addresses `./gradlew :soroban:deployStellarFixtures` deploys
@@ -103,8 +106,11 @@ func loadStellarFixtures(t *testing.T) stellarFixtures {
 	var f stellarFixtures
 	require.NoError(t, json.Unmarshal(data, &f))
 	require.NotEmpty(t, f.SaladinFactoryAddress)
+	require.NotEmpty(t, f.NotoSaladinFactoryAddress)
 	require.NotEmpty(t, f.SnotoFactoryAddress)
 	require.NotEmpty(t, f.SnotoWasmHash)
+	require.NotEmpty(t, f.SenteFactoryAddress)
+	require.NotEmpty(t, f.SenteWasmHash)
 	return f
 }
 
@@ -193,7 +199,7 @@ func TestStellarComponentTest(t *testing.T) {
 	asset := &txnbuild.CreditAsset{Code: "USDX", Issuer: issuer.Address()}
 
 	domainConfig := &domains.NotoStellarDomainConfig{
-		RegistryAddress:     fixtures.SaladinFactoryAddress,
+		RegistryAddress:     fixtures.NotoSaladinFactoryAddress,
 		SnotoFactoryAddress: fixtures.SnotoFactoryAddress,
 		SnotoWasmHash:       fixtures.SnotoWasmHash,
 		SacAddress:          sacAddress,

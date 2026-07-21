@@ -41,11 +41,53 @@ cd "$(dirname "$0")/.."
 artifacts_dir="artifacts"
 fixtures_file="${STELLAR_FIXTURES_FILE:-$artifacts_dir/stellar-fixtures.json}"
 network="${STELLAR_FIXTURE_NETWORK:-stellar-quickstart-local}"
-rpc_url="${STELLAR_FIXTURE_RPC_URL:-http://localhost:8000/soroban/rpc}"
-# "Standalone Network ; February 2017" is the well-known passphrase for a stellar/quickstart
-# `--local` network - see testinfra/docker-compose-test.yml's stellar_quickstart service comment.
-network_passphrase="${STELLAR_FIXTURE_PASSPHRASE:-Standalone Network ; February 2017}"
+case "$network" in
+testnet)
+	default_rpc_url="https://soroban-testnet.stellar.org/"
+	default_network_passphrase="Test SDF Network ; September 2015"
+	;;
+futurenet)
+	default_rpc_url="https://rpc-futurenet.stellar.org/"
+	default_network_passphrase="Test SDF Future Network ; October 2022"
+	;;
+*)
+	default_rpc_url="http://localhost:8000/soroban/rpc"
+	# "Standalone Network ; February 2017" is the well-known passphrase for a stellar/quickstart
+	# `--local` network - see testinfra/docker-compose-test.yml's stellar_quickstart service comment.
+	default_network_passphrase="Standalone Network ; February 2017"
+	;;
+esac
+rpc_url="${STELLAR_FIXTURE_RPC_URL:-$default_rpc_url}"
+network_passphrase="${STELLAR_FIXTURE_PASSPHRASE:-$default_network_passphrase}"
+expected_protocol="${STELLAR_FIXTURE_PROTOCOL_VERSION:-27}"
 deployer="${STELLAR_FIXTURE_DEPLOYER:-stellar-fixtures-deployer}"
+validate_network="${STELLAR_FIXTURE_VALIDATE_NETWORK:-true}"
+
+if [[ "$validate_network" != "false" ]]; then
+	python3 - "$rpc_url" "$network_passphrase" "$expected_protocol" <<'PYVALIDATE'
+import json
+import sys
+import urllib.request
+
+rpc_url, expected_passphrase, expected_protocol = sys.argv[1], sys.argv[2], int(sys.argv[3])
+req = urllib.request.Request(
+    rpc_url,
+    data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getNetwork"}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req, timeout=20) as res:
+    payload = json.loads(res.read().decode())
+result = payload.get("result") or {}
+actual_passphrase = result.get("passphrase")
+actual_protocol = result.get("protocolVersion")
+if actual_passphrase != expected_passphrase:
+    raise SystemExit(f"getNetwork passphrase mismatch: expected {expected_passphrase!r}, got {actual_passphrase!r}")
+if int(actual_protocol) != expected_protocol:
+    raise SystemExit(f"getNetwork protocol mismatch: expected {expected_protocol}, got {actual_protocol}")
+friendbot = result.get("friendbotUrl") or ""
+print(f"Validated Stellar network: protocol={actual_protocol} passphrase={actual_passphrase!r} friendbot={friendbot}")
+PYVALIDATE
+fi
 
 # Only register a custom network alias for a genuinely custom network name - testnet/futurenet/
 # mainnet are already built into the `stellar` CLI with their own correct RPC URL/passphrase, and

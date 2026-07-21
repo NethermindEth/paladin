@@ -419,18 +419,18 @@ task componentTestWithGasSQLite(type: GasComponentTest, dependsOn: [
 // alongside besu_free/besu_gas) plus the 3-node Stellar-backed config below
 // (config/stellar.node{1,2,3}.config.yaml, mirroring sqlite.node{1,2,3}.config.yaml's Besu setup -
 // each with its own signing identity and a shared "root" identity for channel-account funding).
-// TestStellarComponentTest (noderuntests/componenttest/stellar_component_test.go) now exercises
-// these configs (mint/transfer/state-distribution/resync), but it does not yet pass standalone:
-// the notary's own business signing identity has no funding path on standalone quickstart (no
-// friendbot equivalent wired up here, unlike the channel-account pool's own funding) - see
-// saladin-book ch.14 §14.1's own status note. Not yet in the CI-required `componentTest`
-// aggregate below for the same reason.
+// TestStellarComponentTest (noderuntests/componenttest/stellar_component_test.go) exercises these
+// configs end-to-end (deploy/mint/transfer/lock/prepareUnlock/delegateLock plus state resync).
+// It is intentionally kept as a standalone task rather than in the CI-required `componentTest`
+// aggregate because it depends on stellar_quickstart, soroban fixtures, and longer channel-account
+// funding/confirmation timing than the regular component suite.
 task componentTestStellarSQLite(type: ComponentTest, dependsOn: [
         makeMocks,
         ':testinfra:startTestInfra',
         setupCoverage,
         goGet,
         copyContracts, // Ensure this task depends on copying the test contracts
+        ':soroban:deployStellarFixtures',
     ]) {
     mustRunAfter 'componentTestPostgres', 'componentTestWithGasSQLite' // these tests cannot run concurrently
     args '-tags', "testdbsqlite,stellar_quickstart" // uses the stellar_quickstart standalone network
