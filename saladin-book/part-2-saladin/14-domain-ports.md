@@ -106,12 +106,11 @@ skips re-registering the CLI's own built-in `testnet` network alias; `Testbed.ja
 has equivalent system-property overrides (`-Dpaladin.test.stellar.*`) for the Sente Java test.
 Confirmed on 2026-07-21 via Stellar RPC `getNetwork` that public Testnet currently reports
 passphrase `Test SDF Network ; September 2015`, protocol version `27`, and friendbot
-`https://friendbot.stellar.org/`, matching the protocol-27 contracts in this branch. What is still
-missing for a reproducible public-Testnet demo is explicit pre-deploy validation in the script
-itself (`getNetwork` before upload/deploy), reset-aware fixture rebuild, persistent node databases,
-fixed externally documented ports, reduced channel-account pools, and funding of every resolved
-funder/business identity actually used by the demo. The current Testnet configs still use
-`:memory:` SQLite, dynamic HTTP ports, and `poolSize: 8`.
+`https://friendbot.stellar.org/`, matching the protocol-27 contracts in this branch. The fixture script now validates `getNetwork` before upload/deploy, and the Testnet node configs
+use persistent SQLite files, fixed HTTP ports, and reduced channel-account pools. What is still
+missing for a reproducible public-Testnet demo is reset-aware fixture rebuild, a one-command runner,
+and funding of every resolved funder/business identity actually used by the demo before first
+submission.
 
 **Correction from step 6's first pass, now resolved**: mint/transfer/lock/unlock's "done" status
 above was always accurate for what it claimed — the domain plugin genuinely builds correct
@@ -545,7 +544,8 @@ recover persisted output IDs after plugin restart via the `FindStates` callback 
 on the in-memory `pending_transitions` map. What remains for the requested demo is integration, not
 the local UTXO model: load Sente in a real three-node Paladin harness, distribute group members one
 per node, fund all resolved identities on Testnet, run the SNoto flow first, and feed a real SNoto
-state ID into the Sente external call.
+state ID into the Sente external call. `BuildReceipt` is now wired for Sente and returns a basic
+JSON receipt payload, so receipt dispatch is no longer a plugin capability gap.
 
 **Honest framing: Sente is the hardest deliverable of Part 2 — comparable in effort to several
 other milestones combined — and is deliberately scheduled last (M6), off the MVP critical
@@ -1081,8 +1081,47 @@ unit-tested; ordinary transition assemble/endorse and Go-side integration are no
   event confirmation from persisted `SenteInfo`/`SenteEntry` records. The missing demo path is a
   real three-Paladin-node run with Sente loaded on every node, static registry/transport peers,
   persistent databases, one group member per node, and an external SNoto call that references a real
-  SNoto state produced by the preceding SNoto mint/transfer flow. Until that exists, S3 is best
+  SNoto state produced by the preceding SNoto mint/transfer flow. Sente `BuildReceipt` is now wired,
+  so the remaining work is the harness and real state plumbing. Until that exists, S3 is best
   described as implementation-complete locally but not demo-complete on public Testnet.
+- **Update — real external SNoto call, funding automation, and reset-aware Testnet script.**
+  `transition_executes_external_call_atomically` and `deployGroupAndSubmitTransitionWithExternalSnotoCall`
+  now target a real, pre-existing SNoto coin state (a `transfer`/mint output) instead of
+  `keepalive([])`, so `keepalive_one`'s `extend_ttl` writes (`soroban/contracts/snoto/src/storage.rs`)
+  are genuinely exercised, not skipped via an empty loop — confirmed correct and fast/deterministic
+  at the contract-test level (0.01s, no live network). The Java live end-to-end run of the same flow
+  surfaced two distinct, previously-undocumented issues, one fixed and one still open:
+  1. **Fixed**: `Testbed.java`'s generated Stellar config never set `sequencerManager`, so it silently
+     ran with production's `heartbeatInterval: 10s` default instead of the `1s` the Go 3-node
+     component test's own config already uses — every public-transaction orchestrator check after
+     the first one waited a full, avoidable heartbeat cycle. Now sets `heartbeatInterval`/
+     `requestTimeout`/`stateTimeout` to `1s` (matching `SequencerMinimum`, the framework's own
+     documented fast-polling floor), which measurably cut a chain-neutral deploy's own confirmation
+     time from ~11s to ~1.5s in this exact test.
+  2. **Still open**: even with that fix, a domain's very first *private* transaction (the mint,
+     dispatched moments after a chain-neutral deploy against a second domain configured in the same
+     `Testbed`) was observed to reliably stall for ~25-30s specifically in the "submit" stage before
+     reaching the public-tx-manager's own orchestrator at all — i.e. before `heartbeatInterval`'s own
+     polling loop is even reached, so tuning it further didn't help. Root cause not yet identified
+     (a candidate lead: per-contract distributed-sequencer/coordinator selection for a brand-new
+     contract's first private transaction, since chain-neutral deploys don't appear to go through
+     that same path). Not blocking demo readiness in principle — the identical mint operation already
+     runs reliably inside `TestStellarComponentTest`'s own real 3-node Go harness — but it does mean
+     `deployGroupAndSubmitTransitionWithExternalSnotoCall`'s own live JVM/`Testbed` run needs a longer
+     timeout/polling budget than a plain blocking `testbed_invoke` call affords today (worked around
+     in the test itself via non-blocking submission + explicit receipt polling, but the underlying
+     ~30s dispatch latency itself remains uninvestigated).
+  Separately, identity funding is now consolidated behind one `resolveAndFundVerifier` helper
+  (mirrored in both `stellar_component_test.go` and `TestSenteRealTransition.java`) that always
+  resolves-then-funds together, rather than each call site repeating that pair by hand — closing the
+  exact gap where `deployGroupAndSubmitTransitionWithExternalSnotoCall`'s own `"root"` identity was
+  never explicitly funded (it happened to coincide with the single-member test's own lucky HD-index
+  match, which broke once an extra prior identity resolution shifted that index). A new
+  `soroban/scripts/testnet-demo.sh` wraps reset-detection (via `stellar contract invoke`'s
+  distinguishable `contract not found` error against a previously-deployed fixture address),
+  conditional fixture redeploy, deployer funding, and running both the SNoto and Sente suites against
+  real Testnet in one command — written and syntax-checked, not yet run against a real public Testnet
+  from this environment.
 
 ### What Pente does, translated
 
@@ -1169,7 +1208,7 @@ transactions Sente eventually submits on-chain.
 |---|---|---|
 | S1 (~1.5 em) | ✅ **Done.** Embed soroban-env-host; execute contracts against snapshots in tests | ✅ deterministic re-execution proven across two processes (`domains/sente/crates/sente-host`) |
 | S2 (~2 em) | ✅ **Done, deliberately scoped down** (fixed `factory.wasm` `register` scenario, no general ABI arg encoding, no genesis/deploy — see above). Domain plugin: assemble/endorse with re-execution equality check (`SenteEntry`, `InfoState.result_digest`, `PaladinClient`, `SenteDomain`) | ✅ two-node private invoke, endorsement divergence detected (`crates/sente/tests/{two_node_invoke,divergence}.rs`, Rust-level cross-process, not a Java `Testbed`) |
-| S3 (~1.5 em) | ⚠️ **Mostly done, demo integration open.** Contracts, genesis deploy, root-only transaction assemble/endorse/prepare, Go event-indexing, local JVM quickstart coverage, external-call encoding, and the stateful `SenteEntry` UTXO lifecycle are implemented. Stateful transitions now spend updated notes, preserve read-only dependencies, create sequenced successors, commit a manifest in `SenteInfo`, and recover persisted output IDs after plugin restart via the domain `FindStates` callback. | ⚠️ local exit mostly met: two-node root-only transition proven as a genuine cross-process Rust flow (`crates/sente/tests/{two_node_invoke,divergence}.rs`); atomic external call proven at the contract-test level (`sente/src/test.rs`'s `transition_executes_external_call_atomically`) and plugin level (`prepare_transaction_bundles_a_real_external_call`); stateful private invocation proven against `test-counter`, including a second transition consuming the first output and restart-safe event confirmation. Still missing for the requested demo: a real three-Paladin-node Sente run, one member per node, persistent Testnet configs, automatic funding/provisioning, and a Sente external SNoto call using a real state ID from the prior SNoto flow rather than `keepalive([])`. |
+| S3 (~1.5 em) | ⚠️ **Mostly done, demo integration open.** Contracts, genesis deploy, root-only transaction assemble/endorse/prepare, Go event-indexing, local JVM quickstart coverage, external-call encoding, and the stateful `SenteEntry` UTXO lifecycle are implemented. Stateful transitions now spend updated notes, preserve read-only dependencies, create sequenced successors, commit a manifest in `SenteInfo`, and recover persisted output IDs after plugin restart via the domain `FindStates` callback. | ⚠️ local exit mostly met: two-node root-only transition proven as a genuine cross-process Rust flow (`crates/sente/tests/{two_node_invoke,divergence}.rs`); atomic external call proven at the contract-test level (`sente/src/test.rs`'s `transition_executes_external_call_atomically`) and plugin level (`prepare_transaction_bundles_a_real_external_call`); stateful private invocation proven against `test-counter`, including a second transition consuming the first output and restart-safe event confirmation. A Sente external SNoto call using a real state ID (not `keepalive([])`) is now done, both at the contract-test level and (with a still-open ~30s dispatch-latency caveat noted above) live via `Testbed`; identity funding is consolidated behind one resolve-and-fund helper; a reset-aware `testnet-demo.sh` exists but is untested against real Testnet. Still missing for the requested demo: a real three-Paladin-node Sente run with one member per node and persistent Testnet configs. |
 | S4 (~1+ em) | Hardening: determinism audit, protocol-upgrade drill, chaos. Protocol-upgrade drill direction (verified against `stellar/stellar-core` source, not yet built): Stellar Core itself vendors multiple exact-pinned `soroban-env-host` builds concurrently (currently seven, `p21`–`p27`, via Cargo package-renaming to distinct dependency names all mapping to `package = "soroban-env-host"`), dispatched at runtime by matching each ledger's `protocol_version` against a static table (`get_host_module_for_protocol`), dropped only once replay against them is confirmed bit-identical under the newer host — a rolling policy, not a fixed N/N−1 window. Sente's own S2 deliberately does *not* need this (see above); S4 would mirror the same shape — a small dispatch module in `sente-host` vendoring N pinned versions, selected by `InfoState.ledger_info.protocol_version` | endorsement-divergence chaos suite green |
 
 ## 14.4 Pente on Saladin?
