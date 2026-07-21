@@ -13,15 +13,28 @@ concrete packages, interfaces, proto messages, and migration steps.
 > persisted transaction record, not merely a nice-to-have. The boundary conversions back to the
 > EVM-shaped `pldapi.PublicTx` API type (which remains `EthAddress`-typed, out of scope) are
 > fallible and documented at each call site (`mapPersistedTransaction`, the submission-writer
-> sequencer handoff, etc.). `orchestrator.signingAddress` and the nonce-allocation/balance-check
-> cluster were deliberately left `EthAddress`-typed, because the public/domain-facing API remains
-> EVM-shaped even though the Stellar backend now uses channel-account pooling internally. Three
-> design details evolved from this chapter's original text during implementation — noted inline
-> where they occur (§11.3's `ChainSubmitter` signatures; §11.4's `ChainAddress` storage format; the
-> manager migration just described). The `ledgerindexer` split sketched in §11.3 is now partially
-> realized for Stellar as a narrow ingestor/writer path rather than a full chain-neutral consumer
-> interface; the remaining work is the event-stream/query/discovery side described in Chapter 12,
-> not basic `type: stellar` node boot.
+> sequencer handoff, etc.). **Correction, superseding the paragraph as originally written**: the
+> migration went further than "deliberately left `EthAddress`-typed" — chapter 14's Sente work
+> needed a real, confirmed-on-chain submission path end to end, which required
+> `transaction_orchestrator.go`'s `signingAddress` field (and the nonce-allocation/ordering-key
+> lookups keyed off it) to become genuinely `pldtypes.ChainAddress`-typed too, plus a new
+> `filters.ChainAddressField` for `contractAddress`/`to` query filters and `groupmgr`'s own
+> `ContractAddress` fields. This is still **partial and opportunistic, not a completed top-down M1
+> sweep**: each of these was migrated because a concrete Stellar flow (M3/M4/M6) hit it as a real
+> blocker, not as part of a planned pass over the ~200 files this refactor eventually touches: the
+> nonce-allocation/balance-check cluster's numeric logic itself, most receipt/query-path structs,
+> and anything not yet exercised by a live Stellar flow remain `EthAddress`-typed or unaudited.
+> Three design details evolved from this chapter's original text during implementation — noted
+> inline where they occur (§11.3's `ChainSubmitter` signatures; §11.4's `ChainAddress` storage
+> format; the manager migration just described). The `ledgerindexer` split sketched in §11.3 is now
+> partially realized for Stellar as a narrow ingestor/writer path rather than a full chain-neutral
+> consumer interface; the remaining work is the event-stream/query/discovery side described in
+> Chapter 12, not basic `type: stellar` node boot. **Also still outstanding**: the query-facing
+> `bidx_*` RPC surface (`BlockIndexer().RPCModule()`) is only registered for `type: evm` nodes today
+> (`componentmgr/manager.go`) — a `type: stellar` node has no equivalent registered, so nothing
+> that talks to that RPC namespace (including the operator UI's Transactions/Events views, §15.6)
+> can query a Stellar node's ledger data yet, even though the underlying indexer writes chain-
+> neutral rows already.
 
 ## 11.1 Design principles
 
@@ -355,10 +368,19 @@ transport plugin, **RegistryManager** and the plugin API, **GroupManager**, **Id
    grep's scope by construction — the criterion is about `core/go/internal` managers no longer
    holding a direct `ethclient.EthClient`-typed dependency, not a literal substring match against
    the package path). ✅ Met for `publictxmgr` (the `ChainSubmitter` extraction removed its direct
-   `ethClient`/`ethClientFactory` fields). ⚠️ Known, documented exception: `txmgr` still holds
-   `ethClientFactory` for one call site needing `EthClientWithKeyManager`'s ABI-encoding helpers
-   (`transaction_submission.go:335`) — ABI encoding is intentionally kept EVM-specific and out of
-   the BLI (§11.5), so this is deferred to milestone M1's broader migration, not silently ignored.
+   `ethClient`/`ethClientFactory` fields). **Correction: three documented exceptions exist today,
+   not one.** ⚠️ `txmgr` still holds `ethClientFactory` for one call site needing
+   `EthClientWithKeyManager`'s ABI-encoding helpers (`transaction_submission.go:335`) — ABI encoding
+   is intentionally kept EVM-specific and out of the BLI (§11.5), so this is deferred to milestone
+   M1's broader migration, not silently ignored. ⚠️ `domainmgr` also holds an `ethClientFactory`
+   field (`manager.go:104`), used purely for `ChainID()` when constructing/recovering
+   EIP-1559/legacy-EIP-155 signature payloads for EVM domains (`domain.go:515-745` —
+   `SignaturePayloadEIP1559`, `RecoverEIP1559Transaction`, etc.); this is the same kind of
+   intentionally-EVM-specific carve-out as `txmgr`'s, just not previously called out here. ℹ️
+   `componentmgr`/`components.go` also expose `EthClientFactory()` as part of the shared component
+   registry interface — this is the registry accessor itself, not a manager holding a private
+   dependency, so it is not the kind of leak this criterion targets, but it is a fourth textual
+   hit worth knowing about when re-running the grep.
 2. Golden-payload tests: recorded EVM JSON-RPC request/response fixtures replay byte-identically
    before/after M1+M2 (addresses, receipts, queries). An initial instance exists —
    `core/go/internal/publictxmgr/golden_payload_test.go` fixes `mapPersistedTransaction`'s JSON
