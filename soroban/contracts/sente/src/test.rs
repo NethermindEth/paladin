@@ -266,7 +266,10 @@ fn transition_rejects_replay_after_root_advanced() {
 /// The load-bearing test: a transition's `external_calls` really do execute, atomically alongside
 /// the root update - this is S3's exit criterion in miniature ("group transition ... with an
 /// external SNoto call"), using SNoto's harmless no-auth `keepalive` as the leg (mirrors
-/// `satom/src/test.rs`'s own `keepalive_op` convention for an atomicity-only check).
+/// `satom/src/test.rs`'s own `keepalive_op` convention for an atomicity-only check). Targets a
+/// real, pre-existing state ID (a coin created via a genuine `transfer` below) rather than an
+/// empty vec - `keepalive_one` (soroban/contracts/snoto/src/storage.rs) only actually reaches its
+/// `extend_ttl` calls for ids that exist, so an empty vec alone never exercises that code path.
 #[test]
 fn transition_executes_external_call_atomically() {
     let env = Env::default();
@@ -281,6 +284,21 @@ fn transition_executes_external_call_atomically() {
         &sac,
     );
 
+    // A real coin state, the same way Paladin's own "mint" ABI maps to SNoto's `transfer` with
+    // no inputs (domains/noto/internal/noto/handler_mint.go's own stellarBaseLedgerInvoke) - the
+    // output id is just an opaque 32-byte value from SNoto's own perspective, so any chosen id is
+    // as real/valid as one Paladin would allocate off-chain.
+    let coin_id = BytesN::from_array(&env, &[9u8; 32]);
+    let no_inputs: Vec<BytesN<32>> = Vec::new(&env);
+    let outputs = soroban_sdk::vec![&env, coin_id.clone()];
+    snoto::ContractClient::new(&env, &snoto_id).transfer(
+        &BytesN::from_array(&env, &GENESIS_TX_ID),
+        &no_inputs,
+        &outputs,
+        &Bytes::new(&env),
+        &Bytes::new(&env),
+    );
+
     let m1 = member(&env, 1);
     let contract_id = setup(&env, &[&m1]);
     let client = ContractClient::new(&env, &contract_id);
@@ -288,13 +306,13 @@ fn transition_executes_external_call_atomically() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
-    let empty_ids: Vec<BytesN<32>> = Vec::new(&env);
+    let real_ids = soroban_sdk::vec![&env, coin_id.clone()];
     let external_calls = soroban_sdk::vec![
         &env,
         AtomOperation {
             contract: snoto_id.clone(),
             function: Symbol::new(&env, "keepalive"),
-            args: soroban_sdk::vec![&env, empty_ids.into_val(&env)],
+            args: soroban_sdk::vec![&env, real_ids.into_val(&env)],
         },
     ];
     let sig = sign_transition(

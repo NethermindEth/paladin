@@ -29,6 +29,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 // Chapter 14 §14.3 S3's real Go-side integration test: loads the actual compiled Sente cdylib via
@@ -73,6 +74,34 @@ public class TestSenteRealTransition {
         return fixtures;
     }
 
+    // resolveAndFundVerifier resolves lookup's Stellar verifier via testbed and funds it via
+    // friendbot if it isn't already - the one mechanical step every identity these tests touch
+    // needs before it can act as a channel-account funder or classic-op source (a Paladin-managed
+    // identity's resolved verifier address has no on-chain ledger entry at all until explicitly
+    // funded). Consolidated here (mirrors core/go/noderuntests/componenttest/stellar_component_test.go's
+    // own resolveAndFundVerifier) so a newly added identity can't silently be left unfunded.
+    // Overridable via -Dpaladin.test.stellar.friendbotUrl=https://friendbot.stellar.org for a
+    // manual Stellar-testnet run (chapter 14/15's "testnet manual demo" workstream) - confirmed
+    // this session that real testnet friendbot uses the byte-identical API shape (GET ?addr=, same
+    // "already funded" 400-body substring) as quickstart's own.
+    private static String resolveAndFundVerifier(Testbed testbed, String lookup) throws Exception {
+        String verifier = testbed.getRpcClient().request("testbed_resolveVerifier", lookup, "eddsa:ed25519", "stellar_address");
+        assertNotNull(verifier);
+        String friendbotUrl = System.getProperty("paladin.test.stellar.friendbotUrl", "http://localhost:8000/friendbot");
+        var friendbotResponse = java.net.http.HttpClient.newHttpClient().send(
+                java.net.http.HttpRequest.newBuilder(java.net.URI.create(friendbotUrl + "?addr=" + verifier)).GET().build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        // The chain itself persists across test runs (only the sqlite DB behind key resolution is
+        // fresh each run), so a prior run funding this same resolved index is a real, expected
+        // outcome here, not a failure.
+        boolean alreadyFunded = friendbotResponse.statusCode() == 400
+                && friendbotResponse.body().contains("already funded");
+        if (friendbotResponse.statusCode() != 200 && !alreadyFunded) {
+            fail("failed to fund verifier %s via friendbot: HTTP %d: %s".formatted(verifier, friendbotResponse.statusCode(), friendbotResponse.body()));
+        }
+        return verifier;
+    }
+
     @Test
     void deployGroupAndSubmitTransition() throws Exception {
         StellarFixtures fixtures = loadStellarFixtures();
@@ -88,7 +117,12 @@ public class TestSenteRealTransition {
                             put("senteFactoryAddress", fixtures.senteFactoryAddress());
                             put("saladinFactoryAddress", fixtures.saladinFactoryAddress());
                             put("senteWasmHash", fixtures.senteWasmHash());
-                            put("networkPassphrase", "Standalone Network ; February 2017");
+                            // Overridable via -Dpaladin.test.stellar.networkPassphrase (chapter
+                            // 14/15's "testnet manual demo" workstream) - must match whatever
+                            // Testbed.java's own baseLedgerYaml() is configured with (same system
+                            // property), since this is the value the Sente/Noto Rust plugins use
+                            // to sign/verify Soroban transaction envelopes themselves.
+                            put("networkPassphrase", System.getProperty("paladin.test.stellar.networkPassphrase", "Standalone Network ; February 2017"));
                         }},
                         // "root" is the one account guaranteed to exist and be funded on a fresh
                         // quickstart network (it derives the network's own genesis account, seed =
@@ -183,7 +217,12 @@ public class TestSenteRealTransition {
                             put("senteFactoryAddress", fixtures.senteFactoryAddress());
                             put("saladinFactoryAddress", fixtures.saladinFactoryAddress());
                             put("senteWasmHash", fixtures.senteWasmHash());
-                            put("networkPassphrase", "Standalone Network ; February 2017");
+                            // Overridable via -Dpaladin.test.stellar.networkPassphrase (chapter
+                            // 14/15's "testnet manual demo" workstream) - must match whatever
+                            // Testbed.java's own baseLedgerYaml() is configured with (same system
+                            // property), since this is the value the Sente/Noto Rust plugins use
+                            // to sign/verify Soroban transaction envelopes themselves.
+                            put("networkPassphrase", System.getProperty("paladin.test.stellar.networkPassphrase", "Standalone Network ; February 2017"));
                         }},
                         "root")
         );
@@ -201,24 +240,7 @@ public class TestSenteRealTransition {
             // size, resolve "root" up front and fund whatever it actually resolves to directly via
             // the quickstart network's friendbot - this makes the test correct independent of
             // however many members the group has.
-            String rootVerifier = testbed.getRpcClient().request("testbed_resolveVerifier", "root", "eddsa:ed25519", "stellar_address");
-            assertNotNull(rootVerifier);
-            // Overridable via -Dpaladin.test.stellar.friendbotUrl=https://friendbot.stellar.org for
-            // a manual Stellar-testnet run (chapter 14/15's "testnet manual demo" workstream) -
-            // confirmed this session that real testnet friendbot uses the byte-identical API shape
-            // (GET ?addr=, same "already funded" 400-body substring) as quickstart's own.
-            String friendbotUrl = System.getProperty("paladin.test.stellar.friendbotUrl", "http://localhost:8000/friendbot");
-            var friendbotResponse = java.net.http.HttpClient.newHttpClient().send(
-                    java.net.http.HttpRequest.newBuilder(java.net.URI.create(friendbotUrl + "?addr=" + rootVerifier)).GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-            // The chain itself persists across test runs (only the sqlite DB behind key
-            // resolution is fresh each run), so a prior run funding this same resolved index is a
-            // real, expected outcome here, not a failure.
-            boolean alreadyFunded = friendbotResponse.statusCode() == 400
-                    && friendbotResponse.body().contains("already funded");
-            if (friendbotResponse.statusCode() != 200 && !alreadyFunded) {
-                fail("failed to fund root verifier %s via friendbot: HTTP %d: %s".formatted(rootVerifier, friendbotResponse.statusCode(), friendbotResponse.body()));
-            }
+            resolveAndFundVerifier(testbed, "root");
 
             Map<?, ?> createdGroup = testbed.getRpcClient().request("pgroup_createGroup",
                     new HashMap<>() {{
@@ -289,7 +311,12 @@ public class TestSenteRealTransition {
                             put("senteFactoryAddress", fixtures.senteFactoryAddress());
                             put("saladinFactoryAddress", fixtures.saladinFactoryAddress());
                             put("senteWasmHash", fixtures.senteWasmHash());
-                            put("networkPassphrase", "Standalone Network ; February 2017");
+                            // Overridable via -Dpaladin.test.stellar.networkPassphrase (chapter
+                            // 14/15's "testnet manual demo" workstream) - must match whatever
+                            // Testbed.java's own baseLedgerYaml() is configured with (same system
+                            // property), since this is the value the Sente/Noto Rust plugins use
+                            // to sign/verify Soroban transaction envelopes themselves.
+                            put("networkPassphrase", System.getProperty("paladin.test.stellar.networkPassphrase", "Standalone Network ; February 2017"));
                         }},
                         "root"),
                 // stellarSacAddress deliberately omitted: SNoto's own stellarPrepareDeploy falls
@@ -307,6 +334,15 @@ public class TestSenteRealTransition {
                         "root")
         );
         try {
+            // Unlike deployGroupAndSubmitTransition's single "member1" resolution, this test
+            // resolves "notary" (for the noto deploy below) before "root" gets its own HD index -
+            // one extra prior allocation than the single-member test's own comment describes, so
+            // "root" can no longer coincidentally land on the same index as quickstart's genesis
+            // account. Fund it explicitly rather than depend on allocation-order coincidence (see
+            // resolveAndFundVerifier's own doc comment and deployMultiMemberGroupAndSubmitTransition,
+            // which already does this for the same reason).
+            resolveAndFundVerifier(testbed, "root");
+
             // Deploy a real SNoto instance via Paladin's own "noto" domain (SNotoFactory.deploy ->
             // SaladinFactory.register, the same real flow core/go/noderuntests/componenttest/
             // stellar_component_test.go's TestStellarComponentTest already proves) -
@@ -321,6 +357,48 @@ public class TestSenteRealTransition {
                     "noto", "notary", notoConstructorParams);
             assertNotNull(snotoAddress);
             assertFalse(snotoAddress.isBlank());
+
+            // Mint one real coin on the freshly deployed SNoto instance, so the external call below
+            // has a genuine, pre-existing state ID to target - keepalive(state_ids) is a real
+            // extend_ttl write per ID (storage::keepalive_one), not a no-op, so calling it with an
+            // empty list (as this test did previously) never exercised that write path at all.
+            JsonABI mintABI = new JsonABI();
+            mintABI.add(JsonABI.newFunction("mint",
+                    JsonABI.newParameters(
+                            JsonABI.newParameter("to", "string"),
+                            JsonABI.newParameter("amount", "uint256"),
+                            JsonABI.newParameter("data", "bytes")
+                    ),
+                    new JsonABI.Parameters()));
+            Map<?, ?> mintResult = testbed.getRpcClient().request("testbed_invoke",
+                    new Testbed.TransactionInput(
+                            "private",
+                            "noto",
+                            "notary",
+                            snotoAddress,
+                            new HashMap<>() {{
+                                put("to", "notary@node1");
+                                put("amount", "1000");
+                                put("data", "0x");
+                            }},
+                            mintABI,
+                            "mint"
+                    ),
+                    // waitForCompletion=false: the minted state's ID is already fixed once
+                    // assembled (TransactionResult.OutputStates comes from PostAssembly, computed
+                    // synchronously during assemble/endorse/prepare - see testbed_jsonrpc_actions.go's
+                    // mapTransaction/rpcTestbedInvoke), well before on-chain confirmation. This test
+                    // only needs that ID, not confirmation itself (the on-chain mint has ~1s of
+                    // quickstart ledger-close time to land well before the Sente transition below
+                    // even reaches its own on-chain external call) - waiting synchronously here hit
+                    // JsonRpcClient's fixed 30s HTTP timeout in practice, since this test's SNoto
+                    // deploy and mint share one channel-account pool and submit back-to-back.
+                    false);
+            assertNotNull(mintResult);
+            List<?> mintOutputStates = (List<?>) mintResult.get("outputStates");
+            assertFalse(mintOutputStates.isEmpty(), "mint produced no output states");
+            String mintedStateId = (String) ((Map<?, ?>) mintOutputStates.get(0)).get("id");
+            assertNotNull(mintedStateId);
 
             // Genesis: same single-member Sente group flow as deployGroupAndSubmitTransition, but
             // with a distinct member identity ("member3", not "member1") - deploy_group's own salt
@@ -337,8 +415,13 @@ public class TestSenteRealTransition {
             String groupID = (String) createdGroup.get("id");
             assertNotNull(groupID);
 
+            // Longer timeout than deployGroupAndSubmitTransition's own single-member case (mirrors
+            // deployMultiMemberGroupAndSubmitTransition's own reasoning): the mint above and this
+            // group deploy share the same channel-account pool and submit back-to-back, and that
+            // extra queued work was observed to push the group deploy's own on-chain confirmation
+            // past a 60*500ms=30s budget in practice.
             String groupAddress = null;
-            for (int i = 0; i < 60 && groupAddress == null; i++) {
+            for (int i = 0; i < 180 && groupAddress == null; i++) {
                 Map<?, ?> group = testbed.getRpcClient().request("pgroup_getGroupById", "sente", groupID);
                 Object contractAddress = group != null ? group.get("contractAddress") : null;
                 if (contractAddress != null) {
@@ -361,9 +444,16 @@ public class TestSenteRealTransition {
                     new HashMap<>() {{
                         put("contract", snotoAddress);
                         put("function", "keepalive");
+                        // A real, pre-existing state ID (the coin minted above), not an empty
+                        // vec - keepalive_one's extend_ttl write only actually executes when the
+                        // loop is non-empty, so this is what proves the external call genuinely
+                        // reaches a live contract's storage, not just an empty-vec no-op.
                         put("args", List.of(new HashMap<>() {{
                             put("type", "vec");
-                            put("value", List.of());
+                            put("value", List.of(new HashMap<>() {{
+                                put("type", "bytes");
+                                put("value", mintedStateId);
+                            }}));
                         }}));
                     }}
             ));
@@ -373,6 +463,13 @@ public class TestSenteRealTransition {
                     JsonABI.newParameters(JsonABI.newParameter("externalCalls", "string")),
                     new JsonABI.Parameters()));
 
+            // Non-blocking (matches the mint call above, for the same reason): this channel-account
+            // pool was observed, in this test's own back-to-back deploy+mint+groupdeploy+transition
+            // sequence, to consistently take longer than JsonRpcClient's fixed 30s HTTP timeout to
+            // confirm each transaction on-chain (only the very first transaction from a fresh
+            // channel account came in under 30s). Polling ptx_getTransactionReceipt below (each poll
+            // its own fast, well-under-30s call) waits out the real on-chain confirmation without
+            // depending on a single call finishing inside that fixed budget.
             Map<?, ?> result = testbed.getRpcClient().request("testbed_invoke",
                     new Testbed.TransactionInput(
                             "private",
@@ -385,8 +482,22 @@ public class TestSenteRealTransition {
                             transitionABI,
                             "transition"
                     ),
-                    true);
+                    false);
             assertNotNull(result);
+            String transitionTxId = (String) result.get("id");
+            assertNotNull(transitionTxId);
+
+            Boolean transitionSucceeded = null;
+            for (int i = 0; i < 180 && transitionSucceeded == null; i++) {
+                Map<?, ?> receipt = testbed.getRpcClient().request("ptx_getTransactionReceipt", transitionTxId);
+                if (receipt != null) {
+                    transitionSucceeded = (Boolean) receipt.get("success");
+                } else {
+                    Thread.sleep(500);
+                }
+            }
+            assertNotNull(transitionSucceeded, "transition did not receive a receipt within timeout");
+            assertTrue(transitionSucceeded, "transition receipt was not successful");
         } finally {
             testbed.close();
         }

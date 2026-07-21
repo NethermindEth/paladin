@@ -20,8 +20,6 @@ package componenttest
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,30 +112,27 @@ func loadStellarFixtures(t *testing.T) stellarFixtures {
 	return f
 }
 
-// fundRootFunderViaFriendbot funds this node's own resolved "root" identity (config/stellar.node{1,2,3}.config.yaml's
-// channelAccounts.funder) via the quickstart standalone network's friendbot. "root"'s configured
-// static seed is the network ID hash (SHA-256 of the network passphrase, per keypair.Master's own
-// derivation) - but Paladin's key manager always derives an HD child key from a configured seed,
-// never the raw seed's own keypair directly, so "root" can never actually BE the network's literal
-// genesis master account (confirmed empirically: they're different addresses). So, exactly like
-// any other identity, "root" needs its own on-chain funding before it can act as a channel-account
-// funder - friendbot is genuinely available on this network (despite it running with `--enable rpc`
-// rather than `horizon`; friendbot answers on port 8000 regardless, confirmed empirically), the
-// same mechanism §14.3's own Sente multi-member test already relies on for its own "root" identity.
-func fundRootFunderViaFriendbot(t *testing.T, ctx context.Context, client pldclient.PaladinClient) {
+// resolveAndFundVerifier resolves lookup's Stellar verifier via client and funds it via friendbot
+// if it isn't already - the one mechanical step every identity this suite touches needs before it
+// can source or receive any Stellar transaction (a Paladin-managed identity's resolved verifier
+// address has no on-chain ledger entry at all until explicitly funded - none of Paladin's own
+// domain-transaction pipeline ever funds one itself). Consolidating resolve+fund into a single
+// helper, rather than repeating the pair per identity/call site, means a newly added identity can't
+// silently be left unfunded - the same gap that made testnet demo wiring easy to get wrong ad hoc.
+// "root"'s configured static seed is the network ID hash (SHA-256 of the network passphrase, per
+// keypair.Master's own derivation) - but Paladin's key manager always derives an HD child key from
+// a configured seed, never the raw seed's own keypair directly, so "root" can never actually BE the
+// network's literal genesis master account (confirmed empirically: they're different addresses).
+// So, exactly like any other identity, "root" needs its own on-chain funding before it can act as a
+// channel-account funder - friendbot is genuinely available on this network (despite it running
+// with `--enable rpc` rather than `horizon`; friendbot answers on port 8000 regardless, confirmed
+// empirically), the same mechanism §14.3's own Sente multi-member test already relies on.
+func resolveAndFundVerifier(t *testing.T, ctx context.Context, client pldclient.PaladinClient, lookup string) string {
 	t.Helper()
-	rootVerifier, err := client.PTX().ResolveVerifier(ctx, "root", algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
+	verifier, err := client.PTX().ResolveVerifier(ctx, lookup, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
 	require.NoError(t, err)
-
-	resp, err := http.Get(stellarFriendbotURL() + "?addr=" + rootVerifier)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-
-	alreadyFunded := resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), "already funded")
-	require.True(t, resp.StatusCode == http.StatusOK || alreadyFunded,
-		"failed to fund root funder verifier %s via friendbot: HTTP %d: %s", rootVerifier, resp.StatusCode, body)
+	fundAddressViaFriendbot(t, verifier)
+	return verifier
 }
 
 // writePersistentNode3Config rewrites config/stellar.node3.config.yaml's `dsn: ":memory:"` to a
@@ -232,10 +227,10 @@ func TestStellarComponentTest(t *testing.T) {
 
 	// Each node resolves its own "root" identity independently (own key manager, own DB), so each
 	// needs its own on-chain funding before it can fund channel accounts from it - see
-	// fundRootFunderViaFriendbot's own doc comment.
-	fundRootFunderViaFriendbot(t, ctx, notary.GetClient())
-	fundRootFunderViaFriendbot(t, ctx, party2.GetClient())
-	fundRootFunderViaFriendbot(t, ctx, party3.GetClient())
+	// resolveAndFundVerifier's own doc comment.
+	resolveAndFundVerifier(t, ctx, notary.GetClient(), "root")
+	resolveAndFundVerifier(t, ctx, party2.GetClient(), "root")
+	resolveAndFundVerifier(t, ctx, party3.GetClient(), "root")
 
 	// Deploy a real SNoto instance: PrepareDeploy's Stellar branch (chapter 14 step 2) builds a
 	// SorobanInvoke targeting SNotoFactory.deploy, which deploys+initializes the instance and
@@ -453,8 +448,7 @@ func TestStellarComponentTest(t *testing.T) {
 		{party2.GetClient(), party2.GetIdentity()},
 		{party3.GetClient(), party3.GetIdentity()},
 	} {
-		trustorAddr, err := party.client.PTX().ResolveVerifier(ctx, party.identity, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
-		require.NoError(t, err)
+		trustorAddr := resolveAndFundVerifier(t, ctx, party.client, party.identity)
 		chainAddr, err := pldtypes.NewStellarAccountAddress(trustorAddr)
 		require.NoError(t, err)
 
@@ -462,7 +456,7 @@ func TestStellarComponentTest(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, beforeStatus.Exists)
 
-		establishTrustlineAndFund(t, ctx, rpc, blClient, party.client, party.identity, asset, issuer, "1000")
+		establishTrustlineAndFund(t, ctx, rpc, blClient, party.client, party.identity, trustorAddr, asset, issuer, "1000")
 
 		afterStatus, err := blClient.CheckTrustline(ctx, chainAddr, asset)
 		require.NoError(t, err)

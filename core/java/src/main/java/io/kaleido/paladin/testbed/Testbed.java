@@ -340,6 +340,11 @@
                          fixedGasPrice:
                            maxFeePerGas: "0x0"
                            maxPriorityFeePerGas: "0x0"
+                     sequencerManager:
+                       heartbeatInterval: "1s"
+                       inactiveGracePeriod: 2
+                       requestTimeout: "1s"
+                       stateTimeout: "1s"
                      """.formatted(
                      System.getProperty("paladin.test.stellar.rpcUrl", "http://localhost:8000/soroban/rpc"),
                      System.getProperty("paladin.test.stellar.networkPassphrase", "Standalone Network ; February 2017"),

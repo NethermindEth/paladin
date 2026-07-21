@@ -229,16 +229,14 @@ func exitErrOutput(err error) string {
 	return fmt.Sprintf("%v", err)
 }
 
-// establishTrustlineAndFund creates a trustline from party's own Paladin-managed identity to
-// asset (via BuildChangeTrustPayload - core/go/pkg/baseledger/stellar/classic_ops.go, previously
-// implemented but never called by anything - see this session's own tracked follow-up work) and
-// then funds it with an initial balance via a classic Payment from the issuer.
-func establishTrustlineAndFund(t *testing.T, ctx context.Context, rpc *rpcclient.Client, blClient *baseledgerstellar.Client, client pldclient.PaladinClient, identity string, asset *txnbuild.CreditAsset, issuer *keypair.Full, amount string) {
+// establishTrustlineAndFund creates a trustline from party's own Paladin-managed identity
+// (trustorAddr - already resolved and funded by the caller via resolveAndFundVerifier, so this
+// doesn't repeat that step itself) to asset (via BuildChangeTrustPayload -
+// core/go/pkg/baseledger/stellar/classic_ops.go, previously implemented but never called by
+// anything - see this session's own tracked follow-up work) and then funds it with an initial
+// balance via a classic Payment from the issuer.
+func establishTrustlineAndFund(t *testing.T, ctx context.Context, rpc *rpcclient.Client, blClient *baseledgerstellar.Client, client pldclient.PaladinClient, identity, trustorAddr string, asset *txnbuild.CreditAsset, issuer *keypair.Full, amount string) {
 	t.Helper()
-	trustorAddr, err := client.PTX().ResolveVerifier(ctx, identity, algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS)
-	require.NoError(t, err)
-	fundAddressViaFriendbot(t, trustorAddr)
-
 	payload, err := baseledgerstellar.BuildChangeTrustPayload(trustorAddr, asset, "")
 	require.NoError(t, err)
 	ops, err := baseledgerstellar.DecodeClassicOperations(payload)
