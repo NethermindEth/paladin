@@ -219,7 +219,7 @@ func (sMgr *sequencerManager) resumeIncompleteTransactions(ctx context.Context) 
 // Synchronous function to submit a deployment request which is asynchronously processed
 // Private transaction manager will receive a notification when the public transaction is confirmed
 // (same as for invokes)
-func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, tx *components.PrivateContractDeploy, resume bool) error {
+func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, dbTX persistence.DBTX, tx *components.PrivateContractDeploy, resume bool) error {
 	log.L(ctx).Debugf("handling new private contract deploy transaction: %v", tx)
 	if tx.Domain == "" {
 		return i18n.NewError(ctx, msgs.MsgSequencerDomainNotProvided)
@@ -239,7 +239,17 @@ func (sMgr *sequencerManager) handleDeployTx(ctx context.Context, tx *components
 	// unlike invoke transactions, we don't yet have the sequencer thread to dispatch to so we start a new go routine for each deployment
 	// TODO - should have a pool of deployment threads? Maybe size of pool should be one? Or at least one per domain?
 	sMgr.metrics.IncDispatchedTransactions()
-	go sMgr.deploymentLoop(log.WithLogField(sMgr.ctx, "role", "deploy-loop"), domain, tx, resume)
+	// Deferred to AddPostCommit rather than started immediately: the deployment loop resolves keys
+	// via its own brand new DB transaction (ResolveKeyNewDatabaseTX), on a goroutine that starts
+	// running concurrently with the caller. Starting it while the caller's own dbTX (this function
+	// is always invoked from inside one) is still open races that independent transaction against
+	// this one on a genuinely separate connection - observed in practice as an immediate SQLITE_BUSY
+	// ("database is locked") from the deployment loop's key resolution, since SQLite's busy_timeout
+	// retry does not reliably cover every kind of concurrent-connection contention. Waiting for this
+	// transaction to actually commit first removes the race entirely.
+	dbTX.AddPostCommit(func(_ context.Context) {
+		go sMgr.deploymentLoop(log.WithLogField(sMgr.ctx, "role", "deploy-loop"), domain, tx, resume)
+	})
 
 	return nil
 }
@@ -469,7 +479,7 @@ func (sMgr *sequencerManager) HandleNewTx(ctx context.Context, dbTX persistence.
 			return i18n.NewError(ctx, msgs.MsgSequencerPrepareNotSupportedDeploy)
 		}
 		log.L(sMgr.ctx).Infof("handling deploy transaction %s from signer %s", tx.ID, tx.From)
-		return sMgr.handleDeployTx(ctx, &components.PrivateContractDeploy{
+		return sMgr.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{
 			ID:     *tx.ID,
 			Domain: tx.Domain,
 			From:   tx.From,
@@ -514,7 +524,7 @@ func (sMgr *sequencerManager) HandleTxResume(ctx context.Context, txi *component
 				return i18n.NewError(ctx, msgs.MsgSequencerPrepareNotSupportedDeploy)
 			}
 			log.L(sMgr.ctx).Infof("resuming deploy transaction %s (from=%s)", txi.Transaction.ID, txi.Transaction.From)
-			return sMgr.handleDeployTx(ctx, &components.PrivateContractDeploy{
+			return sMgr.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{
 				ID:     *tx.ID,
 				Domain: tx.Domain,
 				From:   tx.From,

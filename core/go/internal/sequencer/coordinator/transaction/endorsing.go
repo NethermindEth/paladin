@@ -321,6 +321,32 @@ func action_RecordEndorseFailure(ctx context.Context, t *coordinatorTransaction,
 	return nil
 }
 
+// validator_IsEndorsementRejectionEndorserIsActiveCoordinator returns true when the rejection
+// reason is ENDORSER_IS_ACTIVE_COORDINATOR: the endorser believes it is itself the active
+// coordinator for this transaction. This is a transient coordinator-election split-brain
+// condition (expected to resolve via heartbeat negotiation), not a permanent per-endorser
+// failure, so it is routed away from action_RecordEndorseFailure.
+func validator_IsEndorsementRejectionEndorserIsActiveCoordinator(_ context.Context, _ *coordinatorTransaction, event common.Event) (bool, error) {
+	e, ok := event.(*EndorseRequestRejectedEvent)
+	if !ok {
+		return false, nil
+	}
+	return e.RejectionReason == engineProto.RejectionReason_ENDORSER_IS_ACTIVE_COORDINATOR, nil
+}
+
+// action_LogEndorserIsActiveCoordinator logs the transient split-brain condition without
+// recording a permanent per-round endorsement failure - the pending request for this party is
+// left in place so the next Event_RequestTimeoutInterval nudge retries it.
+func action_LogEndorserIsActiveCoordinator(ctx context.Context, _ *coordinatorTransaction, event common.Event) error {
+	e, ok := event.(*EndorseRequestRejectedEvent)
+	if !ok {
+		log.L(ctx).Warnf("action_LogEndorserIsActiveCoordinator: unexpected event type %T", event)
+		return nil
+	}
+	log.L(ctx).Debugf("endorsement request to %s (%s) temporarily rejected: that node believes it is the active coordinator; waiting for the coordinator election to converge before retrying", e.Party, e.AttestationRequestName)
+	return nil
+}
+
 // action_ComputeEndorseTolerances pre-computes the per-requirement failure tolerance from the
 // current attestation plan: how many parties can fail without making a requirement impossible to
 // fulfill (tolerance = len(parties) - effectiveThreshold). Must run before sendEndorsementRequests.

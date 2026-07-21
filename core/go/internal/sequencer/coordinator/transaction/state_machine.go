@@ -522,21 +522,40 @@ var stateDefinitionsMap = StateDefinitions{
 					}},
 				}},
 			},
-			// Service-level rejection (block height tolerance). Same as EndorseError:
-			// record the failed party, check tolerance, repool+reset only if tolerance exceeded.
+			// Service-level rejection (block height tolerance, or the endorser telling us it is
+			// itself the active coordinator). The two reasons are handled very differently:
 			Event_EndorseRequestRejected: {
 				Match: statemachine.MatchFirst,
-				Handlers: []EventHandler{{
-					Actions: []ActionRule{{Action: action_RecordEndorseFailure}},
-					Transitions: []Transition{{
-						If: guard_EndorseFailureExceedsTolerance,
-						To: State_Pooled,
-						Actions: []ActionRule{
-							{Action: action_NotifyDependentsOfReset},
-							{Action: action_ResetEndorsementRequests},
-						},
-					}},
-				}},
+				Handlers: []EventHandler{
+					{
+						// ENDORSER_IS_ACTIVE_COORDINATOR: the endorser believes it is the active
+						// coordinator - a transient coordinator-election split-brain, not a
+						// permanent per-round failure. Recording it via action_RecordEndorseFailure
+						// would mark the party as never-to-be-nudged-again this round and, since
+						// most attestation plans have zero tolerance for a missing party, would
+						// immediately force a full repool+reset - even though the election is
+						// expected to converge (via heartbeats) within a beat or two. Instead, just
+						// log it and leave the pending request in place so the existing
+						// Event_RequestTimeoutInterval nudge loop retries it once the election
+						// settles.
+						Validator: validator_IsEndorsementRejectionEndorserIsActiveCoordinator,
+						Actions:   []ActionRule{{Action: action_LogEndorserIsActiveCoordinator}},
+					},
+					{
+						// All other rejection reasons (e.g. BLOCK_HEIGHT_TOLERANCE): same as
+						// EndorseError - record the failed party, check tolerance, repool+reset
+						// only if tolerance exceeded.
+						Actions: []ActionRule{{Action: action_RecordEndorseFailure}},
+						Transitions: []Transition{{
+							If: guard_EndorseFailureExceedsTolerance,
+							To: State_Pooled,
+							Actions: []ActionRule{
+								{Action: action_NotifyDependentsOfReset},
+								{Action: action_ResetEndorsementRequests},
+							},
+						}},
+					},
+				},
 			},
 			Event_RequestTimeoutInterval: {
 				Match: statemachine.MatchFirst,

@@ -66,7 +66,10 @@ repositories {
 }
 
 test {
-    dependsOn ':testinfra:startTestInfra', ':soroban:deployStellarFixtures', ':domains:sente:build'
+    // transports:grpc/registries:static:buildGo - needed for TestSenteThreeNodeHarness's real
+    // separate-process nodes (real cross-process gRPC transport + static peer registry), unlike
+    // every other test here which stays entirely in-process via Testbed and never needs either.
+    dependsOn ':testinfra:startTestInfra', ':soroban:deployStellarFixtures', ':domains:sente:build', ':transports:grpc:buildGo', ':registries:static:buildGo'
     testLogging {
         showStandardStreams = true
         testLogging {
@@ -76,7 +79,17 @@ test {
         }
     }
     useJUnitPlatform()
-    systemProperty "jna.library.path", file("${rootDir}/core/go/build/libs").absolutePath + ":" + file("${rootDir}/toolkit/go/build/libs").absolutePath + ":" + file("${rootDir}/domains/sente/target/release").absolutePath + ":" + file("${project(':domains:noto').buildDir}/libs").absolutePath
+    systemProperty "jna.library.path", file("${rootDir}/core/go/build/libs").absolutePath + ":" + file("${rootDir}/toolkit/go/build/libs").absolutePath + ":" + file("${rootDir}/domains/sente/target/release").absolutePath + ":" + file("${project(':domains:noto').buildDir}/libs").absolutePath + ":" + file("${rootDir}/transports/grpc/build/libs").absolutePath + ":" + file("${rootDir}/registries/static/build/libs").absolutePath
+    // Gradle does NOT automatically forward `-Dfoo=bar` from the gradle invocation's own JVM into
+    // this task's forked test JVM - without this, every -Dpaladin.test.stellar.* flag
+    // testnet-demo.sh passes (rpcUrl, networkPassphrase, friendbotUrl, channelAccountPoolSize,
+    // channelAccountStartingBalance) silently no-ops, and the affected tests fall back to their
+    // quickstart defaults. This went unnoticed for a long time because quickstart's defaults are
+    // also each property's own hardcoded fallback - a real testnet run only fails loudly once the
+    // fallback value (e.g. quickstart's network passphrase, or quickstart's own RPC URL) actually
+    // diverges from testnet's, at which point the node ends up pointed at whatever quickstart
+    // network happens to be running locally instead of the real one the test believes it's using.
+    systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith("paladin.test.stellar.") }
 }
 
 configurations {

@@ -226,6 +226,13 @@ pub trait DomainHandler: Send + Sync + 'static {
     ) -> Result<pb::InitPrivacyGroupResponse, String> {
         Err("init_privacy_group not implemented".to_string())
     }
+
+    async fn wrap_privacy_group_evmtx(
+        &self,
+        _req: pb::WrapPrivacyGroupEvmtxRequest,
+    ) -> Result<pb::WrapPrivacyGroupEvmtxResponse, String> {
+        Err("wrap_privacy_group_evmtx not implemented".to_string())
+    }
 }
 
 /// Parses the `grpc_target` string Paladin's loader passes to `Run` - `"unix:<path>"` for a Unix
@@ -407,10 +414,13 @@ where
 /// submitted to endorsed and prepared), `InitDeploy`/`PrepareDeploy` (Phase 3/S3 - genesis: a
 /// new privacy group's on-chain deploy, declarative verifier resolution the same
 /// `required_verifiers`/`resolved_verifiers` shape `InitTransaction`/`AssembleTransaction` already
-/// use), and `HandleEventBatch` (Phase 3/S3 - Go-side integration: turning a confirmed on-chain
-/// `genesis`/`transition` event back into Paladin states and transaction completions) are wired -
-/// every other request type errors cleanly rather than panicking, so a plugin fails loudly (and
-/// correctly, via `ERROR_RESPONSE`) if core ever asks it to do more than it's built for yet.
+/// use), `HandleEventBatch` (Phase 3/S3 - Go-side integration: turning a confirmed on-chain
+/// `genesis`/`transition` event back into Paladin states and transaction completions),
+/// `ConfigurePrivacyGroup`/`InitPrivacyGroup` (real `pgroup_createGroup`-initiated genesis deploy),
+/// and `WrapPrivacyGroupEvmtx` (real `pgroup_sendTransaction`-initiated ordinary transitions - the
+/// production counterpart of `InitPrivacyGroup`'s own genesis-deploy wrap) are wired - every other
+/// request type errors cleanly rather than panicking, so a plugin fails loudly (and correctly, via
+/// `ERROR_RESPONSE`) if core ever asks it to do more than it's built for yet.
 async fn dispatch(
     handler: Arc<dyn DomainHandler>,
     request: Option<pb::domain_message::RequestToDomain>,
@@ -469,6 +479,10 @@ async fn dispatch(
             .init_privacy_group(req)
             .await
             .map(|res| Some(ResponseFromDomain::InitPrivacyGroupRes(res))),
+        Some(RequestToDomain::WrapPrivacyGroupEvmtx(req)) => handler
+            .wrap_privacy_group_evmtx(req)
+            .await
+            .map(|res| Some(ResponseFromDomain::WrapPrivacyGroupEvmtxRes(res))),
         Some(other) => Err(format!("unhandled request_to_domain variant: {other:?}")),
         None => Err("request_to_domain not set".to_string()),
     }

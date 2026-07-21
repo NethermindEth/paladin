@@ -1075,6 +1075,36 @@ func TestCoordinatorTransaction_Endorsement_Gathering_StaysInState_OnEndorseRequ
 	assert.NotNil(t, txn.pendingEndorsementRequests["endorse-multisig"][party3])
 }
 
+func TestCoordinatorTransaction_Endorsement_Gathering_StaysActive_OnEndorseRequestRejected_EndorserIsActiveCoordinator(t *testing.T) {
+	// Even with zero tolerance (a single-party requirement), ENDORSER_IS_ACTIVE_COORDINATOR must
+	// not repool the transaction or permanently mark the party as failed: it's a transient
+	// coordinator-election split-brain (expected to converge via heartbeats), not a permanent
+	// per-round endorsement failure. Contrast with
+	// TestCoordinatorTransaction_Endorsement_Gathering_ToPooled_OnEndorseRequestRejected_ToleranceExceeded,
+	// which repools for the same zero-tolerance setup under BLOCK_HEIGHT_TOLERANCE.
+	ctx := context.Background()
+	builder := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).
+		AddPendingEndorsementRequest().
+		EndorseTolerance(0)
+	txn, _ := builder.Build()
+
+	party := builder.privateTransactionBuilder.GetEndorserIdentityLocator(0)
+	event := &EndorseRequestRejectedEvent{
+		BaseCoordinatorEvent:   BaseCoordinatorEvent{TransactionID: txn.pt.ID},
+		Party:                  party,
+		AttestationRequestName: "endorse-0",
+		RejectionReason:        engineProto.RejectionReason_ENDORSER_IS_ACTIVE_COORDINATOR,
+	}
+
+	err := txn.HandleEvent(ctx, event)
+	require.NoError(t, err)
+	assert.Equal(t, State_Endorsement_Gathering, txn.GetCurrentState(), "current state is %s", txn.GetCurrentState().String())
+	assert.Equal(t, 0, txn.endorseFailureCountByRequirement["endorse-0"])
+	req, exists := txn.pendingEndorsementRequests["endorse-0"][party]
+	assert.True(t, exists)
+	assert.NotNil(t, req, "party must remain eligible for re-nudge, not permanently marked failed")
+}
+
 func TestCoordinatorTransaction_Endorsement_Gathering_NudgeRequests_OnRequestTimeout_IfPendingRequests(t *testing.T) {
 	ctx := context.Background()
 	var requestCount int

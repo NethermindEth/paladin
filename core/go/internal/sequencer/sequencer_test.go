@@ -101,8 +101,9 @@ func TestSequencerManager_handleDeployTx_NoDomain(t *testing.T) {
 	ctx := context.Background()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
+	dbTX := persistencemocks.NewDBTX(t)
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{}, false)
+	err := sm.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{}, false)
 	require.Error(t, err)
 }
 
@@ -110,10 +111,11 @@ func TestSequencerManager_handleDeployTx_DomainNotFound(t *testing.T) {
 	ctx := context.Background()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
+	dbTX := persistencemocks.NewDBTX(t)
 
 	mocks.domainManager.EXPECT().GetDomainByName(ctx, "missing").Return(nil, errors.New("not found")).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "missing"}, false)
+	err := sm.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{Domain: "missing"}, false)
 	require.Error(t, err)
 }
 
@@ -121,12 +123,13 @@ func TestSequencerManager_handleDeployTx_InitDeployError(t *testing.T) {
 	ctx := context.Background()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
+	dbTX := persistencemocks.NewDBTX(t)
 
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainManager.EXPECT().GetDomainByName(ctx, "test-domain").Return(mockDomain, nil).Once()
 	mockDomain.EXPECT().InitDeploy(ctx, mock.Anything).Return(errors.New("init failed")).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
+	err := sm.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
 	require.Error(t, err)
 }
 
@@ -134,6 +137,7 @@ func TestSequencerManager_handleDeployTx_Success(t *testing.T) {
 	ctx := context.Background()
 	mocks := newSequencerLifecycleTestMocks(t)
 	sm := newSequencerManagerForTesting(t, mocks)
+	dbTX := persistencemocks.NewDBTX(t)
 
 	mockDomain := componentsmocks.NewDomain(t)
 	mocks.domainManager.EXPECT().GetDomainByName(ctx, "test-domain").Return(mockDomain, nil).Once()
@@ -144,8 +148,11 @@ func TestSequencerManager_handleDeployTx_Success(t *testing.T) {
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(ctx context.Context, req *syncpoints.TransactionFinalizeRequest, onCommit func(context.Context), onRollback func(context.Context, error)) {
 		close(done)
 	}).Once()
+	dbTX.EXPECT().AddPostCommit(mock.Anything).Run(func(fn func(context.Context)) {
+		fn(ctx)
+	}).Once()
 
-	err := sm.handleDeployTx(ctx, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
+	err := sm.handleDeployTx(ctx, dbTX, &components.PrivateContractDeploy{Domain: "test-domain"}, false)
 	require.NoError(t, err)
 	<-done
 }
@@ -525,6 +532,9 @@ func TestSequencerManager_HandleNewTx_DeployAuto(t *testing.T) {
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(ctx context.Context, req *syncpoints.TransactionFinalizeRequest, onCommit func(context.Context), onRollback func(context.Context, error)) {
 		close(done)
 	}).Once()
+	dbTX.EXPECT().AddPostCommit(mock.Anything).Run(func(fn func(context.Context)) {
+		fn(ctx)
+	}).Once()
 
 	err := sm.HandleNewTx(ctx, dbTX, txi)
 	require.NoError(t, err)
@@ -623,6 +633,9 @@ func TestSequencerManager_HandleTxResume_DeployAuto(t *testing.T) {
 	mocks.metrics.EXPECT().IncDispatchedTransactions().Once()
 	mocks.syncPoints.EXPECT().QueueTransactionFinalize(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Run(func(ctx context.Context, req *syncpoints.TransactionFinalizeRequest, onCommit func(context.Context), onRollback func(context.Context, error)) {
 		close(done)
+	}).Once()
+	dbTX.EXPECT().AddPostCommit(mock.Anything).Run(func(fn func(context.Context)) {
+		fn(ctx)
 	}).Once()
 
 	err := sm.HandleTxResume(ctx, txi)

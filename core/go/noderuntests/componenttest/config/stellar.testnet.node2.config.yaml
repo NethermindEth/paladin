@@ -28,11 +28,11 @@ baseLedger:
       funder: root
       startingBalance: "3"
 wallets:
-  # bip44HardenedSegments: 5 on both wallets below - SLIP-10 ed25519 derivation (used for every
+  # bip44HardenedSegments: 20 on both wallets below - SLIP-10 ed25519 derivation (used for every
   # Stellar/ed25519 identity resolved here) requires *all* path segments to be hardened, unlike
   # secp256k1/EVM's default of 1 (pldconf.SignerConfigDefaults.KeyDerivation.BIP44HardenedSegments)
   # - a plain (unhardened) segment fails with "PD020829: SLIP-10 ed25519 derivation requires all
-  # path segments to be hardened". 5 covers any path depth Paladin's identity resolution builds.
+  # path segments to be hardened". A value that only just covers today's observed path depths is fragile - 20 was raised from 5 after a real 3-node Sente harness hit "not hardened" failures from a deep identifier built by public-tx-manager's own orchestrator-loop retry bookkeeping, a code path unrelated to any specific domain, so it can recur here too under real (slower, retry-prone) network conditions.
   # Unlike stellar.node1.config.yaml's quickstart counterpart, there is no genesis/master-account
   # relationship to preserve here - real testnet has no notion of "our own genesis account". "root"
   # (the channel-account funder) and wallet1's identity are just arbitrary derived keypairs that
@@ -45,7 +45,7 @@ wallets:
     signer:
       keyDerivation:
         type: "bip32"
-        bip44HardenedSegments: 5
+        bip44HardenedSegments: 20
       keyStore:
         type: "static"
         static:
@@ -58,7 +58,7 @@ wallets:
     signer:
       keyDerivation:
         type: "bip32"
-        bip44HardenedSegments: 5
+        bip44HardenedSegments: 20
       keyStore:
         type: "static"
         static:

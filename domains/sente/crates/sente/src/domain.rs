@@ -162,6 +162,24 @@ const PRIVACY_GROUP_DEPLOY_ABI_JSON: &str = r#"{
   ]
 }"#;
 
+/// `wrap_privacy_group_evmtx`'s own output ABI (below) - the production, `pgroup_sendTransaction`
+/// counterpart of `PRIVACY_GROUP_DEPLOY_ABI_JSON`'s genesis-deploy wrap. Declares both
+/// `TransitionParamsJson` fields (`externalCalls`/`invoke`) as plain `string`, for the same reason
+/// `PRIVACY_GROUP_DEPLOY_ABI_JSON` types `salt`/`members` as `string`/`string[]` rather than
+/// anything numeric/bytes-like: core's ABI-typed JSON round trip (`params_json` in,
+/// `function_params_json` back out unchanged) is representationally a no-op for a `string`, so
+/// `assemble_transaction`'s own `TransitionParamsJson` parse sees exactly the bytes this handler
+/// wrote, whichever of the two fields (if either) the caller actually populated.
+const TRANSITION_WRAPPED_ABI_JSON: &str = r#"{
+  "type": "function",
+  "name": "transition",
+  "inputs": [
+    {"name": "externalCalls", "type": "string"},
+    {"name": "invoke", "type": "string"}
+  ],
+  "outputs": []
+}"#;
+
 /// Pente's own per-group identity scoping (`PenteTransaction.buildGroupScopeIdentityLookups`),
 /// translated verbatim: splice the group's salt hex in before any `@node` suffix, so the same
 /// person's identity resolves to a distinct verifier in every privacy group they belong to,
@@ -2130,6 +2148,86 @@ impl DomainHandler for SenteDomain {
         Ok(pb::InitPrivacyGroupResponse {
             transaction: Some(pb::PreparedTransaction {
                 function_abi_json: PRIVACY_GROUP_DEPLOY_ABI_JSON.to_string(),
+                params_json: serde_json::to_string(&params).map_err(|e| e.to_string())?,
+                contract_address: None,
+                r#type: pb::prepared_transaction::TransactionType::Private as i32,
+                required_signer: None,
+            }),
+        })
+    }
+
+    /// Lets an ordinary transition be submitted via the real `pgroup_sendTransaction` RPC, not
+    /// only via `testbed_invoke` - the production counterpart of `init_privacy_group`'s own
+    /// genesis-deploy wrap. `PrivacyGroupEvmtx` is a generic, EVM-flavored call shape
+    /// (`from`/`to`/`gas`/`value`/`input_json`/`function_abi_json`/`bytecode`) that every domain
+    /// must translate into its own real on-chain call; for Sente that's always a call to the
+    /// group's own already-deployed `transition(...)` (there is no separate "invoke a named
+    /// business function on some other contract" entrypoint the way Pente's EVM emulation has -
+    /// Sente's equivalent of that is `TransitionParamsJson.invoke`, supplied *through* `input_json`
+    /// below, not via `to`/`function_abi_json` naming an arbitrary target). `input_json` is treated
+    /// as already being `TransitionParamsJson`-shaped (`{"externalCalls": "...", "invoke": "..."}`,
+    /// both optional) - parsing straight into that struct via serde reuses its own `#[serde(default)]`
+    /// on both fields, so an absent/empty/`"{}"` input naturally becomes a pure root-only
+    /// transition, exactly matching every existing root-only caller.
+    async fn wrap_privacy_group_evmtx(
+        &self,
+        req: pb::WrapPrivacyGroupEvmtxRequest,
+    ) -> Result<pb::WrapPrivacyGroupEvmtxResponse, String> {
+        let transaction = req
+            .transaction
+            .ok_or("wrap_privacy_group_evmtx: transaction not set")?;
+
+        if transaction.bytecode.is_some() {
+            return Err(
+                "wrap_privacy_group_evmtx: Sente's privacy group contract is deployed once via \
+                 pgroup_createGroup (init_privacy_group) - a transition cannot also carry deploy \
+                 bytecode"
+                    .to_string(),
+            );
+        }
+        let has_real_value = transaction
+            .value
+            .as_deref()
+            .map(|v| !matches!(v, "" | "0" | "0x" | "0x0"))
+            .unwrap_or(false);
+        if has_real_value {
+            return Err(
+                "wrap_privacy_group_evmtx: transition() carries no value-transfer semantics - a \
+                 non-zero value cannot be honored"
+                    .to_string(),
+            );
+        }
+        if let Some(to) = &transaction.to {
+            let group_address = transaction
+                .contract_info
+                .as_ref()
+                .map(|ci| ci.contract_address.as_str())
+                .unwrap_or_default();
+            if to != group_address {
+                return Err(format!(
+                    "wrap_privacy_group_evmtx: \"to\" ({to}) must be the group's own contract \
+                     address ({group_address}) or omitted - to call a different contract, use \
+                     TransitionParamsJson's own \"invoke\"/\"externalCalls\" (via input_json), \
+                     not an arbitrary \"to\""
+                ));
+            }
+        }
+
+        let params: TransitionParamsJson = match transaction.input_json.as_deref() {
+            None => TransitionParamsJson::default(),
+            Some(raw) if raw.trim().is_empty() => TransitionParamsJson::default(),
+            Some(raw) => serde_json::from_str(raw)
+                .map_err(|e| format!("wrap_privacy_group_evmtx: invalid input_json: {e}"))?,
+        };
+        // Validate eagerly (same shapes assemble_transaction itself will parse later) so a
+        // malformed externalCalls/invoke payload fails fast, at wrap time, with a clear error -
+        // rather than surfacing later as an opaque assemble_transaction failure.
+        parse_external_calls(&params.external_calls)?;
+        parse_invoke(&params.invoke)?;
+
+        Ok(pb::WrapPrivacyGroupEvmtxResponse {
+            transaction: Some(pb::PreparedTransaction {
+                function_abi_json: TRANSITION_WRAPPED_ABI_JSON.to_string(),
                 params_json: serde_json::to_string(&params).map_err(|e| e.to_string())?,
                 contract_address: None,
                 r#type: pb::prepared_transaction::TransactionType::Private as i32,

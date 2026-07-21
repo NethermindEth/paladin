@@ -73,7 +73,10 @@ rpc_url, expected_passphrase, expected_protocol = sys.argv[1], sys.argv[2], int(
 req = urllib.request.Request(
     rpc_url,
     data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getNetwork"}).encode(),
-    headers={"Content-Type": "application/json"},
+    # User-Agent is required: public Stellar testnet's RPC sits behind a WAF that returns a bare
+    # HTTP 403 for urllib's default "Python-urllib/x.y" User-Agent specifically (confirmed - curl
+    # and a browser-like UA both pass against the exact same endpoint/payload).
+    headers={"Content-Type": "application/json", "User-Agent": "curl/8.5.0"},
 )
 with urllib.request.urlopen(req, timeout=20) as res:
     payload = json.loads(res.read().decode())

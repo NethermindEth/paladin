@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"testing"
 	"time"
 
@@ -135,25 +135,33 @@ func resolveAndFundVerifier(t *testing.T, ctx context.Context, client pldclient.
 	return verifier
 }
 
-// writePersistentNode3Config rewrites config/stellar.node3.config.yaml's `dsn: ":memory:"` to a
-// real sqlite file under t.TempDir(), returning the path to the rewritten copy. party3 needs this
-// for the restart/resync drill below: an in-memory DB is wiped on every Stop(), so a restarted
-// node3 would have to re-index the *entire* chain history from the oldest available ledger (not
-// just catch up on what it missed) before its "noto" event-stream even exists again to notice the
-// transfer sent while it was down - unboundedly slower than any reasonable test timeout as the
-// chain grows, and the reason a from-scratch rescan (not the reliable-message resend cycle, the
-// first-suspected cause) was actually why this drill kept timing out even at 60s. coordinationtest
-// avoids this entirely by using real postgres for every node (see its own config/*.yaml) rather
-// than sqlite ":memory:" - switching this whole suite to postgres is out of scope here, so this
-// keeps sqlite but makes party3's data specifically survive its own Stop()/Start() within this test.
+// dsnLinePattern matches a config file's `dsn: "..."` line regardless of what's inside the
+// quotes - the quickstart config uses ":memory:", the testnet one already uses a persistent file
+// path of its own (real testnet has no equivalent of quickstart's own fast local reset/rebuild
+// cycle, so its config was written file-backed from the start) - writePersistentNode3Config below
+// needs to override whichever value is there, not just one specific literal.
+var dsnLinePattern = regexp.MustCompile(`dsn: "[^"]*"`)
+
+// writePersistentNode3Config rewrites config/stellar.node3.config.yaml's (or the testnet
+// equivalent's) `dsn: "..."` to a real sqlite file under t.TempDir(), returning the path to the
+// rewritten copy. party3 needs this for the restart/resync drill below: an in-memory DB is wiped
+// on every Stop(), so a restarted node3 would have to re-index the *entire* chain history from the
+// oldest available ledger (not just catch up on what it missed) before its "noto" event-stream
+// even exists again to notice the transfer sent while it was down - unboundedly slower than any
+// reasonable test timeout as the chain grows, and the reason a from-scratch rescan (not the
+// reliable-message resend cycle, the first-suspected cause) was actually why this drill kept
+// timing out even at 60s. coordinationtest avoids this entirely by using real postgres for every
+// node (see its own config/*.yaml) rather than sqlite ":memory:" - switching this whole suite to
+// postgres is out of scope here, so this keeps sqlite but makes party3's data specifically survive
+// its own Stop()/Start() within this test.
 func writePersistentNode3Config(t *testing.T) string {
 	t.Helper()
 	node3ConfigPath := stellarNodeConfigPath("node3")
 	orig, err := os.ReadFile(node3ConfigPath)
 	require.NoError(t, err)
 	dbPath := filepath.Join(t.TempDir(), "stellar-node3.sqlite")
-	rewritten := strings.Replace(string(orig), `dsn: ":memory:"`, `dsn: "`+dbPath+`"`, 1)
-	require.NotEqual(t, string(orig), rewritten, "expected to find dsn: \":memory:\" in %s", node3ConfigPath)
+	require.True(t, dsnLinePattern.MatchString(string(orig)), "expected to find a dsn: \"...\" line in %s", node3ConfigPath)
+	rewritten := dsnLinePattern.ReplaceAllString(string(orig), `dsn: "`+dbPath+`"`)
 	newConfigPath := filepath.Join(t.TempDir(), "stellar.node3.config.yaml")
 	require.NoError(t, os.WriteFile(newConfigPath, []byte(rewritten), 0600))
 	return newConfigPath

@@ -381,6 +381,69 @@ func Test_action_RecordEndorseFailure_BlockHeightTolerance_LogsWarning(t *testin
 	require.NoError(t, err)
 }
 
+func Test_validator_IsEndorsementRejectionEndorserIsActiveCoordinator_MatchingReason_ReturnsTrue(t *testing.T) {
+	ctx := t.Context()
+	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).Build()
+	event := &EndorseRequestRejectedEvent{
+		AttestationRequestName: "endorse-0",
+		Party:                  "party1@node2",
+		RejectionReason:        engineProto.RejectionReason_ENDORSER_IS_ACTIVE_COORDINATOR,
+	}
+	matched, err := validator_IsEndorsementRejectionEndorserIsActiveCoordinator(ctx, txn, event)
+	require.NoError(t, err)
+	assert.True(t, matched)
+}
+
+func Test_validator_IsEndorsementRejectionEndorserIsActiveCoordinator_OtherReason_ReturnsFalse(t *testing.T) {
+	ctx := t.Context()
+	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).Build()
+	event := &EndorseRequestRejectedEvent{
+		AttestationRequestName: "endorse-0",
+		Party:                  "party1@node2",
+		RejectionReason:        engineProto.RejectionReason_BLOCK_HEIGHT_TOLERANCE,
+	}
+	matched, err := validator_IsEndorsementRejectionEndorserIsActiveCoordinator(ctx, txn, event)
+	require.NoError(t, err)
+	assert.False(t, matched)
+}
+
+func Test_validator_IsEndorsementRejectionEndorserIsActiveCoordinator_OtherEventType_ReturnsFalse(t *testing.T) {
+	ctx := t.Context()
+	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).Build()
+	matched, err := validator_IsEndorsementRejectionEndorserIsActiveCoordinator(ctx, txn, &RequestTimeoutIntervalEvent{})
+	require.NoError(t, err)
+	assert.False(t, matched)
+}
+
+func Test_action_LogEndorserIsActiveCoordinator_DoesNotRecordFailure(t *testing.T) {
+	ctx := t.Context()
+	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).
+		AddPendingEndorsementRequest().
+		Build()
+	party := "endorser-0@node-0"
+	pendingBefore := txn.pendingEndorsementRequests["endorse-0"][party]
+	require.NotNil(t, pendingBefore)
+
+	event := &EndorseRequestRejectedEvent{
+		AttestationRequestName: "endorse-0",
+		Party:                  party,
+		RejectionReason:        engineProto.RejectionReason_ENDORSER_IS_ACTIVE_COORDINATOR,
+	}
+	err := action_LogEndorserIsActiveCoordinator(ctx, txn, event)
+	require.NoError(t, err)
+	// Unlike action_RecordEndorseFailure, this must leave the pending request untouched -
+	// no nil sentinel, no failure count - so the next nudge retries the same party.
+	assert.Same(t, pendingBefore, txn.pendingEndorsementRequests["endorse-0"][party])
+	assert.Empty(t, txn.endorseFailureCountByRequirement)
+}
+
+func Test_action_LogEndorserIsActiveCoordinator_UnexpectedEventType_WarnsAndReturnsNil(t *testing.T) {
+	ctx := t.Context()
+	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).Build()
+	err := action_LogEndorserIsActiveCoordinator(ctx, txn, &RequestTimeoutIntervalEvent{})
+	require.NoError(t, err)
+}
+
 func Test_unfulfilledEndorsementRequirements_ThresholdUnset_AllPartiesRequired(t *testing.T) {
 	ctx := t.Context()
 	txn, _ := NewTransactionBuilderForTesting(t, State_Endorsement_Gathering).Build()
