@@ -89,7 +89,9 @@ test {
     // fallback value (e.g. quickstart's network passphrase, or quickstart's own RPC URL) actually
     // diverges from testnet's, at which point the node ends up pointed at whatever quickstart
     // network happens to be running locally instead of the real one the test believes it's using.
-    systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith("paladin.test.stellar.") }
+    // paladin.demo.* is the same mechanism for repo-demo.sh's own -D flags (bondAmount/cashAmount/
+    // interactive) into TestInstitutionalRepoDemo - same silent-no-op trap otherwise.
+    systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith("paladin.test.stellar.") || k.toString().startsWith("paladin.demo.") }
 }
 
 configurations {

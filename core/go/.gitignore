@@ -4,3 +4,5 @@ mocks
 !.vscode/settings.json
 libcore.h
 **mocks.go
+/encode-sac-approve
+/encode-change-trust

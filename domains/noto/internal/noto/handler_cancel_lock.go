@@ -281,10 +281,13 @@ func (h *cancelLockHandler) stellarBaseLedgerInvokeCancelUnlock(ctx context.Cont
 		return nil, err
 	}
 
-	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
-	if err != nil {
-		return nil, err
-	}
+	// The on-chain "data" argument must be byte-for-byte identical to what prepare_unlock already
+	// committed to for the "cancel" purpose (UnlockHashFromIDsV1's own "data" param, check_commitment
+	// on the Rust side, soroban/contracts/snoto/src/lib.rs) - see stellarBaseLedgerInvokeUnlock's
+	// own doc comment for the full explanation of why a freshly re-encoded transaction-data blob
+	// (this used to compute here) is a different, wrong value. CancelData is already loaded onto
+	// lt.prevLockInfo by validateV1LockTransition above, so no extra state lookup is needed here.
+	data := lt.prevLockInfo.CancelData
 
 	lockedInputStates := h.noto.filterSchema(req.InputStates, []string{h.noto.lockedCoinSchema.Id})
 	lockedInputs, err := parseBytes32List(ctx, endorsableStateIDs(ctx, lockedInputStates, false))

@@ -521,10 +521,14 @@ func encodeSNotoTransferArgs(txID pldtypes.Bytes32, inputs, outputs []pldtypes.B
 }
 
 // encodeSNotoLockArgs builds the real Soroban call args for SNoto's
-// `lock(tx_id, inputs, locked_outputs, outputs, signature, data)` (soroban/contracts/snoto/src/
-// lib.rs) - the `outputs` (unlocked remainder) list was added to the contract for this phase, to
-// match EVM Noto's three-list inputs/locked_outputs/outputs shape.
-func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs []pldtypes.Bytes32, signature []byte, data []byte) (argsXDR []byte, argsJSON string, err error) {
+// `lock(tx_id, inputs, locked_outputs, outputs, signature, data, new_lock_state)`
+// (soroban/contracts/snoto/src/lib.rs) - the `outputs` (unlocked remainder) list was added to the
+// contract for this phase, to match EVM Noto's three-list inputs/locked_outputs/outputs shape.
+// newLockState is the assembled lockInfoV1 private state's own ID (see stellarBaseLedgerInvokeLock's
+// caller) - opaque to the contract, which just echoes it in the Lock event and stores it against
+// the lock_id for prepare_unlock/delegate_lock/unlock/cancel_unlock to read back later (mirrors
+// Noto.sol's own on-chain `_lockStates[lockId]`).
+func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs []pldtypes.Bytes32, signature []byte, data []byte, newLockState pldtypes.Bytes32) (argsXDR []byte, argsJSON string, err error) {
 	txIDVal, err := scValBytes(txID[:])
 	if err != nil {
 		return nil, "", err
@@ -549,8 +553,12 @@ func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs [
 	if err != nil {
 		return nil, "", err
 	}
+	newLockStateVal, err := scValBytes(newLockState[:])
+	if err != nil {
+		return nil, "", err
+	}
 
-	args := xdr.ScVec{txIDVal, inputsVal, lockedOutputsVal, outputsVal, sigVal, dataVal}
+	args := xdr.ScVec{txIDVal, inputsVal, lockedOutputsVal, outputsVal, sigVal, dataVal, newLockStateVal}
 	var buf bytes.Buffer
 	if _, err := xdr.Marshal(&buf, args); err != nil {
 		return nil, "", err
@@ -563,6 +571,7 @@ func encodeSNotoLockArgs(txID pldtypes.Bytes32, inputs, lockedOutputs, outputs [
 		"outputs":        bytes32Strings(outputs),
 		"signature":      pldtypes.HexBytes(signature).String(),
 		"data":           pldtypes.HexBytes(data).String(),
+		"new_lock_state": newLockState.String(),
 	})
 	if err != nil {
 		return nil, "", err
@@ -760,7 +769,13 @@ func encodeSNotoWithdrawArgs(txID pldtypes.Bytes32, recipient string, amount *bi
 // (soroban/contracts/snoto/src/lib.rs) - locked_inputs/outputs aren't passed on-chain at all, only
 // baked into the commitment digests themselves (spendCommitment/cancelCommitment, computed via
 // UnlockHashFromIDsV1), mirroring EVM's own updateLock args shape.
-func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitment pldtypes.Bytes32, data []byte) (argsXDR []byte, argsJSON string, err error) {
+// newLockState is the updated lockInfoV1 private state's own ID - see encodeSNotoLockArgs's own
+// doc comment on the mechanism this is part of. contents is the locked-coin state ID(s) this
+// prepare_unlock references (echoed back in the PrepareUnlock event's own "contents" field) -
+// without it, the Go event indexer has no on-chain signal to confirm the locked coin as a read
+// state for this transaction, so BuildReceipt's own lockedInputIDs extraction (used to build the
+// unlock/cancel externalCalls args) comes back empty.
+func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitment pldtypes.Bytes32, data []byte, newLockState pldtypes.Bytes32, contents []pldtypes.Bytes32) (argsXDR []byte, argsJSON string, err error) {
 	txIDVal, err := scValBytes(txID[:])
 	if err != nil {
 		return nil, "", err
@@ -781,8 +796,16 @@ func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitmen
 	if err != nil {
 		return nil, "", err
 	}
+	newLockStateVal, err := scValBytes(newLockState[:])
+	if err != nil {
+		return nil, "", err
+	}
+	contentsVal, err := scValBytes32Vec(contents)
+	if err != nil {
+		return nil, "", err
+	}
 
-	args := xdr.ScVec{txIDVal, lockIDVal, spendCommitmentVal, cancelCommitmentVal, dataVal}
+	args := xdr.ScVec{txIDVal, lockIDVal, spendCommitmentVal, cancelCommitmentVal, dataVal, newLockStateVal, contentsVal}
 	var buf bytes.Buffer
 	if _, err := xdr.Marshal(&buf, args); err != nil {
 		return nil, "", err
@@ -794,6 +817,8 @@ func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitmen
 		"spend_commitment":  spendCommitment.String(),
 		"cancel_commitment": cancelCommitment.String(),
 		"data":              pldtypes.HexBytes(data).String(),
+		"new_lock_state":    newLockState.String(),
+		"contents":          bytes32Strings(contents),
 	})
 	if err != nil {
 		return nil, "", err
@@ -804,7 +829,9 @@ func encodeSNotoPrepareUnlockArgs(txID, lockID, spendCommitment, cancelCommitmen
 // encodeSNotoDelegateLockArgs builds the real Soroban call args for SNoto's
 // `delegate_lock(tx_id, lock_id, delegate, data)` (soroban/contracts/snoto/src/lib.rs). delegate is
 // the resolved chain-neutral StrKey string (chapter 14 step 7's Delegate migration).
-func encodeSNotoDelegateLockArgs(txID, lockID pldtypes.Bytes32, delegate string, data []byte) (argsXDR []byte, argsJSON string, err error) {
+// newLockState is the updated lockInfoV1 private state's own ID - see encodeSNotoLockArgs's own
+// doc comment on the mechanism this is part of.
+func encodeSNotoDelegateLockArgs(txID, lockID pldtypes.Bytes32, delegate string, data []byte, newLockState pldtypes.Bytes32) (argsXDR []byte, argsJSON string, err error) {
 	txIDVal, err := scValBytes(txID[:])
 	if err != nil {
 		return nil, "", err
@@ -821,18 +848,23 @@ func encodeSNotoDelegateLockArgs(txID, lockID pldtypes.Bytes32, delegate string,
 	if err != nil {
 		return nil, "", err
 	}
+	newLockStateVal, err := scValBytes(newLockState[:])
+	if err != nil {
+		return nil, "", err
+	}
 
-	args := xdr.ScVec{txIDVal, lockIDVal, delegateVal, dataVal}
+	args := xdr.ScVec{txIDVal, lockIDVal, delegateVal, dataVal, newLockStateVal}
 	var buf bytes.Buffer
 	if _, err := xdr.Marshal(&buf, args); err != nil {
 		return nil, "", err
 	}
 
 	argsJSONBytes, err := json.Marshal(map[string]any{
-		"tx_id":    txID.String(),
-		"lock_id":  lockID.String(),
-		"delegate": delegate,
-		"data":     pldtypes.HexBytes(data).String(),
+		"tx_id":          txID.String(),
+		"lock_id":        lockID.String(),
+		"delegate":       delegate,
+		"data":           pldtypes.HexBytes(data).String(),
+		"new_lock_state": newLockState.String(),
 	})
 	if err != nil {
 		return nil, "", err

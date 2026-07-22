@@ -379,6 +379,10 @@ func (h *prepareUnlockHandler) stellarBaseLedgerInvokePrepareUnlock(ctx context.
 	lockedInputs := endorsableStateIDs(ctx, lockedInputStates, false)
 	spendOutputIDs := endorsableStateIDs(ctx, spendOutputs, false)
 	cancelOutputIDs := endorsableStateIDs(ctx, cancelOutputs, false)
+	lockedInputsBytes32, err := parseBytes32List(ctx, lockedInputs)
+	if err != nil {
+		return nil, err
+	}
 
 	spendTxId := lockTransition.newLockInfo.SpendTxId
 	realContractID := tx.Transaction.ContractInfo.ContractAddress
@@ -400,7 +404,7 @@ func (h *prepareUnlockHandler) stellarBaseLedgerInvokePrepareUnlock(ctx context.
 		return nil, err
 	}
 
-	argsXDR, argsJSON, err := encodeSNotoPrepareUnlockArgs(txID, inParams.LockID, spendCommitment, cancelCommitment, data)
+	argsXDR, argsJSON, err := encodeSNotoPrepareUnlockArgs(txID, inParams.LockID, spendCommitment, cancelCommitment, data, lockTransition.newLockStateID, lockedInputsBytes32)
 	if err != nil {
 		return nil, err
 	}

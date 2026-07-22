@@ -193,10 +193,11 @@ func TestDecodeStellarLockEvent(t *testing.T) {
 	output := randBytes32(t)
 	signature := []byte{0x04}
 	data := []byte{0x05}
+	newLockState := randBytes32(t)
 
 	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 		[]xdr.ScVal{scSymbol("lock"), scBytes32Val(lockID)},
-		scVecVal(scBytes32VecVal(input), scBytes32VecVal(lockedOutput), scBytes32VecVal(output), scBytesVal(signature), scBytesVal(data)),
+		scVecVal(scBytes32VecVal(input), scBytes32VecVal(lockedOutput), scBytes32VecVal(output), scBytesVal(signature), scBytesVal(data), scBytes32Val(newLockState)),
 	)}
 	got, err := decodeStellarLockEvent(ctx, ev)
 	require.NoError(t, err)
@@ -206,7 +207,7 @@ func TestDecodeStellarLockEvent(t *testing.T) {
 	assert.Equal(t, []pldtypes.Bytes32{input}, got.Inputs)
 	assert.Equal(t, []pldtypes.Bytes32{output}, got.Outputs)
 	assert.Equal(t, []pldtypes.Bytes32{lockedOutput}, got.Contents, "locked_outputs maps to the shared struct's Contents field")
-	assert.True(t, got.NewLockState.IsZero(), "SNoto has no lock-info-state concept")
+	assert.Equal(t, newLockState, got.NewLockState, "the contract echoes back the assembled lockInfoV1 state's own ID")
 	assert.Equal(t, pldtypes.HexBytes(signature), got.Proof)
 	assert.Equal(t, pldtypes.HexBytes(data), got.Data)
 
@@ -214,7 +215,7 @@ func TestDecodeStellarLockEvent(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("lock"), scBytes32Val(lockID)}, scVecVal())}
 		_, err := decodeStellarLockEvent(ctx, ev)
-		assert.ErrorContains(t, err, "expected 5 elements")
+		assert.ErrorContains(t, err, "expected 6 elements")
 	})
 }
 
@@ -225,32 +226,35 @@ func TestDecodeStellarPrepareUnlockEvent(t *testing.T) {
 	spendCommitment := randBytes32(t)
 	cancelCommitment := randBytes32(t)
 	data := []byte{0x07}
+	oldLockState := randBytes32(t)
+	newLockState := randBytes32(t)
+	lockedCoin := randBytes32(t)
 
 	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 		[]xdr.ScVal{scSymbol("prepare_unlock"), scBytes32Val(lockID)},
-		scVecVal(scBytes32Val(txID), scBytes32Val(spendCommitment), scBytes32Val(cancelCommitment), scBytesVal(data)),
+		scVecVal(scBytes32Val(txID), scBytes32Val(spendCommitment), scBytes32Val(cancelCommitment), scBytesVal(data), scBytes32Val(oldLockState), scBytes32Val(newLockState), scBytes32VecVal(lockedCoin)),
 	)}
 	got, err := decodeStellarPrepareUnlockEvent(ctx, ev)
 	require.NoError(t, err)
 	assert.Equal(t, txID, got.TxId)
 	assert.Equal(t, lockID, got.LockID)
 	assert.Nil(t, got.Owner)
-	assert.Empty(t, got.Contents)
-	assert.True(t, got.OldLockState.IsZero(), "SNoto has no lock-info-state concept")
-	assert.True(t, got.NewLockState.IsZero(), "SNoto has no lock-info-state concept")
+	assert.Equal(t, []pldtypes.Bytes32{lockedCoin}, got.Contents, "the locked-coin state ID(s) this prepare_unlock references")
+	assert.Equal(t, oldLockState, got.OldLockState)
+	assert.Equal(t, newLockState, got.NewLockState)
 	assert.Equal(t, pldtypes.HexBytes(data), got.Data)
 
 	t.Run("data vec wrong length", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("prepare_unlock"), scBytes32Val(lockID)}, scVecVal(scBytes32Val(txID)))}
 		_, err := decodeStellarPrepareUnlockEvent(ctx, ev)
-		assert.ErrorContains(t, err, "expected 4 elements")
+		assert.ErrorContains(t, err, "expected 7 elements")
 	})
 
 	t.Run("spend_commitment not 32 bytes", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("prepare_unlock"), scBytes32Val(lockID)},
-			scVecVal(scBytes32Val(txID), scBytesVal([]byte{0x01}), scBytes32Val(cancelCommitment), scBytesVal(data)),
+			scVecVal(scBytes32Val(txID), scBytesVal([]byte{0x01}), scBytes32Val(cancelCommitment), scBytesVal(data), scBytes32Val(oldLockState), scBytes32Val(newLockState), scBytes32VecVal(lockedCoin)),
 		)}
 		_, err := decodeStellarPrepareUnlockEvent(ctx, ev)
 		assert.ErrorContains(t, err, "spend_commitment")
@@ -263,10 +267,12 @@ func TestDecodeStellarDelegateLockEvent(t *testing.T) {
 	txID := randBytes32(t)
 	delegate := randStellarAddress(t)
 	data := []byte{0x08}
+	oldLockState := randBytes32(t)
+	newLockState := randBytes32(t)
 
 	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 		[]xdr.ScVal{scSymbol("delegate_lock"), scBytes32Val(lockID)},
-		scVecVal(scBytes32Val(txID), scAddressVal(t, delegate), scBytesVal(data)),
+		scVecVal(scBytes32Val(txID), scAddressVal(t, delegate), scBytesVal(data), scBytes32Val(oldLockState), scBytes32Val(newLockState)),
 	)}
 	got, err := decodeStellarDelegateLockEvent(ctx, ev)
 	require.NoError(t, err)
@@ -274,21 +280,21 @@ func TestDecodeStellarDelegateLockEvent(t *testing.T) {
 	assert.Equal(t, lockID, got.LockID)
 	assert.Nil(t, got.PreviousSpender)
 	assert.Nil(t, got.NewSpender)
-	assert.True(t, got.OldLockState.IsZero(), "SNoto has no lock-info-state concept")
-	assert.True(t, got.NewLockState.IsZero(), "SNoto has no lock-info-state concept")
+	assert.Equal(t, oldLockState, got.OldLockState)
+	assert.Equal(t, newLockState, got.NewLockState)
 	assert.Equal(t, pldtypes.HexBytes(data), got.Data)
 
 	t.Run("data vec wrong length", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("delegate_lock"), scBytes32Val(lockID)}, scVecVal(scBytes32Val(txID)))}
 		_, err := decodeStellarDelegateLockEvent(ctx, ev)
-		assert.ErrorContains(t, err, "expected 3 elements")
+		assert.ErrorContains(t, err, "expected 5 elements")
 	})
 
 	t.Run("delegate not an address", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("delegate_lock"), scBytes32Val(lockID)},
-			scVecVal(scBytes32Val(txID), scBytesVal([]byte{0x01}), scBytesVal(data)),
+			scVecVal(scBytes32Val(txID), scBytesVal([]byte{0x01}), scBytesVal(data), scBytes32Val(oldLockState), scBytes32Val(newLockState)),
 		)}
 		_, err := decodeStellarDelegateLockEvent(ctx, ev)
 		assert.ErrorContains(t, err, "delegate")
@@ -302,10 +308,11 @@ func TestDecodeStellarUnlockEvent(t *testing.T) {
 	lockedInput := randBytes32(t)
 	output := randBytes32(t)
 	data := []byte{0x06}
+	oldLockState := randBytes32(t)
 
 	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 		[]xdr.ScVal{scSymbol("unlock"), scBytes32Val(lockID)},
-		scVecVal(scBytes32Val(txID), scBytes32VecVal(lockedInput), scBytes32VecVal(output), scBytesVal(data)),
+		scVecVal(scBytes32Val(txID), scBytes32VecVal(lockedInput), scBytes32VecVal(output), scBytesVal(data), scBytes32Val(oldLockState)),
 	)}
 	got, err := decodeStellarUnlockEvent(ctx, ev)
 	require.NoError(t, err)
@@ -314,14 +321,14 @@ func TestDecodeStellarUnlockEvent(t *testing.T) {
 	assert.Nil(t, got.Spender)
 	assert.Equal(t, []pldtypes.Bytes32{lockedInput}, got.Inputs)
 	assert.Equal(t, []pldtypes.Bytes32{output}, got.Outputs)
-	assert.True(t, got.OldLockState.IsZero(), "SNoto has no lock-info-state concept")
+	assert.Equal(t, oldLockState, got.OldLockState)
 	assert.Equal(t, pldtypes.HexBytes(data), got.TxData)
 
 	t.Run("data vec wrong length", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("unlock"), scBytes32Val(lockID)}, scVecVal(scBytes32Val(txID)))}
 		_, err := decodeStellarUnlockEvent(ctx, ev)
-		assert.ErrorContains(t, err, "expected 4 elements")
+		assert.ErrorContains(t, err, "expected 5 elements")
 	})
 }
 
@@ -332,10 +339,11 @@ func TestDecodeStellarCancelUnlockEvent(t *testing.T) {
 	lockedInput := randBytes32(t)
 	cancelOutput := randBytes32(t)
 	data := []byte{0x09}
+	oldLockState := randBytes32(t)
 
 	ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 		[]xdr.ScVal{scSymbol("cancel_unlock"), scBytes32Val(lockID)},
-		scVecVal(scBytes32Val(txID), scBytes32VecVal(lockedInput), scBytes32VecVal(cancelOutput), scBytesVal(data)),
+		scVecVal(scBytes32Val(txID), scBytes32VecVal(lockedInput), scBytes32VecVal(cancelOutput), scBytesVal(data), scBytes32Val(oldLockState)),
 	)}
 	got, err := decodeStellarCancelUnlockEvent(ctx, ev)
 	require.NoError(t, err)
@@ -344,14 +352,14 @@ func TestDecodeStellarCancelUnlockEvent(t *testing.T) {
 	assert.Nil(t, got.Spender)
 	assert.Equal(t, []pldtypes.Bytes32{lockedInput}, got.Inputs)
 	assert.Equal(t, []pldtypes.Bytes32{cancelOutput}, got.Outputs)
-	assert.True(t, got.OldLockState.IsZero(), "SNoto has no lock-info-state concept")
+	assert.Equal(t, oldLockState, got.OldLockState)
 	assert.Equal(t, pldtypes.HexBytes(data), got.TxData)
 
 	t.Run("data vec wrong length", func(t *testing.T) {
 		ev := &prototk.OnChainEvent{DataJson: jsonTopicsDataStellar(t,
 			[]xdr.ScVal{scSymbol("cancel_unlock"), scBytes32Val(lockID)}, scVecVal(scBytes32Val(txID)))}
 		_, err := decodeStellarCancelUnlockEvent(ctx, ev)
-		assert.ErrorContains(t, err, "expected 4 elements")
+		assert.ErrorContains(t, err, "expected 5 elements")
 	})
 }
 

@@ -94,6 +94,12 @@ pub struct Lock {
     pub outputs: Vec<BytesN<32>>,
     pub signature: Bytes,
     pub data: Bytes,
+    /// The Paladin-side lockInfoV1 private state ID assembled off-chain alongside this lock -
+    /// opaque to the contract (just echoed back, like inputs/outputs), mirroring Noto.sol's
+    /// `NotoLockCreated.newLockState`. Also persisted as this lock's own `state_id` (see
+    /// storage::LockInfo), so later prepare_unlock/delegate_lock/unlock/cancel_unlock calls can
+    /// report their own transitions of it.
+    pub new_lock_state: BytesN<32>,
 }
 
 /// `data` carries Paladin's off-chain info-states manifest (encodeTransactionData), same role as
@@ -110,6 +116,17 @@ pub struct PrepareUnlock {
     pub spend_commitment: BytesN<32>,
     pub cancel_commitment: BytesN<32>,
     pub data: Bytes,
+    /// See `Lock::new_lock_state`'s own doc comment - old_lock_state is this lock's prior
+    /// state_id (about to be superseded), new_lock_state is what it becomes.
+    pub old_lock_state: BytesN<32>,
+    pub new_lock_state: BytesN<32>,
+    /// The locked-coin state ID(s) this prepare_unlock references, echoed back opaque (like
+    /// lock's own locked_outputs) - mirrors EVM's NotoLockUpdated.contents. Without this, the Go
+    /// event indexer (applyLockUpdatedEvent) has no on-chain signal to confirm the locked coin as
+    /// a "read" state for this transaction, so BuildReceipt's own lockedInputIDs extraction (used
+    /// to build the unlock/cancel externalCalls args) comes back empty - a real bug found live:
+    /// SNoto's own on-chain `unlock` then traps with "locked_inputs" empty when it shouldn't be.
+    pub contents: Vec<BytesN<32>>,
 }
 
 /// See `PrepareUnlock`'s own doc comment for why `data` is here too.
@@ -121,6 +138,9 @@ pub struct DelegateLock {
     pub tx_id: BytesN<32>,
     pub delegate: Address,
     pub data: Bytes,
+    /// See `PrepareUnlock`'s own doc comment for old/new_lock_state.
+    pub old_lock_state: BytesN<32>,
+    pub new_lock_state: BytesN<32>,
 }
 
 #[contractevent(topics = ["unlock"], data_format = "vec")]
@@ -132,6 +152,10 @@ pub struct Unlock {
     pub locked_inputs: Vec<BytesN<32>>,
     pub outputs: Vec<BytesN<32>>,
     pub data: Bytes,
+    /// The lock's own state_id (storage::LockInfo) at the moment it's fully spent - there's no
+    /// new_lock_state counterpart, since unlock consumes the lock entirely rather than
+    /// transitioning it to a successor.
+    pub old_lock_state: BytesN<32>,
 }
 
 /// `tx_id` exists purely for Paladin's off-chain confirmation correlation, same reason `unlock`
@@ -146,6 +170,8 @@ pub struct CancelUnlock {
     pub locked_inputs: Vec<BytesN<32>>,
     pub cancel_outputs: Vec<BytesN<32>>,
     pub data: Bytes,
+    /// See `Unlock::old_lock_state`'s own doc comment.
+    pub old_lock_state: BytesN<32>,
 }
 
 /// Shield disclosure profile matches EVM Zeto's own `deposit` (book §13.6): amount and depositor
@@ -232,6 +258,7 @@ impl Contract {
         outputs: Vec<BytesN<32>>,
         signature: Bytes,
         data: Bytes,
+        new_lock_state: BytesN<32>,
     ) {
         let notary = storage::notary(&env);
         notary.require_auth();
@@ -258,6 +285,7 @@ impl Contract {
                 delegate: notary,
                 spend_commitment: None,
                 cancel_commitment: None,
+                state_id: new_lock_state.clone(),
             },
         );
 
@@ -268,6 +296,7 @@ impl Contract {
             outputs,
             signature,
             data,
+            new_lock_state,
         }
         .publish(&env);
     }
@@ -279,6 +308,8 @@ impl Contract {
         spend_commitment: BytesN<32>,
         cancel_commitment: BytesN<32>,
         data: Bytes,
+        new_lock_state: BytesN<32>,
+        contents: Vec<BytesN<32>>,
     ) {
         let notary = storage::notary(&env);
         notary.require_auth();
@@ -288,8 +319,10 @@ impl Contract {
         if lock.delegate != notary {
             panic!("lock already delegated");
         }
+        let old_lock_state = lock.state_id.clone();
         lock.spend_commitment = Some(spend_commitment.clone());
         lock.cancel_commitment = Some(cancel_commitment.clone());
+        lock.state_id = new_lock_state.clone();
         storage::set_lock(&env, &lock_id, &lock);
 
         PrepareUnlock {
@@ -298,6 +331,9 @@ impl Contract {
             spend_commitment,
             cancel_commitment,
             data,
+            old_lock_state,
+            new_lock_state,
+            contents,
         }
         .publish(&env);
     }
@@ -308,6 +344,7 @@ impl Contract {
         lock_id: BytesN<32>,
         delegate: Address,
         data: Bytes,
+        new_lock_state: BytesN<32>,
     ) {
         let mut lock = storage::get_lock(&env, &lock_id).unwrap_or_else(|| panic!("no such lock"));
         lock.delegate.require_auth();
@@ -315,7 +352,9 @@ impl Contract {
             panic!("lock not yet prepared");
         }
         storage::mark_tx_used(&env, &tx_id);
+        let old_lock_state = lock.state_id.clone();
         lock.delegate = delegate.clone();
+        lock.state_id = new_lock_state.clone();
         storage::set_lock(&env, &lock_id, &lock);
 
         DelegateLock {
@@ -323,6 +362,8 @@ impl Contract {
             tx_id,
             delegate,
             data,
+            old_lock_state,
+            new_lock_state,
         }
         .publish(&env);
     }
@@ -349,6 +390,7 @@ impl Contract {
             "snoto.Unlock",
         );
 
+        let old_lock_state = lock.state_id.clone();
         spend_locked_states(&env, &lock_id, &locked_inputs);
         for id in outputs.iter() {
             storage::mark_unspent(&env, &id);
@@ -361,6 +403,7 @@ impl Contract {
             locked_inputs,
             outputs,
             data,
+            old_lock_state,
         }
         .publish(&env);
     }
@@ -387,6 +430,7 @@ impl Contract {
             "snoto.CancelUnlock",
         );
 
+        let old_lock_state = lock.state_id.clone();
         spend_locked_states(&env, &lock_id, &locked_inputs);
         for id in cancel_outputs.iter() {
             storage::mark_unspent(&env, &id);
@@ -399,6 +443,7 @@ impl Contract {
             locked_inputs,
             cancel_outputs,
             data,
+            old_lock_state,
         }
         .publish(&env);
     }
@@ -413,10 +458,17 @@ impl Contract {
     }
 
     /// Shields (deposits) `amount` of the pooled SAC asset, admitting `outputs` as new unspent
-    /// states - book §13.6. `from` authorizes the real SAC transfer itself; the notary also
-    /// authorizes admission of the output states, matching every other write path here. No ZK
-    /// proof is involved - SNoto's coin data already lives entirely off-chain (see this module's
-    /// doc comment), so this is exactly `transfer` with zero real inputs plus a real SAC pull.
+    /// states - book §13.6. `from` authorizes the real SAC pull via a standalone SEP-41 `approve`
+    /// call it submits itself beforehand (mirroring EVM Zeto's own `approve`+`transferFrom`
+    /// pattern - `domains/zeto/internal/zeto/fungible/handler_deposit.go`'s `RequiredSigner`),
+    /// rather than a bundled non-invoker authorization entry in this same call: this contract
+    /// itself is the approved `spender`, so `transfer_from`'s own `spender.require_auth()` passes
+    /// via ordinary Soroban invoker authorization (this contract calling into the token contract
+    /// as itself) with zero explicit signatures needed here - the same mechanism already proven
+    /// for SAtom/Sente's delegated-unlock pattern. The notary also authorizes admission of the
+    /// output states, matching every other write path here. No ZK proof is involved - SNoto's coin
+    /// data already lives entirely off-chain (see this module's doc comment), so this is exactly
+    /// `transfer` with zero real inputs plus a real SAC pull.
     pub fn deposit(
         env: Env,
         tx_id: BytesN<32>,
@@ -425,7 +477,6 @@ impl Contract {
         outputs: Vec<BytesN<32>>,
         data: Bytes,
     ) {
-        from.require_auth();
         if amount <= 0 {
             panic!("deposit amount must be positive");
         }
@@ -433,9 +484,10 @@ impl Contract {
         storage::mark_tx_used(&env, &tx_id);
 
         let sac = storage::sac(&env);
-        token::TokenClient::new(&env, &sac).transfer(
+        token::TokenClient::new(&env, &sac).transfer_from(
+            &env.current_contract_address(),
             &from,
-            MuxedAddress::from(env.current_contract_address()),
+            &env.current_contract_address(),
             &amount,
         );
 

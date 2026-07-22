@@ -597,8 +597,203 @@ func TestUnlock_Stellar(t *testing.T) {
 	outputIDBytes32 := pldtypes.MustParseBytes32(*outputCoinState.Id)
 	assert.Equal(t, outputIDBytes32[:], []byte(*outputsVec[0].Bytes))
 
+	// This lock was never prepared (inputLockInfo carries no spendData) - check_commitment is a
+	// no-op when no commitment was ever set (soroban/contracts/snoto/src/lib.rs), so any "data"
+	// value is fine, including empty; the value here is exactly SpendData, empty because the
+	// mocked lock-info state never set it. See TestUnlock_Stellar_PreparedLock for the case where
+	// a prior prepare_unlock did set a real spendData, and this data must match it exactly.
 	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
-	assert.NotEmpty(t, *args[4].Bytes)
+	assert.Empty(t, *args[4].Bytes)
+}
+
+// TestUnlock_Stellar_PreparedLock proves the fix for a real bug: once a lock has been prepared
+// (spend_commitment is set on-chain), the on-chain unlock's "data" argument must exactly match
+// SpendData - the same value prepare_unlock's own commitment digest was computed over
+// (UnlockHashFromIDsV1, chapter 13 §13.2's check_commitment) - not some other, unrelated encoding.
+// This was never caught before because check_commitment silently no-ops when unprepared (see
+// TestUnlock_Stellar above), and no existing test/demo had ever chained a real prepare_unlock into
+// a real unlock live.
+func TestUnlock_Stellar_PreparedLock(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:        mockCallbacks,
+		coinSchema:       testSchema("coin"),
+		lockedCoinSchema: testSchema("lockedCoin"),
+		lockInfoSchemaV0: testSchema("lockInfo"),
+		lockInfoSchemaV1: testSchema("lockInfo_v1"),
+		dataSchemaV0:     testSchema("data"),
+		dataSchemaV1:     testSchema("data_v1"),
+		dataSchemaV2:     testSchema("data_v2"),
+		manifestSchema:   testSchema("manifest"),
+		chainIO:          newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["unlock"]
+
+	notaryPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryStellarAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	senderAddress, err := strkey.Encode(strkey.VersionByteAccountID, senderPub)
+	require.NoError(t, err)
+
+	receiverPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	receiverAddress, err := strkey.Encode(strkey.VersionByteAccountID, receiverPub)
+	require.NoError(t, err)
+
+	lockID := pldtypes.RandBytes32()
+	inputCoin := &types.NotoLockedCoinState{
+		ID: pldtypes.MustParseBytes32("0xe532ee16774660fceb6c941725d6045939d34263ce81cd17266e910ac0ec5277"),
+		Data: types.NotoLockedCoin{
+			Salt:   pldtypes.RandBytes32(),
+			LockID: lockID,
+			Owner:  pldtypes.MustParseChainAddress(senderAddress),
+			Amount: pldtypes.Int64ToInt256(100),
+		},
+	}
+	// The one difference from TestUnlock_Stellar: this lock HAS been prepared - spendData is a
+	// real, non-empty value a prior prepare_unlock committed to on-chain.
+	spendData := "0xcafe1234"
+	inputLockInfo := &prototk.StoredState{
+		Id:       pldtypes.RandBytes32().String(),
+		SchemaId: hashName("lockInfo_v1"),
+		DataJson: fmt.Sprintf(`{
+			"lockId": "%s",
+			"salt": "%s",
+			"owner": "%s",
+			"spender": "%s",
+			"spendData": "%s"
+		}`, lockID, pldtypes.RandBytes32(), senderAddress, senderAddress, spendData),
+	}
+	mockCallbacks.MockFindAvailableStates = func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
+		switch req.SchemaId {
+		case hashName("lockInfo_v1"):
+			return &prototk.FindAvailableStatesResponse{
+				States: []*prototk.StoredState{inputLockInfo},
+			}, nil
+		case hashName("lockedCoin"):
+			return &prototk.FindAvailableStatesResponse{
+				States: []*prototk.StoredState{
+					{
+						Id:        inputCoin.ID.String(),
+						SchemaId:  hashName("lockedCoin"),
+						DataJson:  mustParseJSON(inputCoin.Data),
+						CreatedAt: 1,
+					},
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("unmocked query")
+	}
+
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3" // placeholder - see placeholderContractID
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "sender@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress:    contractAddress,
+			ContractConfigJson: mustParseJSON(notoBasicConfigV1),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: fmt.Sprintf(`{
+		    "lockId": "%s",
+			"from": "sender@node1",
+			"recipients": [{
+				"to": "receiver@node2",
+				"amount": 100
+			}],
+			"data": "0x1234"
+		}`, lockID),
+	}
+
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryStellarAddress},
+		{Lookup: "sender@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: senderAddress},
+		{Lookup: "receiver@node2", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: receiverAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+
+	outputCoinState := assembleRes.AssembledTransaction.OutputStates[0]
+	outputCoin, err := n.unmarshalCoin(outputCoinState.StateDataJson)
+	require.NoError(t, err)
+
+	dataState := assembleRes.AssembledTransaction.InfoStates[2]
+	lockState := assembleRes.AssembledTransaction.InputStates[1]
+
+	encodedUnlock, err := n.encodeUnlock(ctx, ethtypes.MustNewAddress(contractAddress), []*types.NotoLockedCoin{&inputCoin.Data}, []*types.NotoLockedCoin{}, []*types.NotoCoin{outputCoin})
+	require.NoError(t, err)
+	signature := ed25519.Sign(senderPriv, encodedUnlock)
+
+	inputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      hashName("lockedCoin"),
+			Id:            inputCoin.ID.String(),
+			StateDataJson: mustParseJSON(inputCoin.Data),
+		},
+		{
+			SchemaId:      lockState.SchemaId,
+			Id:            lockState.Id,
+			StateDataJson: inputLockInfo.DataJson,
+		},
+	}
+	outputStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      outputCoinState.SchemaId,
+			Id:            *outputCoinState.Id,
+			StateDataJson: outputCoinState.StateDataJson,
+		},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{
+			SchemaId:      dataState.SchemaId,
+			Id:            *dataState.Id,
+			StateDataJson: dataState.StateDataJson,
+		},
+	}
+
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		InputStates:       inputStates,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{
+				Name:     "sender",
+				Verifier: &prototk.ResolvedVerifier{Verifier: senderAddress},
+				Payload:  signature,
+			},
+			{
+				Name:     "notary",
+				Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban, ok := prepareRes.ChainTransaction.Payload.(*prototk.PreparedChainTransaction_Soroban)
+	require.True(t, ok)
+
+	var args xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
+	require.NoError(t, err)
+	require.Len(t, args, 5)
+
+	// The load-bearing assertion: "data" is exactly SpendData, matching what prepare_unlock
+	// committed to - not a freshly re-encoded, unrelated transaction-data blob.
+	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
+	assert.Equal(t, []byte(pldtypes.MustParseHexBytes(spendData)), []byte(*args[4].Bytes))
 }
 
 func TestUnlock_V0(t *testing.T) {

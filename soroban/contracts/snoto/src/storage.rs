@@ -37,6 +37,13 @@ pub struct LockInfo {
     pub delegate: Address,
     pub spend_commitment: Option<BytesN<32>>,
     pub cancel_commitment: Option<BytesN<32>>,
+    /// The Paladin-side lockInfoV1 private state ID currently representing this lock off-chain -
+    /// set by lock()/prepare_unlock()/delegate_lock() (each of which supersedes the prior state
+    /// with a new one), and read back by unlock()/cancel_unlock() to report which state is being
+    /// spent. Mirrors Noto.sol's own on-chain `_lockStates[lockId]` mapping - EVM's contract
+    /// tracks this itself for the exact same reason (spendLock/cancelLock need to emit it, but
+    /// have no other way to know it, since they aren't the call that created/last updated it).
+    pub state_id: BytesN<32>,
 }
 
 pub fn has_notary(env: &Env) -> bool {

@@ -32,6 +32,7 @@ import (
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/google/uuid"
 	"github.com/hyperledger/firefly-signer/pkg/abi"
+	"github.com/stellar/go-stellar-sdk/strkey"
 
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldclient"
@@ -930,14 +931,121 @@ func TestGetPublicTxDataErrors(t *testing.T) {
 		mockEmptyReceiptListeners)
 	defer done()
 
-	_, err := txm.getPublicTxData(ctx, &abi.Entry{Type: abi.Event}, nil, nil)
+	_, err := txm.getPublicTxData(ctx, &abi.Entry{Type: abi.Event}, nil, nil, nil, "")
 	assert.Regexp(t, "PD011929", err)
 
 	_, err = txm.getPublicTxData(ctx, &abi.Entry{Type: abi.Constructor, Inputs: abi.ParameterArray{
 		{Type: "wrong"},
-	}}, nil, nil)
+	}}, nil, nil, nil, "")
 	assert.Regexp(t, "FF22041", err)
 
+}
+
+func TestStellarPublicTxRawDataPassthrough(t *testing.T) {
+	ctx, txm, done := newTestTransactionManager(t, false,
+		mockEmptyReceiptListeners, mockInsertABIBeginCommit)
+	defer done()
+
+	contractAddrStr, err := strkey.Encode(strkey.VersionByteContract, pldtypes.RandBytes(32))
+	require.NoError(t, err)
+	contractAddr, err := pldtypes.NewStellarContractAddress(contractAddrStr)
+	require.NoError(t, err)
+
+	// No ABI at all is supplied - Soroban has no Solidity-style ABI to resolve against.
+	fn, err := txm.resolveFunction(ctx, txm.p.NOTX(), nil, nil, "execute", &contractAddr)
+	require.NoError(t, err)
+	assert.Equal(t, "execute", fn.Definition.Name)
+	assert.Equal(t, abi.Function, fn.Definition.Type)
+	// Still a real, stored ABI reference (never nil) - the transactions table's abi_ref column is
+	// NOT NULL, so even this synthetic single-function ABI gets a genuine hash.
+	assert.NotNil(t, fn.ABIReference)
+
+	// Data is a hex string containing pre-built raw XDR call args - not ABI-decodable.
+	rawXDR := []byte{0xde, 0xad, 0xbe, 0xef}
+	dataJSON := pldtypes.RawJSON(fmt.Sprintf(`"0x%x"`, rawXDR))
+
+	cv, normalizedJSON, err := txm.parseInputs(ctx, fn.Definition, pldapi.TransactionTypePublic.Enum(), dataJSON, nil, &contractAddr)
+	require.NoError(t, err)
+	assert.Equal(t, rawXDR, cv.Value)
+	assert.Equal(t, dataJSON, normalizedJSON)
+
+	// The raw bytes must survive untouched all the way through to the submitted public tx data -
+	// no Solidity ABI selector/encoding is layered on top.
+	publicTxData, err := txm.getPublicTxData(ctx, fn.Definition, nil, cv, &contractAddr, "")
+	require.NoError(t, err)
+	assert.Equal(t, rawXDR, publicTxData)
+}
+
+// TestStellarClassicOpsRawDataPassthrough proves PublicTxPayloadKindXDRClassicOps end to end -
+// chapter 18's institutional repo demo needs this to establish a real trustline (a ChangeTrust
+// classic operation) for a Paladin-managed identity via ordinary ptx_sendTransaction, not the
+// in-process-only technique core/go/noderuntests/componenttest/stellar_asset_test.go's own
+// establishTrustlineAndFund uses (direct KeyManager access, unreachable from a separate process
+// talking over plain RPC). Unlike the Soroban public-passthrough case above, this has no function/
+// contract-address concept at all - just a raw pre-built classic-operations XDR blob.
+func TestStellarClassicOpsRawDataPassthrough(t *testing.T) {
+	ctx, txm, done := newTestTransactionManager(t, false,
+		mockEmptyReceiptListeners, mockInsertABIBeginCommit)
+	defer done()
+
+	rawClassicOpsXDR := []byte{0x01, 0x02, 0x03, 0x04}
+	dataJSON := pldtypes.RawJSON(fmt.Sprintf(`"0x%x"`, rawClassicOpsXDR))
+
+	tx := &pldapi.TransactionInput{
+		TransactionBase: pldapi.TransactionBase{
+			Type: pldapi.TransactionTypePublic.Enum(),
+			Data: dataJSON,
+		},
+	}
+	tx.PublicTxOptions.PayloadKind = pldapi.PublicTxPayloadKindXDRClassicOps.Enum()
+
+	fn, cv, normalizedJSON, err := txm.ResolveTransactionInputs(ctx, txm.p.NOTX(), tx)
+	require.NoError(t, err)
+	assert.Equal(t, "classicOps", fn.Definition.Name)
+	// Still a real, stored ABI reference (never nil) - see TestStellarPublicTxRawDataPassthrough's
+	// own comment on why.
+	assert.NotNil(t, fn.ABIReference)
+	assert.Equal(t, rawClassicOpsXDR, cv.Value)
+	assert.Equal(t, dataJSON, normalizedJSON)
+
+	publicTxData, err := txm.getPublicTxData(ctx, fn.Definition, nil, cv, nil, pldapi.PublicTxPayloadKindXDRClassicOps)
+	require.NoError(t, err)
+	assert.Equal(t, rawClassicOpsXDR, publicTxData)
+}
+
+// TestStellarPrivateInvokeNotInterceptedByRawPassthrough guards against a real bug found live
+// (chapter 18's institutional repo demo): the raw-passthrough branch above must never intercept
+// an ordinary private-domain invoke targeting a Stellar contract address (e.g. a Noto "mint" call)
+// just because isStellarChainAddress(to) is true - it must only fire for the synthetic no-ABI
+// marker resolveFunction returns for a genuinely ABI-less Stellar public call. A real ABI-backed
+// function (non-empty Inputs) must still be ABI-decoded/serialized normally, object-shaped data
+// and all - the exact case that regressed (PD012208: "cannot unmarshal object into Go value of
+// type string", from treating a JSON object as if it were a raw hex string).
+func TestStellarPrivateInvokeNotInterceptedByRawPassthrough(t *testing.T) {
+	ctx, txm, done := newTestTransactionManager(t, false,
+		mockEmptyReceiptListeners)
+	defer done()
+
+	contractAddrStr, err := strkey.Encode(strkey.VersionByteContract, pldtypes.RandBytes(32))
+	require.NoError(t, err)
+	contractAddr, err := pldtypes.NewStellarContractAddress(contractAddrStr)
+	require.NoError(t, err)
+
+	mintFn := &abi.Entry{
+		Type: abi.Function,
+		Name: "mint",
+		Inputs: abi.ParameterArray{
+			{Name: "to", Type: "string"},
+			{Name: "amount", Type: "uint256"},
+			{Name: "data", Type: "bytes"},
+		},
+	}
+
+	dataJSON := pldtypes.RawJSON(`{"to":"bankA@node2","amount":"1000000","data":"0x"}`)
+	cv, _, err := txm.parseInputs(ctx, mintFn, pldapi.TransactionTypePrivate.Enum(), dataJSON, nil, &contractAddr)
+	require.NoError(t, err)
+	require.NotNil(t, cv)
+	assert.Len(t, cv.Children, 3)
 }
 
 func TestCallTransactionNoFrom(t *testing.T) {

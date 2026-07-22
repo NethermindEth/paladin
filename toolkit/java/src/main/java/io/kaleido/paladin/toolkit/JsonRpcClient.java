@@ -111,7 +111,6 @@
                      .header("Content-Type", "application/json")
                      .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                      .build();
-             LOGGER.debug("--> RPC[{}] {}", requestId, method);
              LOGGER.trace("--> RPC[{}] {}: {}", requestId, method, requestBody);
              HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
  
@@ -127,9 +126,17 @@
                  }
                  throw new IOException(message);
              }
-             LOGGER.trace("<-- RPC[{}] {}: {}", requestId, method, res.body());
-             LOGGER.debug("<-- RPC[{}] {} [{}]", requestId, method, res.statusCode());
+             LOGGER.trace("<-- RPC[{}] {} [{}]: {}", requestId, method, res.statusCode(), res.body());
              return rpcRes.result();
+         } catch (java.net.ConnectException e) {
+             // Thrown by httpClient.send() itself when nothing is listening on the target port yet
+             // - not a real RPC/application-level failure, just "the server hasn't started up yet".
+             // A caller polling a not-yet-ready node (NodeProcessHarness.waitForReady) hits this on
+             // every single retry attempt by design and already silently retries past it - logging
+             // each one at ERROR prints one alarming-looking stack trace per poll for a condition
+             // the caller both expects and handles, not a genuine problem.
+             LOGGER.debug("<-- RPC[{}] {} connection refused (target not listening yet): {}", requestId, method, e.getMessage());
+             throw e;
          } catch(Throwable e) {
              LOGGER.error(new FormattedMessage("<-- RPC[{}] {} ERROR", requestId, method), e);
              if (e instanceof IOException) {

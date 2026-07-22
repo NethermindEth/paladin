@@ -16,7 +16,10 @@
 package noto
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -26,6 +29,8 @@ import (
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/domain"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/google/uuid"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -286,4 +291,120 @@ func testGetDomainReceipt(t *testing.T, n *Noto, req *prototk.BuildReceiptReques
 	require.NoError(t, err)
 
 	return &notoReceipt
+}
+
+// TestBuildReceipt_Stellar_LockInfo proves the new Stellar dispatch in receiptLockInfoV1V2 (ch. 18's
+// SAtom atomic-composition support): BuildReceipt's LockInfo.UnlockCall/CancelCall are populated
+// with real, correctly-encoded Soroban args - the same encoding stellarBaseLedgerInvokeUnlock/
+// stellarBaseLedgerInvokeCancelUnlock use for genuine submission (chapter 13 §13.2's
+// check_commitment needs byte-for-byte the same "data" value both places) - not the EVM-only ABI
+// encoding this receipt used to always produce regardless of chain kind.
+func TestBuildReceipt_Stellar_LockInfo(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:        mockCallbacks,
+		coinSchema:       testSchema("coin"),
+		lockedCoinSchema: testSchema("lockedCoin"),
+		lockInfoSchemaV0: testSchema("lockInfo"),
+		lockInfoSchemaV1: testSchema("lockInfo_v1"),
+		dataSchemaV0:     testSchema("data"),
+		dataSchemaV1:     testSchema("data_v1"),
+		dataSchemaV2:     testSchema("data_v2"),
+		manifestSchema:   testSchema("manifest"),
+		chainIO:          newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+
+	ownerPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	ownerAddress, err := strkey.Encode(strkey.VersionByteAccountID, ownerPub)
+	require.NoError(t, err)
+
+	lockID := pldtypes.RandBytes32()
+	spendTxID := pldtypes.RandBytes32()
+	lockedCoinID := pldtypes.RandBytes32()
+	spendOutputID := pldtypes.RandBytes32()
+	cancelOutputID := pldtypes.RandBytes32()
+	spendData := "0xcafe01"
+	cancelData := "0xcafe02"
+
+	res, err := n.BuildReceipt(ctx, &prototk.BuildReceiptRequest{
+		TransactionId: uuid.New().String(),
+		InfoStates: []*prototk.EndorsableState{
+			{
+				Id:       pldtypes.RandBytes32().String(),
+				SchemaId: n.dataSchemaV1.Id,
+				StateDataJson: fmt.Sprintf(`{
+					"salt": "%s",
+					"data": "0x",
+					"variant": "0x0001"
+				}`, pldtypes.RandBytes32()),
+			},
+		},
+		OutputStates: []*prototk.EndorsableState{
+			{
+				Id:       lockedCoinID.String(),
+				SchemaId: n.lockedCoinSchema.Id,
+				StateDataJson: fmt.Sprintf(`{
+					"lockId": "%s",
+					"owner": "%s",
+					"amount": "100"
+				}`, lockID, ownerAddress),
+			},
+			{
+				Id:       pldtypes.RandBytes32().String(),
+				SchemaId: n.lockInfoSchemaV1.Id,
+				StateDataJson: fmt.Sprintf(`{
+					"lockId": "%s",
+					"salt": "%s",
+					"owner": "%s",
+					"spender": "%s",
+					"spendTxId": "%s",
+					"spendOutputs": ["%s"],
+					"spendData": "%s",
+					"cancelOutputs": ["%s"],
+					"cancelData": "%s"
+				}`, lockID, pldtypes.RandBytes32(), ownerAddress, ownerAddress, spendTxID, spendOutputID, spendData, cancelOutputID, cancelData),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	var receipt types.NotoDomainReceipt
+	require.NoError(t, json.Unmarshal([]byte(res.ReceiptJson), &receipt))
+	require.NotNil(t, receipt.LockInfo)
+
+	assert.Equal(t, "unlock", receipt.LockInfo.UnlockFunction)
+	var unlockArgs xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(receipt.LockInfo.UnlockCall), &unlockArgs)
+	require.NoError(t, err)
+	require.Len(t, unlockArgs, 5) // tx_id, lock_id, locked_inputs, outputs, data
+	assert.Equal(t, spendTxID[:], []byte(*unlockArgs[0].Bytes))
+	assert.Equal(t, lockID[:], []byte(*unlockArgs[1].Bytes))
+	assert.Equal(t, pldtypes.MustParseHexBytes(spendData), pldtypes.HexBytes(*unlockArgs[4].Bytes))
+
+	assert.Equal(t, "cancel_unlock", receipt.LockInfo.CancelFunction)
+	var cancelArgs xdr.ScVec
+	_, err = xdr.Unmarshal(bytes.NewReader(receipt.LockInfo.CancelCall), &cancelArgs)
+	require.NoError(t, err)
+	require.Len(t, cancelArgs, 5)
+	assert.Equal(t, pldtypes.MustParseHexBytes(cancelData), pldtypes.HexBytes(*cancelArgs[4].Bytes))
+
+	// UnlockParams/CancelParams are the JSON-typed-args counterpart to UnlockCall/CancelCall's raw
+	// XDR - Sente's externalCalls mechanism (scval_json.rs) needs these instead, since it has no
+	// raw-args-passthrough mode. Same positional values, {"type":"bytes"/"vec", "value":...} shaped.
+	unlockArgsJSON, ok := receipt.LockInfo.UnlockParams["args"].([]any)
+	require.True(t, ok)
+	require.Len(t, unlockArgsJSON, 5)
+	assert.Equal(t, map[string]any{"type": "bytes", "value": spendTxID.String()}, unlockArgsJSON[0])
+	assert.Equal(t, map[string]any{"type": "bytes", "value": lockID.String()}, unlockArgsJSON[1])
+	assert.Equal(t, map[string]any{"type": "vec", "value": []any{map[string]any{"type": "bytes", "value": lockedCoinID.String()}}}, unlockArgsJSON[2])
+	assert.Equal(t, map[string]any{"type": "vec", "value": []any{map[string]any{"type": "bytes", "value": spendOutputID.String()}}}, unlockArgsJSON[3])
+	assert.Equal(t, map[string]any{"type": "bytes", "value": spendData}, unlockArgsJSON[4])
+
+	cancelArgsJSON, ok := receipt.LockInfo.CancelParams["args"].([]any)
+	require.True(t, ok)
+	require.Len(t, cancelArgsJSON, 5)
+	assert.Equal(t, map[string]any{"type": "vec", "value": []any{map[string]any{"type": "bytes", "value": cancelOutputID.String()}}}, cancelArgsJSON[3])
+	assert.Equal(t, map[string]any{"type": "bytes", "value": cancelData}, cancelArgsJSON[4])
 }

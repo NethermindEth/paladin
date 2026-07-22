@@ -107,7 +107,29 @@ impl Contract {
     /// doc comment), not stored.
     pub fn initialize(env: Env, members: Vec<BytesN<32>>, network_passphrase: Bytes, tx_id: BytesN<32>) {
         if storage::is_initialized(&env) {
-            panic!("sente: already initialized");
+            // Idempotent, not a no-op: genesis-state creation on the Go side is purely event-
+            // driven (no per-transaction "expected output state" is ever declared for a genesis
+            // deploy - see `sente-factory`'s own doc comment on why `deploy_group` needed to
+            // become idempotent in the first place), so a caller who reaches an already-live group
+            // - a fresh node re-submitting `pgroup_createGroup` against a persistent chain, most
+            // concretely - needs a `Genesis` event tied to *this* transaction's own `tx_id` to ever
+            // get its local genesis state populated at all. Relying on that node's background
+            // indexer to instead discover the *original* Genesis event via historical replay is
+            // both unnecessary and unreliable in practice (confirmed empirically: this failed with
+            // "group genesis state not found" even on a near-empty chain, not just a long one) -
+            // real-time processing of a freshly-emitted event is both simpler and faster than
+            // waiting on a historical backfill to catch up. Republishes the group's own actual
+            // stored members/passphrase, not this call's arguments - by construction they're
+            // identical (deploy_group's salt is derived from members, so any caller reaching this
+            // address already agrees on them), but doing so anyway means a mismatched caller can
+            // never poison this event with a false membership claim for an existing group.
+            Genesis {
+                tx_id,
+                members: storage::members(&env),
+                network_passphrase: storage::network_passphrase(&env),
+            }
+            .publish(&env);
+            return;
         }
         if members.is_empty() {
             panic!("sente: a privacy group needs at least one member");

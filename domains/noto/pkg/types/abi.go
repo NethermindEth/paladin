@@ -33,7 +33,39 @@ var notoV0PrivateJSON []byte
 var NotoABI = solutils.MustParseBuildABI(notoPrivateJSON)
 var NotoV0ABI = solutils.MustParseBuildABI(notoV0PrivateJSON)
 
-var NotoABIFunctionsBySolSignature = abiFunctionsBySolSignature(NotoV0ABI, NotoABI)
+// NotoStellarOnlyABI covers deposit/withdraw (SNoto's real SAC shield/unshield gateway, ch.14
+// §14.1/ch.13 §13.6) - hand-written rather than embedded from a compiled Solidity artifact like
+// NotoABI/NotoV0ABI above, since these two functions have no EVM equivalent at all (confirmed:
+// no INotoPrivate.sol interface entry exists, and none should - adding one would require Noto.sol
+// itself to implement them as EVM stubs purely to satisfy Solidity's interface-conformance rules,
+// pulling the Solidity/Hardhat build pipeline into a change that only ever matters for Stellar).
+// Checked as a second lookup source in noto.go's validateTransactionCommon, alongside NotoABI -
+// see that function's own doc comment for why a function must appear in *some* ABI to dispatch at
+// all, regardless of chain.
+var NotoStellarOnlyABI = abi.ABI{
+	{
+		Type: abi.Function,
+		Name: "deposit",
+		Inputs: abi.ParameterArray{
+			{Name: "from", Type: "string"},
+			{Name: "amount", Type: "uint256"},
+			{Name: "data", Type: "bytes"},
+		},
+		Outputs: abi.ParameterArray{},
+	},
+	{
+		Type: abi.Function,
+		Name: "withdraw",
+		Inputs: abi.ParameterArray{
+			{Name: "recipient", Type: "string"},
+			{Name: "amount", Type: "uint256"},
+			{Name: "data", Type: "bytes"},
+		},
+		Outputs: abi.ParameterArray{},
+	},
+}
+
+var NotoABIFunctionsBySolSignature = abiFunctionsBySolSignature(NotoV0ABI, NotoABI, NotoStellarOnlyABI)
 
 type ConstructorParams struct {
 	Name           string      `json:"name,omitempty"`           // Name of the token

@@ -517,8 +517,13 @@ func TestCancelLock_Stellar(t *testing.T) {
 	require.Len(t, cancelOutputsVec, 1)
 	assert.Equal(t, cancelOutputID[:], []byte(*cancelOutputsVec[0].Bytes))
 
+	// The load-bearing assertion: "data" is exactly cancelData, matching what prepare_unlock
+	// committed to on-chain (check_commitment, soroban/contracts/snoto/src/lib.rs) - not some
+	// other, unrelated encoding. A plain non-empty check here would pass even with the wrong
+	// value, since both the correct cancelData and the previous (buggy) transaction-data encoding
+	// happen to be non-empty.
 	require.Equal(t, xdr.ScValTypeScvBytes, args[4].Type)
-	assert.NotEmpty(t, *args[4].Bytes)
+	assert.Equal(t, []byte(cancelData), []byte(*args[4].Bytes))
 }
 
 // TestCancelLock_HooksModeNotSupported proves cancelLock errors clearly in hooks notary mode

@@ -296,14 +296,17 @@ func decodeStellarTransferEvent(ctx context.Context, ev *prototk.OnChainEvent) (
 }
 
 // decodeStellarLockEvent decodes SNoto's on-chain `lock` event (topics = ["lock", lock_id], data =
-// vec![inputs, locked_outputs, outputs, signature, data] - soroban/contracts/snoto/src/lib.rs's
-// `Lock` struct) into the same NotoLockCreated_Event shape the EVM path produces, so
-// applyLockCreatedEvent can be shared unchanged. lock_id doubles as tx_id (SNoto's lock_id = tx_id
-// - lib.rs's own doc comment), so both fields get the same topic value. EVM's "contents" field
-// (the locked coin states) corresponds to SNoto's "locked_outputs" - confirmed against
-// handler_lock.go's own Contents: endorsableStateIDs(ctx, lockedOutputs, ...) construction.
-// NewLockState is left zero (SNoto has no lock-info-state concept at all) - applyLockCreatedEvent
-// guards on IsZero() so this doesn't get recorded as a bogus confirmed state.
+// vec![inputs, locked_outputs, outputs, signature, data, new_lock_state] -
+// soroban/contracts/snoto/src/lib.rs's `Lock` struct) into the same NotoLockCreated_Event shape
+// the EVM path produces, so applyLockCreatedEvent can be shared unchanged. lock_id doubles as
+// tx_id (SNoto's lock_id = tx_id - lib.rs's own doc comment), so both fields get the same topic
+// value. EVM's "contents" field (the locked coin states) corresponds to SNoto's "locked_outputs" -
+// confirmed against handler_lock.go's own Contents: endorsableStateIDs(ctx, lockedOutputs, ...)
+// construction. new_lock_state is the assembled lockInfoV1 state's own ID, echoed back by the
+// contract (see encodeSNotoLockArgs's own doc comment) - populating NewLockState here is what lets
+// applyLockCreatedEvent's IsZero() guard record it as a real confirmed state, fixing a real bug
+// found live: without it, the lockInfoV1 state never gets confirmed, and prepareUnlock's own
+// loadLockInfoV1 lookup permanently fails with "PD200028: Lock ID not found".
 func decodeStellarLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockCreated_Event, error) {
 	payload, err := decodeStellarEventPayload(ev)
 	if err != nil {
@@ -321,7 +324,7 @@ func decodeStellarLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*Not
 		return nil, fmt.Errorf("lock_id topic: %w", err)
 	}
 
-	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 5)
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 6)
 	if err != nil {
 		return nil, err
 	}
@@ -345,27 +348,37 @@ func decodeStellarLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*Not
 	if err != nil {
 		return nil, fmt.Errorf("event data[4] (data): %w", err)
 	}
+	newLockState, err := scValToBytes32(vec[5])
+	if err != nil {
+		return nil, fmt.Errorf("event data[5] (new_lock_state): %w", err)
+	}
 
 	return &NotoLockCreated_Event{
-		TxId:     lockID,
-		LockID:   lockID,
-		Inputs:   inputs,
-		Outputs:  outputs,
-		Contents: lockedOutputs,
-		Proof:    signature,
-		Data:     data,
+		TxId:         lockID,
+		LockID:       lockID,
+		Inputs:       inputs,
+		Outputs:      outputs,
+		Contents:     lockedOutputs,
+		Proof:        signature,
+		Data:         data,
+		NewLockState: newLockState,
 	}, nil
 }
 
 // decodeStellarPrepareUnlockEvent decodes SNoto's on-chain `prepare_unlock` event (topics =
-// ["prepare_unlock", lock_id], data = vec![tx_id, spend_commitment, cancel_commitment, data] -
-// soroban/contracts/snoto/src/lib.rs's `PrepareUnlock` struct) into the same NotoLockUpdated_Event
-// shape the EVM path produces, so applyLockUpdatedEvent can be shared unchanged.
-// spend_commitment/cancel_commitment are decoded (to validate the event's shape) but not carried
-// into NotoLockUpdated_Event - that struct has no field for them, since off-chain confirmation
-// bookkeeping never needs them (only unlock/cancel_unlock's own on-chain check_commitment
-// recomputes and checks them later). Owner/Contents/OldLockState/NewLockState are left nil/zero -
-// SNoto has no lock-info-state concept at all - applyLockUpdatedEvent's own guards make this safe.
+// ["prepare_unlock", lock_id], data = vec![tx_id, spend_commitment, cancel_commitment, data,
+// old_lock_state, new_lock_state, contents] - soroban/contracts/snoto/src/lib.rs's
+// `PrepareUnlock` struct) into the same NotoLockUpdated_Event shape the EVM path produces, so
+// applyLockUpdatedEvent can be shared unchanged. spend_commitment/cancel_commitment are decoded
+// (to validate the event's shape) but not carried into NotoLockUpdated_Event - that struct has no
+// field for them, since off-chain confirmation bookkeeping never needs them (only
+// unlock/cancel_unlock's own on-chain check_commitment recomputes and checks them later). Owner is
+// left nil - an EVM-only field with no Stellar equivalent. old_lock_state/new_lock_state/Contents
+// ARE populated (see decodeStellarLockEvent's own doc comment on why old/new_lock_state matters;
+// Contents - the locked-coin state ID(s) - is what lets applyLockUpdatedEvent record them as a
+// confirmed read state, which BuildReceipt's own lockedInputIDs extraction depends on to build the
+// unlock/cancel externalCalls args - a real bug found live: without it, SNoto's own on-chain
+// `unlock` traps because "locked_inputs" comes through empty).
 func decodeStellarPrepareUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockUpdated_Event, error) {
 	payload, err := decodeStellarEventPayload(ev)
 	if err != nil {
@@ -383,7 +396,7 @@ func decodeStellarPrepareUnlockEvent(ctx context.Context, ev *prototk.OnChainEve
 		return nil, fmt.Errorf("lock_id topic: %w", err)
 	}
 
-	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 7)
 	if err != nil {
 		return nil, err
 	}
@@ -401,23 +414,39 @@ func decodeStellarPrepareUnlockEvent(ctx context.Context, ev *prototk.OnChainEve
 	if err != nil {
 		return nil, fmt.Errorf("event data[3] (data): %w", err)
 	}
+	oldLockState, err := scValToBytes32(vec[4])
+	if err != nil {
+		return nil, fmt.Errorf("event data[4] (old_lock_state): %w", err)
+	}
+	newLockState, err := scValToBytes32(vec[5])
+	if err != nil {
+		return nil, fmt.Errorf("event data[5] (new_lock_state): %w", err)
+	}
+	contents, err := scValToBytes32Vec(vec[6])
+	if err != nil {
+		return nil, fmt.Errorf("event data[6] (contents): %w", err)
+	}
 
 	return &NotoLockUpdated_Event{
-		TxId:   txID,
-		LockID: lockID,
-		Data:   data,
+		TxId:         txID,
+		LockID:       lockID,
+		Contents:     contents,
+		Data:         data,
+		OldLockState: oldLockState,
+		NewLockState: newLockState,
 	}, nil
 }
 
 // decodeStellarDelegateLockEvent decodes SNoto's on-chain `delegate_lock` event (topics =
-// ["delegate_lock", lock_id], data = vec![tx_id, delegate, data] - soroban/contracts/snoto/src/
-// lib.rs's `DelegateLock` struct) into the same NotoLockDelegated_Event shape the EVM path
-// produces, so applyLockDelegatedEvent can be shared unchanged. delegate is decoded (to validate
-// the event's shape) but not carried into NotoLockDelegated_Event - PreviousSpender/NewSpender are
-// EVM-only *pldtypes.EthAddress fields (chapter 14 step 7's Delegate migration keeps them that way,
-// since they decode a real EVM event ABI); the Spender-field state transition already happened
-// off-chain during Assemble. OldLockState/NewLockState are left zero -
-// applyLockDelegatedEvent's own guards make this safe.
+// ["delegate_lock", lock_id], data = vec![tx_id, delegate, data, old_lock_state, new_lock_state] -
+// soroban/contracts/snoto/src/lib.rs's `DelegateLock` struct) into the same
+// NotoLockDelegated_Event shape the EVM path produces, so applyLockDelegatedEvent can be shared
+// unchanged. delegate is decoded (to validate the event's shape) but not carried into
+// NotoLockDelegated_Event - PreviousSpender/NewSpender are EVM-only *pldtypes.EthAddress fields
+// (chapter 14 step 7's Delegate migration keeps them that way, since they decode a real EVM event
+// ABI); the Spender-field state transition already happened off-chain during Assemble.
+// old_lock_state/new_lock_state ARE populated (see decodeStellarLockEvent's own doc comment on why
+// this matters).
 func decodeStellarDelegateLockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockDelegated_Event, error) {
 	payload, err := decodeStellarEventPayload(ev)
 	if err != nil {
@@ -435,7 +464,7 @@ func decodeStellarDelegateLockEvent(ctx context.Context, ev *prototk.OnChainEven
 		return nil, fmt.Errorf("lock_id topic: %w", err)
 	}
 
-	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 3)
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -450,24 +479,35 @@ func decodeStellarDelegateLockEvent(ctx context.Context, ev *prototk.OnChainEven
 	if err != nil {
 		return nil, fmt.Errorf("event data[2] (data): %w", err)
 	}
+	oldLockState, err := scValToBytes32(vec[3])
+	if err != nil {
+		return nil, fmt.Errorf("event data[3] (old_lock_state): %w", err)
+	}
+	newLockState, err := scValToBytes32(vec[4])
+	if err != nil {
+		return nil, fmt.Errorf("event data[4] (new_lock_state): %w", err)
+	}
 
 	return &NotoLockDelegated_Event{
-		TxId:   txID,
-		LockID: lockID,
-		Data:   data,
+		TxId:         txID,
+		LockID:       lockID,
+		Data:         data,
+		OldLockState: oldLockState,
+		NewLockState: newLockState,
 	}, nil
 }
 
 // decodeStellarUnlockEvent decodes SNoto's on-chain `unlock` event (topics = ["unlock", lock_id],
-// data = vec![tx_id, locked_inputs, outputs, data] - soroban/contracts/snoto/src/lib.rs's `Unlock`
-// struct) into the same NotoLockSpentOrCancelled_Event shape the EVM path produces, so
-// applyLockSpentOrCancelledEvent can be shared unchanged. tx_id lives in the data vec, not the
-// topic (chapter 14's own tx_id addition to `unlock`, discovered necessary during this decoder's
-// implementation - lock_id alone identifies the original lock-creation transaction, not this spend,
-// so it can't serve Paladin's confirmation correlation). Spender/OldLockState are left
-// nil/zero (no EVM hooks-mode or lock-info-state concept on Stellar) -
-// applyLockSpentOrCancelledEvent's own IsZero() guard on OldLockState, and the NotaryModeHooks gate
-// on the Spender-comparing branch, both make this safe.
+// data = vec![tx_id, locked_inputs, outputs, data, old_lock_state] -
+// soroban/contracts/snoto/src/lib.rs's `Unlock` struct) into the same
+// NotoLockSpentOrCancelled_Event shape the EVM path produces, so applyLockSpentOrCancelledEvent
+// can be shared unchanged. tx_id lives in the data vec, not the topic (chapter 14's own tx_id
+// addition to `unlock`, discovered necessary during this decoder's implementation - lock_id alone
+// identifies the original lock-creation transaction, not this spend, so it can't serve Paladin's
+// confirmation correlation). Spender is left nil (no EVM hooks-mode concept on Stellar) - the
+// NotaryModeHooks gate on the Spender-comparing branch makes this safe. old_lock_state IS
+// populated (see decodeStellarLockEvent's own doc comment on why this matters) - it's what lets
+// applyLockSpentOrCancelledEvent record the lock's final state as spent.
 func decodeStellarUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockSpentOrCancelled_Event, error) {
 	payload, err := decodeStellarEventPayload(ev)
 	if err != nil {
@@ -485,7 +525,7 @@ func decodeStellarUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*N
 		return nil, fmt.Errorf("lock_id topic: %w", err)
 	}
 
-	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -505,23 +545,28 @@ func decodeStellarUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*N
 	if err != nil {
 		return nil, fmt.Errorf("event data[3] (data): %w", err)
 	}
+	oldLockState, err := scValToBytes32(vec[4])
+	if err != nil {
+		return nil, fmt.Errorf("event data[4] (old_lock_state): %w", err)
+	}
 
 	return &NotoLockSpentOrCancelled_Event{
-		TxId:    txID,
-		LockID:  lockID,
-		Inputs:  lockedInputs,
-		Outputs: outputs,
-		TxData:  data,
+		TxId:         txID,
+		LockID:       lockID,
+		Inputs:       lockedInputs,
+		Outputs:      outputs,
+		TxData:       data,
+		OldLockState: oldLockState,
 	}, nil
 }
 
 // decodeStellarCancelUnlockEvent decodes SNoto's on-chain `cancel_unlock` event (topics =
-// ["cancel_unlock", lock_id], data = vec![tx_id, locked_inputs, cancel_outputs, data] -
-// soroban/contracts/snoto/src/lib.rs's `CancelUnlock` struct) into the same
+// ["cancel_unlock", lock_id], data = vec![tx_id, locked_inputs, cancel_outputs, data,
+// old_lock_state] - soroban/contracts/snoto/src/lib.rs's `CancelUnlock` struct) into the same
 // NotoLockSpentOrCancelled_Event shape decodeStellarUnlockEvent produces, so
 // applyLockSpentOrCancelledEvent can be shared unchanged - mirrors that decoder exactly (same
-// reasoning for tx_id living in the data vec, not the topic; same Spender/OldLockState nil/zero
-// treatment).
+// reasoning for tx_id living in the data vec, not the topic; same Spender nil treatment; same
+// old_lock_state population).
 func decodeStellarCancelUnlockEvent(ctx context.Context, ev *prototk.OnChainEvent) (*NotoLockSpentOrCancelled_Event, error) {
 	payload, err := decodeStellarEventPayload(ev)
 	if err != nil {
@@ -539,7 +584,7 @@ func decodeStellarCancelUnlockEvent(ctx context.Context, ev *prototk.OnChainEven
 		return nil, fmt.Errorf("lock_id topic: %w", err)
 	}
 
-	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 4)
+	vec, err := decodeStellarEventDataVec(ctx, payload.Data, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -559,13 +604,18 @@ func decodeStellarCancelUnlockEvent(ctx context.Context, ev *prototk.OnChainEven
 	if err != nil {
 		return nil, fmt.Errorf("event data[3] (data): %w", err)
 	}
+	oldLockState, err := scValToBytes32(vec[4])
+	if err != nil {
+		return nil, fmt.Errorf("event data[4] (old_lock_state): %w", err)
+	}
 
 	return &NotoLockSpentOrCancelled_Event{
-		TxId:    txID,
-		LockID:  lockID,
-		Inputs:  lockedInputs,
-		Outputs: cancelOutputs,
-		TxData:  data,
+		TxId:         txID,
+		LockID:       lockID,
+		Inputs:       lockedInputs,
+		Outputs:      cancelOutputs,
+		TxData:       data,
+		OldLockState: oldLockState,
 	}, nil
 }
 

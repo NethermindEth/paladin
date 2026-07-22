@@ -118,6 +118,10 @@ var defaultConstructorSignature = func() string {
 	return sig
 }()
 
+func isStellarChainAddress(to *pldtypes.ChainAddress) bool {
+	return to != nil && (to.Kind() == pldtypes.ChainAddressKindStellarAccount || to.Kind() == pldtypes.ChainAddressKindStellarContract)
+}
+
 func (tm *txManager) resolveFunction(ctx context.Context, dbTX persistence.DBTX, inputABI abi.ABI, inputABIRef *pldtypes.Bytes32, requiredFunction string, to *pldtypes.ChainAddress) (_ *components.ResolvedFunction, err error) {
 
 	// Lookup the ABI we're working with.
@@ -132,6 +136,14 @@ func (tm *txManager) resolveFunction(ctx context.Context, dbTX persistence.DBTX,
 	} else {
 		if len(inputABI) == 0 {
 			if to != nil {
+				if isStellarChainAddress(to) && requiredFunction != "" {
+					// Soroban contract calls have no Solidity-style ABI to resolve against - the caller
+					// (eg. the SAtom helper) supplies the function name and pre-built XDR call args
+					// directly. Still upserted (a minimal, real synthetic entry) rather than left with a
+					// nil ABIReference - the transactions table's abi_ref column is NOT NULL, having
+					// assumed (pre-Stellar) that every transaction always has a real ABI.
+					return tm.upsertSyntheticFunctionABI(ctx, dbTX, requiredFunction)
+				}
 				return nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrNoABIOrReference)
 			}
 			// it's convenient to do a deploy without a constructor, of bytecode with no
@@ -234,7 +246,34 @@ func (tm *txManager) parseInputs(
 	txType pldtypes.Enum[pldapi.TransactionType],
 	data pldtypes.RawJSON,
 	bytecode pldtypes.HexBytes,
+	to *pldtypes.ChainAddress,
 ) (cv *abi.ComponentValue, jsonData pldtypes.RawJSON, err error) {
+
+	// The synthetic marker resolveFunction returns for a Stellar public call with no supplied ABI:
+	// Type==Function with zero Inputs (a real ABI-backed function - e.g. any private-domain invoke
+	// targeting a Stellar contract, such as noto-bond's mint - always has non-empty Inputs, even
+	// when it takes no business parameters the domain's own ABI still declares an empty-but-non-nil
+	// Inputs slice per its interface definition, never a genuinely absent one from resolveFunction's
+	// own no-ABI path). Without this len check this branch wrongly intercepted every ordinary
+	// private-domain call targeting a Stellar contract address too, since isStellarChainAddress(to)
+	// alone doesn't distinguish "raw public passthrough" from "real ABI-decoded private invoke".
+	if isStellarChainAddress(to) && e.Type == abi.Function && len(e.Inputs) == 0 && txType.V() == pldapi.TransactionTypePublic {
+		// Soroban has no Solidity-style ABI encoding to decode against - data is a hex string containing
+		// the caller's pre-built XDR invoke args (see scspec/BuildInvokeHostFunctionXDR), passed through
+		// untouched. We stash the raw bytes in a bare ComponentValue purely so getPublicTxData can recover
+		// them without re-encoding - it is never ABI-decoded or serialized.
+		var hexStr string
+		if data != nil {
+			if err := json.Unmarshal(data, &hexStr); err != nil {
+				return nil, nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrInvalidInputData, e.String())
+			}
+		}
+		rawBytes, err := pldtypes.ParseHexBytes(ctx, hexStr)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &abi.ComponentValue{Value: []byte(rawBytes)}, data, nil
+	}
 
 	if (e.Type != abi.Constructor || txType.V() != pldapi.TransactionTypePublic) && len(bytecode) != 0 {
 		return nil, nil, i18n.NewError(ctx, msgs.MsgTxMgrBytecodeNonPublicConstructor, txType.V(), e.String())
@@ -515,6 +554,7 @@ func (tm *txManager) processNewTransactions(ctx context.Context, dbTX persistenc
 				PublicTxInput: pldapi.PublicTxInput{
 					To:              tx.To,
 					Data:            txi.PublicTxData,
+					PayloadKind:     tx.PublicTxOptions.PayloadKind,
 					PublicTxOptions: tx.PublicTxOptions,
 				},
 			})
@@ -526,7 +566,19 @@ func (tm *txManager) processNewTransactions(ctx context.Context, dbTX persistenc
 	if len(publicTxs) > 0 {
 		kr := tm.keyManager.KeyResolverForDBTX(dbTX)
 		for i, ptx := range publicTxs {
-			resolvedKey, err := kr.ResolveKey(ctx, publicTxSenders[i], algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS)
+			// Chain-neutral: a Stellar public tx (a Soroban invoke, or - with no `to` at all -
+			// classic ops, both distinguished by PayloadKind since classic ops has no contract
+			// target to inspect) needs its sender resolved as an EDDSA/Stellar verifier, not the
+			// ECDSA/ETH_ADDRESS every EVM public tx uses - this call site was never generalized
+			// past EVM until chapter 18's institutional repo demo needed a real Stellar public tx
+			// (an SEP-41 approve/ChangeTrust) submitted through this exact path.
+			algorithm, verifierType := algorithms.ECDSA_SECP256K1, verifiers.ETH_ADDRESS
+			if isStellarChainAddress(ptx.To) ||
+				ptx.PayloadKind.V() == pldapi.PublicTxPayloadKindXDRInvokeContractArgs ||
+				ptx.PayloadKind.V() == pldapi.PublicTxPayloadKindXDRClassicOps {
+				algorithm, verifierType = algorithms.EDDSA_ED25519, verifiers.STELLAR_ADDRESS
+			}
+			resolvedKey, err := kr.ResolveKey(ctx, publicTxSenders[i], algorithm, verifierType)
 			if err == nil {
 				ptx.From, err = pldtypes.ParseChainAddress(resolvedKey.Verifier.Verifier)
 			}
@@ -640,7 +692,7 @@ func (tm *txManager) resolveNewTransaction(ctx context.Context, dbTX persistence
 	var publicTxData []byte
 	fn, cv, normalizedJSON, err := tm.ResolveTransactionInputs(ctx, dbTX, tx)
 	if err == nil && tx.Type.V() == pldapi.TransactionTypePublic {
-		publicTxData, err = tm.getPublicTxData(ctx, fn.Definition, tx.Bytecode, cv)
+		publicTxData, err = tm.getPublicTxData(ctx, fn.Definition, tx.Bytecode, cv, tx.To, tx.PublicTxOptions.PayloadKind.V())
 	}
 	if err != nil {
 		return nil, err
@@ -689,14 +741,77 @@ func (tm *txManager) resolveNewTransaction(ctx context.Context, dbTX persistence
 	}, nil
 }
 
+const classicOpsFunctionName = "classicOps"
+
+// upsertSyntheticFunctionABI stores (or reuses an already-stored) minimal, real single-function
+// ABI for a raw-passthrough Stellar public call (a Soroban invoke with a caller-supplied function
+// name, or classicOpsFunctionName for XDR_CLASSIC_OPS) - never left with a nil ABIReference, since
+// the transactions table's abi_ref column is NOT NULL (an EVM-only assumption from before any
+// transaction could lack a real ABI). functionName's own signature is the whole "ABI" - Soroban/
+// classic-ops payloads carry no args an ABI could describe anyway (see the raw-passthrough
+// ComponentValue callers of this function build downstream).
+func (tm *txManager) upsertSyntheticFunctionABI(ctx context.Context, dbTX persistence.DBTX, functionName string) (*components.ResolvedFunction, error) {
+	syntheticABI := abi.ABI{{Type: abi.Function, Name: functionName}}
+	var pa *pldapi.StoredABI
+	var err error
+	// Same NOTX handling as resolveFunction's own empty-ABI branch above: writing the ABI needs a
+	// real DB transaction for post-commit handling, so take the hit of a mini-TX when called with
+	// a NOTX dbTX (e.g. a Call, or a direct ResolveTransactionInputs caller).
+	if !dbTX.FullTransaction() {
+		err = tm.p.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
+			pa, err = tm.UpsertABI(ctx, dbTX, syntheticABI)
+			return err
+		})
+	} else {
+		pa, err = tm.UpsertABI(ctx, dbTX, syntheticABI)
+	}
+	if err != nil || pa == nil {
+		return nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrABIReferenceLookupFailed, functionName)
+	}
+	return &components.ResolvedFunction{
+		ABIReference: &pa.Hash,
+		Definition:   pa.ABI[0],
+		Signature:    functionName,
+	}, nil
+}
+
+// resolveClassicOpsInputs handles pldapi.PublicTxPayloadKindXDRClassicOps entirely - a plain XDR
+// array of classic Stellar operations (baseledgerstellar.EncodeClassicOperations's own shape,
+// e.g. a ChangeTrust an identity submits to establish its own trustline before a native-asset
+// shield/unshield, chapter 12 §12.3), which has no function/ABI concept at all: the caller has
+// already built the exact operations XDR, so - like the Soroban public-passthrough case below -
+// this is stashed in a bare ComponentValue untouched, never ABI-decoded or re-encoded.
+func (tm *txManager) resolveClassicOpsInputs(ctx context.Context, dbTX persistence.DBTX, data pldtypes.RawJSON) (*components.ResolvedFunction, *abi.ComponentValue, pldtypes.RawJSON, error) {
+	var hexStr string
+	if data != nil {
+		if err := json.Unmarshal(data, &hexStr); err != nil {
+			return nil, nil, nil, i18n.WrapError(ctx, err, msgs.MsgTxMgrInvalidInputData, classicOpsFunctionName)
+		}
+	}
+	rawBytes, err := pldtypes.ParseHexBytes(ctx, hexStr)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	fn, err := tm.upsertSyntheticFunctionABI(ctx, dbTX, classicOpsFunctionName)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return fn, &abi.ComponentValue{Value: []byte(rawBytes)}, data, nil
+}
+
 func (tm *txManager) ResolveTransactionInputs(ctx context.Context, dbTX persistence.DBTX, tx *pldapi.TransactionInput) (*components.ResolvedFunction, *abi.ComponentValue, pldtypes.RawJSON, error) {
 	ctx = log.WithComponent(ctx, "txmanager")
+
+	if tx.PublicTxOptions.PayloadKind.V() == pldapi.PublicTxPayloadKindXDRClassicOps {
+		return tm.resolveClassicOpsInputs(ctx, dbTX, tx.Data)
+	}
+
 	fn, err := tm.resolveFunction(ctx, dbTX, tx.ABI, tx.ABIReference, tx.Function, tx.To)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	cv, normalizedJSON, err := tm.parseInputs(ctx, fn.Definition, tx.Type, tx.Data, tx.Bytecode)
+	cv, normalizedJSON, err := tm.parseInputs(ctx, fn.Definition, tx.Type, tx.Data, tx.Bytecode, tx.To)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -704,7 +819,17 @@ func (tm *txManager) ResolveTransactionInputs(ctx context.Context, dbTX persiste
 	return fn, cv, normalizedJSON, nil
 }
 
-func (tm *txManager) getPublicTxData(ctx context.Context, fnDef *abi.Entry, bytecode []byte, cv *abi.ComponentValue) ([]byte, error) {
+func (tm *txManager) getPublicTxData(ctx context.Context, fnDef *abi.Entry, bytecode []byte, cv *abi.ComponentValue, to *pldtypes.ChainAddress, payloadKind pldapi.PublicTxPayloadKind) ([]byte, error) {
+	if payloadKind == pldapi.PublicTxPayloadKindXDRClassicOps || (isStellarChainAddress(to) && fnDef.Type == abi.Function) {
+		if cv == nil {
+			return nil, i18n.NewError(ctx, msgs.MsgTxMgrInvalidInputData, fnDef.String())
+		}
+		rawBytes, ok := cv.Value.([]byte)
+		if !ok {
+			return nil, i18n.NewError(ctx, msgs.MsgTxMgrInvalidInputData, fnDef.String())
+		}
+		return rawBytes, nil
+	}
 	switch fnDef.Type {
 	case abi.Function:
 		return fnDef.EncodeCallDataCtx(ctx, cv)
@@ -954,9 +1079,9 @@ func (tm *txManager) resolveUpdatedTransaction(ctx context.Context, dbTX persist
 	}
 
 	var publicTxData []byte
-	cv, normalizedJSON, err := tm.parseInputs(ctx, fn.Definition, pldapi.TransactionTypePublic.Enum(), txi.Data, txi.Bytecode)
+	cv, normalizedJSON, err := tm.parseInputs(ctx, fn.Definition, pldapi.TransactionTypePublic.Enum(), txi.Data, txi.Bytecode, txi.To)
 	if err == nil {
-		publicTxData, err = tm.getPublicTxData(ctx, fn.Definition, nil, cv)
+		publicTxData, err = tm.getPublicTxData(ctx, fn.Definition, nil, cv, txi.To, txi.PublicTxOptions.PayloadKind.V())
 	}
 	if err != nil {
 		return nil, err

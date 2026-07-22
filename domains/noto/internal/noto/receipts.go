@@ -260,8 +260,6 @@ func (n *Noto) receiptLockInfoV0(ctx context.Context, req *prototk.BuildReceiptR
 }
 
 func (n *Noto) receiptLockInfoV1V2(ctx context.Context, req *prototk.BuildReceiptRequest, variant pldtypes.HexUint64) (lockInfo *types.ReceiptLockInfo, err error) {
-	unlockInterfaceABI := n.getInterfaceABI(variant)
-
 	// Decode the lock transition
 	lt, err := n.validateV1LockTransition(ctx, LOCK_DECODE_ANY, nil, nil, req.InputStates, req.OutputStates)
 	if err == nil && lt.newLockState != nil {
@@ -290,63 +288,156 @@ func (n *Noto) receiptLockInfoV1V2(ctx context.Context, req *prototk.BuildReceip
 			lockedInputIDs = endorsableStateIDs(ctx, n.filterSchema(req.ReadStates, []string{n.lockedCoinSchema.Id}), false)
 		}
 
-		// Encode the operation to spend the lock
-		var spendLockArgs []byte
-		var unlockParamsJSON []byte
-		spendLockArgs, err = n.encodeNotoSpendLockArgs(ctx, &types.NotoSpendLockArgs{
-			TxId:    lt.newLockInfo.SpendTxId.String(),
-			Inputs:  lockedInputIDs,
-			Outputs: stringIDs(lt.newLockInfo.SpendOutputs),
-			Data:    lt.newLockInfo.SpendData,
-			Proof:   pldtypes.HexBytes{}, // have to look back to the createLock/updateLock for the proof
-		})
-		if err == nil {
-			lockInfo.UnlockFunction = "spendLock"
-			lockInfo.UnlockParams = map[string]any{
-				"lockId":    lockInfo.LockID,
-				"spendArgs": pldtypes.HexBytes(spendLockArgs),
-				"data":      lt.newLockInfo.SpendData,
-			}
+		if n.getChainIO().ChainKind() == "stellar" {
+			err = n.receiptLockInfoV1V2Stellar(ctx, lockInfo, lt, lockedInputIDs)
+		} else {
+			err = n.receiptLockInfoV1V2EVM(ctx, lockInfo, lt, lockedInputIDs, n.getInterfaceABI(variant))
 		}
-		if err == nil {
-			unlockParamsJSON, err = json.Marshal(lockInfo.UnlockParams)
-		}
-		if err == nil {
-			unlockFunctionABI := unlockInterfaceABI.Functions()[lockInfo.UnlockFunction]
-			lockInfo.UnlockCall, err = unlockFunctionABI.EncodeCallDataJSONCtx(ctx, unlockParamsJSON)
-		}
-
-		// Encode the operation to cancel the lock
-		var cancelLockArgs []byte
-		var cancelParamsJSON []byte
-		if err == nil {
-			cancelLockArgs, err = n.encodeNotoSpendLockArgs(ctx, &types.NotoSpendLockArgs{
-				TxId:    lt.newLockInfo.SpendTxId.String(),
-				Inputs:  lockedInputIDs,
-				Outputs: stringIDs(lt.newLockInfo.CancelOutputs),
-				Data:    lt.newLockInfo.CancelData,
-				Proof:   pldtypes.HexBytes{}, // have to look back to the createLock/updateLock for the proof
-			})
-		}
-		if err == nil {
-			lockInfo.CancelFunction = "cancelLock"
-			lockInfo.CancelParams = map[string]any{
-				"lockId":     lockInfo.LockID,
-				"cancelArgs": pldtypes.HexBytes(cancelLockArgs),
-				"data":       lt.newLockInfo.CancelData,
-			}
-		}
-		if err == nil {
-			cancelParamsJSON, err = json.Marshal(lockInfo.CancelParams)
-		}
-		if err == nil {
-			cancelFunctionABI := unlockInterfaceABI.Functions()[lockInfo.CancelFunction]
-			lockInfo.CancelCall, err = cancelFunctionABI.EncodeCallDataJSONCtx(ctx, cancelParamsJSON)
-		}
-
 	}
 	if err != nil {
 		return nil, err
 	}
 	return lockInfo, nil
+}
+
+func (n *Noto) receiptLockInfoV1V2EVM(ctx context.Context, lockInfo *types.ReceiptLockInfo, lt *lockTransition, lockedInputIDs []string, unlockInterfaceABI abi.ABI) (err error) {
+	// Encode the operation to spend the lock
+	var spendLockArgs []byte
+	var unlockParamsJSON []byte
+	spendLockArgs, err = n.encodeNotoSpendLockArgs(ctx, &types.NotoSpendLockArgs{
+		TxId:    lt.newLockInfo.SpendTxId.String(),
+		Inputs:  lockedInputIDs,
+		Outputs: stringIDs(lt.newLockInfo.SpendOutputs),
+		Data:    lt.newLockInfo.SpendData,
+		Proof:   pldtypes.HexBytes{}, // have to look back to the createLock/updateLock for the proof
+	})
+	if err == nil {
+		lockInfo.UnlockFunction = "spendLock"
+		lockInfo.UnlockParams = map[string]any{
+			"lockId":    lockInfo.LockID,
+			"spendArgs": pldtypes.HexBytes(spendLockArgs),
+			"data":      lt.newLockInfo.SpendData,
+		}
+	}
+	if err == nil {
+		unlockParamsJSON, err = json.Marshal(lockInfo.UnlockParams)
+	}
+	if err == nil {
+		unlockFunctionABI := unlockInterfaceABI.Functions()[lockInfo.UnlockFunction]
+		lockInfo.UnlockCall, err = unlockFunctionABI.EncodeCallDataJSONCtx(ctx, unlockParamsJSON)
+	}
+
+	// Encode the operation to cancel the lock
+	var cancelLockArgs []byte
+	var cancelParamsJSON []byte
+	if err == nil {
+		cancelLockArgs, err = n.encodeNotoSpendLockArgs(ctx, &types.NotoSpendLockArgs{
+			TxId:    lt.newLockInfo.SpendTxId.String(),
+			Inputs:  lockedInputIDs,
+			Outputs: stringIDs(lt.newLockInfo.CancelOutputs),
+			Data:    lt.newLockInfo.CancelData,
+			Proof:   pldtypes.HexBytes{}, // have to look back to the createLock/updateLock for the proof
+		})
+	}
+	if err == nil {
+		lockInfo.CancelFunction = "cancelLock"
+		lockInfo.CancelParams = map[string]any{
+			"lockId":     lockInfo.LockID,
+			"cancelArgs": pldtypes.HexBytes(cancelLockArgs),
+			"data":       lt.newLockInfo.CancelData,
+		}
+	}
+	if err == nil {
+		cancelParamsJSON, err = json.Marshal(lockInfo.CancelParams)
+	}
+	if err == nil {
+		cancelFunctionABI := unlockInterfaceABI.Functions()[lockInfo.CancelFunction]
+		lockInfo.CancelCall, err = cancelFunctionABI.EncodeCallDataJSONCtx(ctx, cancelParamsJSON)
+	}
+	return err
+}
+
+// receiptLockInfoV1V2Stellar is the Stellar counterpart of receiptLockInfoV1V2EVM - matching
+// EVM's Atom-composition pattern (domains/integration-test/helpers/atom_helper.go,
+// domains/integration-test/pvp_test.go's ReceiptLockInfo.UnlockCall), this is what makes SAtom's
+// own atomic-composition helper possible on Stellar, the same way UnlockCall already does for
+// EVM's Atom (ch. 13 §13.4).
+//
+// One real protocol difference from EVM, worth being explicit about: EVM's UnlockCall is a single,
+// fully-encoded callData blob, ready for a raw `.call(callData)` - Soroban's `env.invoke_contract`
+// has no equivalent "opaque packed call" primitive, it always needs a function name (Symbol) and
+// a decomposed args vector. So UnlockCall/CancelCall here hold the XDR-encoded ARGS ONLY (an
+// `ScVec`, exactly what encodeSNotoUnlockArgs/encodeSNotoCancelUnlockArgs already produce for the
+// real submission path) - UnlockFunction/CancelFunction name the target function ("unlock"/
+// "cancel_unlock", not EVM's "spendLock"/"cancelLock"), and the caller is expected to XDR-decode
+// the ScVec back into individual entries when building an AtomOperation{contract, function, args}
+// - standard XDR unmarshal, the same wire format every other part of this repo already treats as
+// canonical, not a new encoding to invent.
+func (n *Noto) receiptLockInfoV1V2Stellar(ctx context.Context, lockInfo *types.ReceiptLockInfo, lt *lockTransition, lockedInputIDs []string) (err error) {
+	lockedInputsB32, err := parseBytes32List(ctx, lockedInputIDs)
+	if err != nil {
+		return err
+	}
+
+	// The exact same data-field correctness fix as stellarBaseLedgerInvokeUnlock/
+	// stellarBaseLedgerInvokeCancelUnlock: SpendData/CancelData, not a fresh, unrelated encoding -
+	// this receipt's whole purpose is to hand the caller args that will actually pass
+	// check_commitment when submitted, so it must use the identical encoding the real
+	// submission path uses.
+	lockInfo.UnlockFunction = "unlock"
+	lockInfo.UnlockCall, _, err = encodeSNotoUnlockArgs(lt.newLockInfo.SpendTxId, lockInfo.LockID, lockedInputsB32, lt.newLockInfo.SpendOutputs, lt.newLockInfo.SpendData)
+	if err != nil {
+		return err
+	}
+	// UnlockParams is the JSON-typed-args form (as opposed to UnlockCall's raw XDR), for callers
+	// that can't submit raw XDR directly - Sente's `transition(external_calls, ...)` is the
+	// motivating case: its own Rust plugin re-encodes JSON args itself (scval_json.rs's
+	// encode_scval, {"type":..., "value":...} tagged values), it has no raw-args-passthrough
+	// mode. Positional, matching unlock(tx_id, lock_id, locked_inputs, outputs, data)'s real Rust
+	// arg order exactly - same values UnlockCall's own XDR encoding above uses, just JSON-shaped.
+	lockInfo.UnlockParams = map[string]any{
+		"args": []any{
+			scvalJSONBytes(lt.newLockInfo.SpendTxId.String()),
+			scvalJSONBytes(lockInfo.LockID.String()),
+			scvalJSONVec(bytes32ListToScvalJSON(lockedInputsB32)),
+			scvalJSONVec(bytes32ListToScvalJSON(lt.newLockInfo.SpendOutputs)),
+			scvalJSONBytes(lt.newLockInfo.SpendData.String()),
+		},
+	}
+
+	lockInfo.CancelFunction = "cancel_unlock"
+	lockInfo.CancelCall, _, err = encodeSNotoCancelUnlockArgs(lt.newLockInfo.SpendTxId, lockInfo.LockID, lockedInputsB32, lt.newLockInfo.CancelOutputs, lt.newLockInfo.CancelData)
+	if err != nil {
+		return err
+	}
+	lockInfo.CancelParams = map[string]any{
+		"args": []any{
+			scvalJSONBytes(lt.newLockInfo.SpendTxId.String()),
+			scvalJSONBytes(lockInfo.LockID.String()),
+			scvalJSONVec(bytes32ListToScvalJSON(lockedInputsB32)),
+			scvalJSONVec(bytes32ListToScvalJSON(lt.newLockInfo.CancelOutputs)),
+			scvalJSONBytes(lt.newLockInfo.CancelData.String()),
+		},
+	}
+	return nil
+}
+
+// scvalJSONBytes/scvalJSONVec/bytes32ListToScvalJSON build the {"type":..., "value":...} tagged
+// JSON shape domains/sente/crates/sente/src/scval_json.rs's encode_scval expects - the receipt-
+// level counterpart to this file's own scValBytes/scValVec XDR helpers, for callers (Sente's
+// externalCalls) that need JSON args rather than raw XDR.
+func scvalJSONBytes(hexValue string) map[string]any {
+	return map[string]any{"type": "bytes", "value": hexValue}
+}
+
+func scvalJSONVec(items []any) map[string]any {
+	return map[string]any{"type": "vec", "value": items}
+}
+
+func bytes32ListToScvalJSON(ids []pldtypes.Bytes32) []any {
+	items := make([]any, len(ids))
+	for i, id := range ids {
+		items[i] = scvalJSONBytes(id.String())
+	}
+	return items
 }

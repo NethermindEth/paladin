@@ -563,7 +563,7 @@ func TestLock_Stellar(t *testing.T) {
 	var args xdr.ScVec
 	_, err = xdr.Unmarshal(bytes.NewReader(soroban.Soroban.ArgsXdr), &args)
 	require.NoError(t, err)
-	require.Len(t, args, 6) // tx_id, inputs, locked_outputs, outputs, signature, data
+	require.Len(t, args, 7) // tx_id, inputs, locked_outputs, outputs, signature, data, new_lock_state
 
 	txIDBytes32 := pldtypes.MustParseBytes32(tx.TransactionId)
 	require.Equal(t, xdr.ScValTypeScvBytes, args[0].Type)
@@ -591,6 +591,10 @@ func TestLock_Stellar(t *testing.T) {
 
 	require.Equal(t, xdr.ScValTypeScvBytes, args[5].Type)
 	assert.NotEmpty(t, *args[5].Bytes)
+
+	require.Equal(t, xdr.ScValTypeScvBytes, args[6].Type)
+	lockStateIDBytes32 := pldtypes.MustParseBytes32(*lockState.Id)
+	assert.Equal(t, lockStateIDBytes32[:], []byte(*args[6].Bytes), "new_lock_state is the assembled lockInfoV1 state's own ID")
 }
 
 func TestLock_V0(t *testing.T) {

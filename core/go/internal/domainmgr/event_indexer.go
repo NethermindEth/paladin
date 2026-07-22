@@ -237,6 +237,19 @@ func (d *domain) batchEventsByAddress(ctx context.Context, dbTX persistence.DBTX
 				log.L(ctx).Debugf("Discarding %s event for unregistered address %s", ev.SoliditySignature, addrChain)
 				continue
 			}
+			if psc.Domain().Name() != d.name {
+				// getSmartContractCached looks up by address alone, with no domain scoping - and
+				// the event stream's own event source (see initDomain's eventsSource) matches by
+				// ABI/selector only too, since it's built before any contract exists to scope an
+				// address list against. Both are fine when a plugin type is only ever configured
+				// once per node, but the chapter 18 institutional-repo demo configures the same
+				// "noto" plugin twice (noto-bond, noto-cash) on one node, so their event streams
+				// share identical selectors and each domain instance receives the other's events
+				// too. Without this check both instances call BuildReceipt for the same
+				// transaction, and the second one fails with "Duplicate state in list inputs".
+				log.L(ctx).Debugf("Discarding %s event for address %s owned by domain %s (not %s)", ev.SoliditySignature, addrChain, psc.Domain().Name(), d.name)
+				continue
+			}
 			batch = &pscEventBatch{
 				psc: psc,
 				HandleEventBatchRequest: prototk.HandleEventBatchRequest{

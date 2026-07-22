@@ -55,15 +55,27 @@ func (h *lockCommon) checkAllowed(ctx context.Context, tx *types.ParsedTransacti
 		return nil
 	}
 
-	localNodeName, _ := h.noto.Callbacks.LocalNodeName(ctx, &prototk.LocalNodeNameRequest{})
-	fromQualified, err := pldtypes.PrivateIdentityLocator(from).FullyQualified(ctx, localNodeName.Name)
+	// tx.Transaction.From is always fully qualified (identity@node) by the time a transaction
+	// reaches Endorse - but Endorse can run on a different node than the one that originated the
+	// transaction (a real bug found live in the chapter 18 institutional-repo demo: the notary's
+	// own node endorses prepareUnlock, but bankA submitted it from its own, different node).
+	// Qualifying the bare "from" param against *this* node's own name (this function's own prior
+	// implementation) silently produces the wrong locator whenever those two nodes differ, so the
+	// comparison below never matches and every retry fails identically forever. "from" names the
+	// same party as tx.Transaction.From, so it must be qualified relative to that party's own
+	// node, not whichever node happens to be running Endorse.
+	defaultNode, err := pldtypes.PrivateIdentityLocator(tx.Transaction.From).Node(ctx, false)
+	if err != nil {
+		return err
+	}
+	fromQualified, err := pldtypes.PrivateIdentityLocator(from).FullyQualified(ctx, defaultNode)
 	if err != nil {
 		return err
 	}
 	if tx.Transaction.From == fromQualified.String() {
 		return nil
 	}
-	return i18n.NewError(ctx, msgs.MsgUnlockOnlyCreator, tx.Transaction.From, from)
+	return i18n.NewError(ctx, msgs.MsgUnlockOnlyCreator, tx.Transaction.From, fromQualified.String())
 }
 
 // buildUnlockOperationData builds a manifest for one operation (spend or cancel) and encodes

@@ -16,9 +16,18 @@
 # Sente's own instances (one `SentePrivacyGroup` per group) are deployed per-genesis, the same way
 # SNoto instances are - so, like `snotoWasmHash`, only the *hash* is uploaded here, not an instance.
 #
+# Also deploys a plain (non-AUTH_REQUIRED) test classic asset, wrapped as a SAC, standing in for
+# a real institutional stablecoin (chapter 18's repo demo - "USDC-like", not actual Circle USDC,
+# since this script has no access to Circle's issuer keys). Mirrors
+# core/go/noderuntests/componenttest/stellar_asset_test.go's own generateAndFundIssuer/
+# deploySACForAsset helpers, just as a persistent named CLI identity (like $deployer) instead of a
+# throwaway keypair, so later steps (the demo harness funding a bank's test-asset balance) can
+# reference it by name across runs.
+#
 # Writes artifacts/stellar-fixtures.json:
-# {"saladinFactoryAddress", "notoSaladinFactoryAddress", "snotoFactoryAddress", "snotoWasmHash",
-#  "senteFactoryAddress", "senteWasmHash"}
+# {"saladinFactoryAddress", "notoSaladinFactoryAddress", "cashNotoSaladinFactoryAddress",
+#  "snotoFactoryAddress", "snotoWasmHash", "senteFactoryAddress", "senteWasmHash",
+#  "testUsdcSacAddress", "testUsdcIssuerAddress"}
 #
 # Two separate SaladinFactory instances are deployed (saladinFactoryAddress, notoSaladinFactoryAddress)
 # rather than one shared one: domainmgr's registration-event routing (registrationIndexer's own
@@ -107,19 +116,81 @@ stellar keys generate "$deployer" --network "$network" --fund --overwrite >/dev/
 
 saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 noto_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+# A THIRD dedicated SaladinFactory, distinct from both of the above - chapter 18's repo demo
+# configures two separate "noto" domain instances on the same node (bond, with no real SAC; cash,
+# with stellarSacAddress set) since DomainConfig.StellarSacAddress is fixed per domain-config, not
+# overridable per deploy/constructor call (domains/noto/internal/noto/deploy_stellar.go's
+# stellarPrepareDeploy reads it once from n.config) - and the one-dedicated-registry-per-domain
+# constraint above means those two noto configs can't share a registry with each other either.
+cash_noto_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/snoto_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/snoto.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 sente_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/sente_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 sente_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/sente.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 
+# Testnet has a real, shared "Test USDC" contract already live and in ongoing use -
+# CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ, confirmed for real (name()="Test
+# USDC", symbol()="USDC") and confirmed genuinely permissionless (a real mint() call from an
+# unrelated throwaway identity succeeded with no admin/require_auth gate at all). It's a native
+# Soroban token contract, NOT a classic-asset-backed SAC - Stellar's classic trustline concept
+# doesn't apply to it, so funding an account is a single direct mint() call, no issuer/trustline
+# dance needed. Reusing it gives the demo a real, recognizable "USDC" story other testnet tooling
+# already knows about, instead of a wrapped classic asset only this demo's own fixtures know of.
+# No such shared official token exists on a private local quickstart chain, so that path keeps
+# deploying its own throwaway classic asset + SAC wrapper exactly as before.
+if [[ "$network" == "testnet" ]]; then
+	test_usdc_sac_address="CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ"
+	# Empty (not a classic-asset issuer at all) is the signal TestInstitutionalRepoDemo.java's own
+	# fundBankBWithTestUsdc reads to pick the direct-mint path over the trustline+payment one.
+	test_usdc_issuer_address=""
+else
+	test_usdc_issuer="${STELLAR_FIXTURE_TEST_USDC_ISSUER:-stellar-fixtures-test-usdc-issuer}"
+	stellar keys generate "$test_usdc_issuer" --network "$network" --fund --overwrite >/dev/null
+	test_usdc_issuer_address=$(stellar keys address "$test_usdc_issuer")
+	test_usdc_sac_address=$(stellar contract asset deploy --asset "TUSD:$test_usdc_issuer_address" --source "$test_usdc_issuer" --network "$network" 2>/dev/null | tail -1)
+fi
+
+# TTL management (only meaningful on a real, persistent network - quickstart's local chain is
+# thrown away with its own docker container, so extending there is harmless but pointless).
+# `stellar contract deploy`/`upload` only grant the protocol minimum TTL, not the extension's own
+# max - confirmed empirically: a freshly-deployed fixture's TTL was found to have under 7 days left
+# after sitting untouched for a few hours. `2500000` ledgers (~4.8 months at Stellar's ~5s ledger
+# close) is comfortably below the network's own max-extension-per-call ceiling (~3.1M ledgers
+# rejected outright as malformed; ~2.5M confirmed to succeed) - generous enough that a demo run
+# every few months keeps these alive indefinitely, and re-extending an already-far-from-expiry
+# entry is a confirmed no-op, not an error, so this is safe to run unconditionally on every
+# deploy-stellar-fixtures.sh invocation, fresh deploy or not.
+if [[ "$network" == "testnet" || "$network" == "futurenet" ]]; then
+	extend_ttl() {
+		local flag="$1" value="$2"
+		stellar contract extend "$flag" "$value" --ledgers-to-extend 2500000 --source "$deployer" --network "$network" >/dev/null 2>&1 || true
+	}
+	extend_ttl --id "$saladin_factory_address"
+	extend_ttl --id "$noto_saladin_factory_address"
+	extend_ttl --id "$cash_noto_saladin_factory_address"
+	extend_ttl --id "$snoto_factory_address"
+	extend_ttl --wasm-hash "$snoto_wasm_hash"
+	extend_ttl --id "$sente_factory_address"
+	extend_ttl --wasm-hash "$sente_wasm_hash"
+	# The real shared testnet Test USDC contract isn't ours to manage - its own TTL is whoever
+	# operates it own responsibility, not this fixture set's.
+	if [[ -n "$test_usdc_issuer_address" ]]; then
+		extend_ttl --id "$test_usdc_sac_address"
+	fi
+	echo "Extended TTL (2500000 ledgers, ~4.8 months) on all fixture contracts/wasm entries."
+fi
+
 cat > "$fixtures_file" <<JSON
 {
   "saladinFactoryAddress": "$saladin_factory_address",
   "notoSaladinFactoryAddress": "$noto_saladin_factory_address",
+  "cashNotoSaladinFactoryAddress": "$cash_noto_saladin_factory_address",
   "snotoFactoryAddress": "$snoto_factory_address",
   "snotoWasmHash": "$snoto_wasm_hash",
   "senteFactoryAddress": "$sente_factory_address",
-  "senteWasmHash": "$sente_wasm_hash"
+  "senteWasmHash": "$sente_wasm_hash",
+  "testUsdcSacAddress": "$test_usdc_sac_address",
+  "testUsdcIssuerAddress": "$test_usdc_issuer_address"
 }
 JSON
 

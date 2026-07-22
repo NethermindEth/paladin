@@ -25,12 +25,14 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/LFDT-Paladin/paladin/config/pkg/confutil"
+	"github.com/LFDT-Paladin/paladin/config/pkg/pldconf"
 	"github.com/LFDT-Paladin/paladin/core/internal/components"
 	"github.com/LFDT-Paladin/paladin/core/pkg/blockindexer"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence"
 	"github.com/LFDT-Paladin/paladin/core/pkg/persistence/mockpersistence"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldapi"
 	"github.com/LFDT-Paladin/paladin/sdk/go/pkg/pldtypes"
+	"github.com/LFDT-Paladin/paladin/toolkit/pkg/plugintk"
 	"github.com/LFDT-Paladin/paladin/toolkit/pkg/prototk"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -1319,4 +1321,112 @@ func TestHandleEventBatchPendingPrivateStateDataBadTransactionID(t *testing.T) {
 		})
 	})
 	assert.ErrorContains(t, err, "PD020008")
+}
+
+// registerNamedTestDomain is a variant of registerTestDomain (which assumes a single configured
+// domain) for tests that configure more than one domain instance against a shared domainManager -
+// mirroring the chapter 18 institutional-repo demo, which configures the same "noto" plugin twice
+// under different names (noto-bond, noto-cash) on one node.
+func registerNamedTestDomain(t *testing.T, dm *domainManager, name string, tp *testPlugin) {
+	d, err := dm.registerDomain(name, tp)
+	require.NoError(t, err)
+	d.initRetry.UTSetMaxAttempts(1)
+	go d.init()
+	da, err := dm.getDomainByName(context.Background(), name)
+	require.NoError(t, err)
+	tp.d = da
+	<-tp.d.initDone
+}
+
+// TestBatchEventsByAddressDiscardsSiblingDomainEvents is a regression test for a real bug found
+// live in the chapter 18 institutional-repo demo: configuring the same "noto" domain plugin twice
+// under different names (noto-bond, noto-cash) on one node. getSmartContractCached looks up
+// private_smart_contracts by address alone, with no domain scoping - and each domain instance's
+// own event stream matches events by ABI/selector only (see initDomain's own eventsSource), since
+// it's built before any contract exists to scope an address list against. Two instances of the
+// same plugin type therefore have identical selectors, and each one's batchEventsByAddress ends up
+// being handed the OTHER instance's events too. Without the Domain().Name() check this added,
+// both instances would independently resolve the same real contract via getSmartContractCached and
+// both call BuildReceipt for it - which is exactly what produced the live
+// "PD200020: Duplicate state in list inputs" failure this test guards against.
+func TestBatchEventsByAddressDiscardsSiblingDomainEvents(t *testing.T) {
+	ctx, dm, mc, dmDone := newTestDomainManager(t, false, &pldconf.DomainManagerInlineConfig{
+		Domains: map[string]*pldconf.DomainConfig{
+			"noto-bond": {RegistryAddress: pldtypes.RandHex(20)},
+			"noto-cash": {RegistryAddress: pldtypes.RandHex(20)},
+		},
+	}, func(mc *mockComponents) {
+		// One init transaction (Begin/Commit) per domain instance - no schemas configured, so
+		// EnsureABISchemas is never called (see processDomainConfig's len(abiSchemas) > 0 guard).
+		mc.db.ExpectBegin()
+		mc.db.ExpectCommit()
+		mc.db.ExpectBegin()
+		mc.db.ExpectCommit()
+	})
+	defer dmDone()
+
+	mc.blockIndexer.On("AddEventStream", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+
+	bondContractAddr := pldtypes.RandAddress()
+
+	bondPlugin := newTestPlugin(&plugintk.DomainAPIFunctions{
+		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
+			return &prototk.ConfigureDomainResponse{DomainConfig: &prototk.DomainConfig{}}, nil
+		},
+		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
+			return &prototk.InitDomainResponse{}, nil
+		},
+		InitContract: func(ctx context.Context, icr *prototk.InitContractRequest) (*prototk.InitContractResponse, error) {
+			assert.Equal(t, bondContractAddr.String(), icr.ContractAddress)
+			return &prototk.InitContractResponse{Valid: true, ContractConfig: &prototk.ContractConfig{}}, nil
+		},
+	})
+	registerNamedTestDomain(t, dm, "noto-bond", bondPlugin)
+
+	cashPlugin := newTestPlugin(&plugintk.DomainAPIFunctions{
+		ConfigureDomain: func(ctx context.Context, cdr *prototk.ConfigureDomainRequest) (*prototk.ConfigureDomainResponse, error) {
+			return &prototk.ConfigureDomainResponse{DomainConfig: &prototk.DomainConfig{}}, nil
+		},
+		InitDomain: func(ctx context.Context, idr *prototk.InitDomainRequest) (*prototk.InitDomainResponse, error) {
+			return &prototk.InitDomainResponse{}, nil
+		},
+		InitContract: func(ctx context.Context, icr *prototk.InitContractRequest) (*prototk.InitContractResponse, error) {
+			t.Fatal("noto-cash's own InitContract must never be called for noto-bond's contract")
+			return nil, nil
+		},
+	})
+	registerNamedTestDomain(t, dm, "noto-cash", cashPlugin)
+
+	// noto-cash's own event handling receives an event for a contract that is really registered
+	// under noto-bond (getSmartContractCached finds it - it's a real, valid private smart
+	// contract, just not one belonging to the calling domain instance).
+	mp, err := mockpersistence.NewSQLMockProvider()
+	require.NoError(t, err)
+	mp.Mock.ExpectBegin()
+	mp.Mock.ExpectQuery("SELECT.*private_smart_contracts").WillReturnRows(sqlmock.NewRows(
+		[]string{"address", "domain_address"},
+	).AddRow(bondContractAddr, bondPlugin.d.registryAddress))
+	mp.Mock.ExpectCommit()
+
+	var batches map[pldtypes.ChainAddress]*pscEventBatch
+	err = mp.P.Transaction(ctx, func(ctx context.Context, dbTX persistence.DBTX) error {
+		var err error
+		batches, err = cashPlugin.d.batchEventsByAddress(ctx, dbTX, "batch1", []*pldapi.EventWithData{
+			{
+				Address: *bondContractAddr,
+				IndexedEvent: &pldapi.IndexedEvent{
+					BlockNumber:      1000,
+					TransactionIndex: 20,
+					LogIndex:         30,
+					TransactionHash:  pldtypes.MustParseBytes32(pldtypes.RandHex(32)),
+					Signature:        pldtypes.MustParseBytes32(pldtypes.RandHex(32)),
+				},
+				SoliditySignature: "Transition(bytes32[],bytes32[],bytes)",
+				Data:              pldtypes.RawJSON(`{"result": "success"}`),
+			},
+		})
+		return err
+	})
+	require.NoError(t, err)
+	assert.Empty(t, batches, "event for noto-bond's own contract must not be claimed by noto-cash")
 }

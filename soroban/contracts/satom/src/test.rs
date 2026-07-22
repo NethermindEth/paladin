@@ -207,6 +207,7 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
         &soroban_sdk::Vec::new(&env),
         &Bytes::new(&env),
         &Bytes::new(&env),
+        &BytesN::from_array(&env, &[110u8; 32]),
     );
 
     let spend_output = BytesN::from_array(&env, &[3u8; 32]);
@@ -220,6 +221,8 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
         &spend_commitment,
         &cancel_commitment,
         &Bytes::new(&env),
+        &BytesN::from_array(&env, &[111u8; 32]),
+        &soroban_sdk::Vec::from_array(&env, [locked_output.clone()]),
     );
 
     let satom_id = env.register(Contract, ());
@@ -228,6 +231,7 @@ fn snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only() {
         &lock_id,
         &satom_id,
         &Bytes::new(&env),
+        &BytesN::from_array(&env, &[112u8; 32]),
     );
 
     let unlock_args = soroban_sdk::vec![

@@ -290,11 +290,6 @@ func (h *unlockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTransact
 func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 	inParams := tx.Params.(*types.UnlockParams)
 
-	data, err := h.noto.encodeTransactionData(ctx, tx.DomainConfig, req.Transaction, req.InfoStates)
-	if err != nil {
-		return nil, err
-	}
-
 	txID, err := pldtypes.ParseBytes32Ctx(ctx, req.Transaction.TransactionId)
 	if err != nil {
 		return nil, err
@@ -309,6 +304,26 @@ func (h *unlockHandler) stellarBaseLedgerInvokeUnlock(ctx context.Context, tx *t
 	if err != nil {
 		return nil, err
 	}
+
+	// The on-chain "data" argument must be byte-for-byte identical to what prepare_unlock already
+	// committed to (UnlockHashFromIDsV1's own "data" param, check_commitment on the Rust side,
+	// soroban/contracts/snoto/src/lib.rs) - a freshly re-encoded transaction-data blob (this used
+	// to compute here) is a different value from the committed SpendData whenever a lock has
+	// actually been prepared, and check_commitment would panic with "commitment mismatch". This
+	// never surfaced before because check_commitment is a no-op when no commitment was ever set
+	// (an unprepared lock's spend_commitment is None) - every prior exercise of this path was an
+	// unprepared unlock, never a real prepare_unlock -> unlock chain. SpendData lives on the
+	// lock-info state Assemble already includes as an input (V1's own InputStates append), so
+	// retrieve it from there rather than recomputing something unrelated.
+	lockInfoStates := h.noto.filterSchema(req.InputStates, []string{h.noto.lockInfoSchemaV1.Id})
+	if len(lockInfoStates) == 0 {
+		return nil, i18n.NewError(ctx, msgs.MsgLockIDNotFound)
+	}
+	lockInfo, err := h.noto.unmarshalLockV1(lockInfoStates[0].StateDataJson)
+	if err != nil {
+		return nil, err
+	}
+	data := lockInfo.SpendData
 
 	// See handler_transfer_common.go's stellarBaseLedgerInvokeTransfer's own comment: the genuine
 	// deployed instance's Soroban address is required here, not placeholderContractID's

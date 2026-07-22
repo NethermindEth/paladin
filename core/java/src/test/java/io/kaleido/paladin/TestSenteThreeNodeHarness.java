@@ -24,18 +24,10 @@ import io.kaleido.paladin.toolkit.JsonRpcClient;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.net.ServerSocket;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -86,38 +78,6 @@ public class TestSenteThreeNodeHarness {
         return fixtures;
     }
 
-    private static int freePort() throws Exception {
-        try (ServerSocket s = new ServerSocket(0)) {
-            return s.getLocalPort();
-        }
-    }
-
-    private record NodeCert(String certPath, String keyPath, String certPem) {
-    }
-
-    // No self-signed-cert helper is importable from Java (transports/grpc's own TLS enforcement -
-    // grpc_transport.go:115-118 unconditionally forces TLS on regardless of config - has no
-    // plaintext escape hatch), so this shells out to openssl, mirroring this repo's own existing
-    // convention of shelling out to an external CLI rather than reimplementing crypto in-repo
-    // (soroban/scripts/deploy-stellar-fixtures.sh's use of the `stellar` CLI).
-    private static NodeCert generateCert(File dir, String nodeName) throws Exception {
-        File certFile = new File(dir, nodeName + "-cert.pem");
-        File keyFile = new File(dir, nodeName + "-key.pem");
-        Process p = new ProcessBuilder(
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                "-keyout", keyFile.getAbsolutePath(),
-                "-out", certFile.getAbsolutePath(),
-                "-days", "3650",
-                "-subj", "/CN=" + nodeName
-        ).redirectErrorStream(true).start();
-        String output = new String(p.getInputStream().readAllBytes());
-        boolean finished = p.waitFor(30, TimeUnit.SECONDS);
-        if (!finished || p.exitValue() != 0) {
-            fail("openssl cert generation for %s failed: %s".formatted(nodeName, output));
-        }
-        return new NodeCert(certFile.getAbsolutePath(), keyFile.getAbsolutePath(), Files.readString(certFile.toPath()));
-    }
-
     // Testbed.java hardcodes ONE wallet1 seed because every simulated "member" lives in the same
     // JVM/DB - a single underlying key is fine there. Reusing that same literal verbatim across 3
     // genuinely separate nodes is wrong: member1@node1/member2@node2/member3@node3 each resolve
@@ -144,7 +104,7 @@ public class TestSenteThreeNodeHarness {
     // registries.registry1 (the OTHER two nodes' dial endpoints/certs, static.StaticEntry-shaped -
     // registries/static/internal/staticregistry/config.go:20-26).
     private static String buildNodeConfig(
-            int index, int rpcPort, int[] grpcPorts, NodeCert[] certs, File workDir, StellarFixtures fixtures
+            int index, int rpcPort, int[] grpcPorts, NodeProcessHarness.NodeCert[] certs, File workDir, StellarFixtures fixtures
     ) throws Exception {
         String base = """
                 nodeName: %s
@@ -344,99 +304,9 @@ public class TestSenteThreeNodeHarness {
         return yamlMapper.writerWithDefaultPrettyPrinter().writeValueAsString(configMap);
     }
 
-    private static String jnaLibraryPath() {
-        String rootDir = new File("../..").getAbsolutePath();
-        return String.join(File.pathSeparator,
-                new File(rootDir, "core/go/build/libs").getAbsolutePath(),
-                new File(rootDir, "toolkit/go/build/libs").getAbsolutePath(),
-                new File(rootDir, "domains/sente/target/release").getAbsolutePath(),
-                new File(rootDir, "transports/grpc/build/libs").getAbsolutePath(),
-                new File(rootDir, "registries/static/build/libs").getAbsolutePath()
-        );
-    }
-
-    private static Process launchNode(File configFile, File logFile) throws Exception {
-        String javaBin = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
-        return new ProcessBuilder(
-                javaBin,
-                "-cp", System.getProperty("java.class.path"),
-                "-Djna.library.path=" + jnaLibraryPath(),
-                "io.kaleido.paladin.Main",
-                configFile.getAbsolutePath(),
-                "engine"
-        ).redirectOutput(logFile).redirectErrorStream(true).start();
-    }
-
-    // Waits for the real, non-testbed domain_listDomains RPC to respond with exactly one domain
-    // (sente) - the engine-mode equivalent of Testbed.java's own start()'s testbed_listDomains
-    // poll, since a real engine node has no testbed_* methods at all.
-    private static JsonRpcClient waitForReady(int rpcPort, Process process, long timeoutMs) throws Exception {
-        long startTime = System.currentTimeMillis();
-        JsonRpcClient client = new JsonRpcClient("http://127.0.0.1:%d".formatted(rpcPort));
-        while (true) {
-            if (!process.isAlive()) {
-                fail("node process exited early with code %d before becoming ready".formatted(process.exitValue()));
-            }
-            long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed > timeoutMs) {
-                fail("timed out after %dms waiting for node RPC on port %d".formatted(elapsed, rpcPort));
-            }
-            try {
-                List<?> domains = client.request("domain_listDomains");
-                if (domains.size() == 1) {
-                    return client;
-                }
-            } catch (Exception e) {
-                // not ready yet
-            }
-            Thread.sleep(250);
-        }
-    }
-
-    private static final AtomicLong RAW_REQUEST_ID = new AtomicLong(20000000);
-
-    // JsonRpcClient's own request() hardcodes a fixed 30s HTTP timeout (toolkit/java/.../
-    // JsonRpcClient.java:92,109) with no override point. pgroup_createGroup was observed to
-    // reliably exceed that on this harness's very first genesis-deploy attempt against a brand
-    // new group/contract - the same category of "first private transaction dispatch" latency
-    // already flagged as unresolved for Testbed's own mint/deploy calls (chapter 14 §14.3) - so
-    // this bypasses JsonRpcClient for just this one call with a generous explicit timeout, to
-    // confirm whether it's the same "just needs more time" characteristic rather than a hang.
-    private static <T> T rawRequestWithTimeout(int rpcPort, String method, Object params, long timeoutSeconds, Class<T> resultType) throws Exception {
-        ObjectMapper mapper = new ObjectMapper();
-        Map<String, Object> body = Map.of(
-                "jsonrpc", "2.0",
-                "id", RAW_REQUEST_ID.getAndIncrement(),
-                "method", method,
-                "params", List.of(params)
-        );
-        HttpRequest req = HttpRequest.newBuilder()
-                .timeout(Duration.ofSeconds(timeoutSeconds))
-                .uri(URI.create("http://127.0.0.1:%d".formatted(rpcPort)))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                .build();
-        HttpResponse<String> res = HttpClient.newHttpClient().send(req, HttpResponse.BodyHandlers.ofString());
-        Map<?, ?> rpcRes = mapper.readValue(res.body(), Map.class);
-        if (rpcRes.get("error") != null) {
-            fail("%s failed: %s".formatted(method, rpcRes.get("error")));
-        }
-        return mapper.convertValue(rpcRes.get("result"), resultType);
-    }
-
-    private static String resolveAndFundVerifier(JsonRpcClient client, String lookup) throws Exception {
-        String verifier = client.request("ptx_resolveVerifier", lookup, "eddsa:ed25519", "stellar_address");
-        assertNotNull(verifier);
-        String friendbotUrl = System.getProperty("paladin.test.stellar.friendbotUrl", "http://localhost:8000/friendbot");
-        var response = java.net.http.HttpClient.newHttpClient().send(
-                java.net.http.HttpRequest.newBuilder(java.net.URI.create(friendbotUrl + "?addr=" + verifier)).GET().build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString());
-        boolean alreadyFunded = response.statusCode() == 400 && response.body().contains("already funded");
-        if (response.statusCode() != 200 && !alreadyFunded) {
-            fail("failed to fund verifier %s via friendbot: HTTP %d: %s".formatted(verifier, response.statusCode(), response.body()));
-        }
-        return verifier;
-    }
+    private static final String JNA_LIBRARY_PATH = NodeProcessHarness.jnaLibraryPath(
+            new File("../.."), "core/go/build/libs", "toolkit/go/build/libs",
+            "domains/sente/target/release", "transports/grpc/build/libs", "registries/static/build/libs");
 
     @Test
     void threeRealNodesFormSenteGroupAndTransition() throws Exception {
@@ -445,11 +315,11 @@ public class TestSenteThreeNodeHarness {
 
         int[] rpcPorts = new int[NODE_NAMES.length];
         int[] grpcPorts = new int[NODE_NAMES.length];
-        NodeCert[] certs = new NodeCert[NODE_NAMES.length];
+        NodeProcessHarness.NodeCert[] certs = new NodeProcessHarness.NodeCert[NODE_NAMES.length];
         for (int i = 0; i < NODE_NAMES.length; i++) {
-            rpcPorts[i] = freePort();
-            grpcPorts[i] = freePort();
-            certs[i] = generateCert(workDir, NODE_NAMES[i]);
+            rpcPorts[i] = NodeProcessHarness.freePort();
+            grpcPorts[i] = NodeProcessHarness.freePort();
+            certs[i] = NodeProcessHarness.generateCert(workDir, NODE_NAMES[i]);
         }
 
         Process[] processes = new Process[NODE_NAMES.length];
@@ -479,19 +349,19 @@ public class TestSenteThreeNodeHarness {
             // permanent failure), so as long as funding happens soon after each node starts, it
             // recovers - but node1 is started alone first anyway, since its own group-genesis-deploy
             // dispatch needs its "root" funded before pgroup_createGroup is even called.
-            processes[0] = launchNode(new File(workDir, NODE_NAMES[0] + ".yaml"), new File(workDir, NODE_NAMES[0] + ".engine.log"));
-            clients[0] = waitForReady(rpcPorts[0], processes[0], 30_000);
-            resolveAndFundVerifier(clients[0], "root");
+            processes[0] = NodeProcessHarness.launchNode(new File(workDir, NODE_NAMES[0] + ".yaml"), new File(workDir, NODE_NAMES[0] + ".engine.log"), JNA_LIBRARY_PATH);
+            clients[0] = NodeProcessHarness.waitForReady(rpcPorts[0], processes[0], 30_000, 1);
+            NodeProcessHarness.resolveAndFundVerifier(clients[0], "root");
 
             for (int i = 1; i < NODE_NAMES.length; i++) {
-                processes[i] = launchNode(new File(workDir, NODE_NAMES[i] + ".yaml"), new File(workDir, NODE_NAMES[i] + ".engine.log"));
+                processes[i] = NodeProcessHarness.launchNode(new File(workDir, NODE_NAMES[i] + ".yaml"), new File(workDir, NODE_NAMES[i] + ".engine.log"), JNA_LIBRARY_PATH);
             }
             for (int i = 1; i < NODE_NAMES.length; i++) {
-                clients[i] = waitForReady(rpcPorts[i], processes[i], 30_000);
-                resolveAndFundVerifier(clients[i], "root");
+                clients[i] = NodeProcessHarness.waitForReady(rpcPorts[i], processes[i], 30_000, 1);
+                NodeProcessHarness.resolveAndFundVerifier(clients[i], "root");
             }
 
-            Map<?, ?> createdGroup = rawRequestWithTimeout(rpcPorts[0], "pgroup_createGroup", Map.of(
+            Map<?, ?> createdGroup = NodeProcessHarness.rawRequestWithTimeout(rpcPorts[0], "pgroup_createGroup", Map.of(
                     "domain", "sente",
                     "name", "sente-three-node-harness-test",
                     // The key difference from every other Sente test in this package: each
@@ -528,7 +398,7 @@ public class TestSenteThreeNodeHarness {
                     "inputs", List.of(),
                     "outputs", List.of()
             );
-            String txID = rawRequestWithTimeout(rpcPorts[0], "pgroup_sendTransaction", Map.of(
+            String txID = NodeProcessHarness.rawRequestWithTimeout(rpcPorts[0], "pgroup_sendTransaction", Map.of(
                     "domain", "sente",
                     "group", groupID,
                     "from", "member1",
@@ -557,19 +427,7 @@ public class TestSenteThreeNodeHarness {
                     }
                 }
             }
-            for (Process process : processes) {
-                if (process != null) {
-                    process.destroy();
-                }
-            }
-            for (Process process : processes) {
-                if (process != null) {
-                    process.waitFor(10, TimeUnit.SECONDS);
-                    if (process.isAlive()) {
-                        process.destroyForcibly();
-                    }
-                }
-            }
+            NodeProcessHarness.teardown(processes);
         }
     }
 }

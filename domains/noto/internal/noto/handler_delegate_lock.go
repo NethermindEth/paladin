@@ -53,9 +53,44 @@ func (h *delegateLockHandler) ValidateParams(ctx context.Context, config *types.
 func (h *delegateLockHandler) Init(ctx context.Context, tx *types.ParsedTransaction, req *prototk.InitTransactionRequest) (*prototk.InitTransactionResponse, error) {
 	params := tx.Params.(*types.DelegateLockParams)
 	notary := tx.DomainConfig.NotaryLookup
+	lookups := []string{notary, tx.Transaction.From}
+	// A raw Stellar contract address needs no verifier resolution at all - a smart contract has
+	// no private key for Paladin's key manager to resolve against (ch. 18's atomic
+	// repo-settlement pattern: delegating to e.g. a Sente group's own contract address, unlocked
+	// via invoker authorization when that contract calls `unlock` itself). Requesting a verifier
+	// for it here would just fail identity resolution upstream in core for no reason - only
+	// identity-locator delegates (the existing, unchanged path) need a verifier at all.
+	if !isRawStellarContractDelegate(h.noto, params.Delegate) {
+		lookups = append(lookups, params.Delegate)
+	}
 	return &prototk.InitTransactionResponse{
-		RequiredVerifiers: h.noto.ethAddressVerifiers(notary, tx.Transaction.From, params.Delegate),
+		RequiredVerifiers: h.noto.ethAddressVerifiers(lookups...),
 	}, nil
+}
+
+// isRawStellarContractDelegate reports whether lookup is already a valid Stellar contract
+// address (StrKey "C...") rather than a Paladin identity locator - Stellar-only, so the EVM path
+// (evmChainIO) is completely unaffected by this check.
+func isRawStellarContractDelegate(n *Noto, lookup string) bool {
+	if n.getChainIO().ChainKind() != "stellar" {
+		return false
+	}
+	_, err := pldtypes.NewStellarContractAddress(lookup)
+	return err == nil
+}
+
+// resolveDelegate resolves the delegate for a delegate_lock call. A raw Stellar contract address
+// is used directly, with no identity/verifier resolution at all. Everything else falls back to
+// the existing identity-locator resolution, unchanged.
+func (h *delegateLockHandler) resolveDelegate(ctx context.Context, lookup string, verifierList []*prototk.ResolvedVerifier) (*identityPair, error) {
+	if isRawStellarContractDelegate(h.noto, lookup) {
+		chainAddress, err := pldtypes.NewStellarContractAddress(lookup)
+		if err != nil {
+			return nil, err
+		}
+		return &identityPair{identifier: lookup, chainAddress: chainAddress}, nil
+	}
+	return h.noto.findEthAddressVerifier(ctx, "delegate", lookup, verifierList)
 }
 
 func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTransaction, req *prototk.AssembleTransactionRequest) (*prototk.AssembleTransactionResponse, error) {
@@ -67,7 +102,7 @@ func (h *delegateLockHandler) Assemble(ctx context.Context, tx *types.ParsedTran
 	}
 	notaryID, senderID := ids.notary, ids.sender
 
-	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", params.Delegate, req.ResolvedVerifiers)
+	delegateID, err := h.resolveDelegate(ctx, params.Delegate, req.ResolvedVerifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +214,7 @@ func (h *delegateLockHandler) Endorse(ctx context.Context, tx *types.ParsedTrans
 		return nil, err
 	}
 
-	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", params.Delegate, req.ResolvedVerifiers)
+	delegateID, err := h.resolveDelegate(ctx, params.Delegate, req.ResolvedVerifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +362,7 @@ func (h *delegateLockHandler) hookInvoke(ctx context.Context, tx *types.ParsedTr
 func (h *delegateLockHandler) stellarBaseLedgerInvokeDelegateLock(ctx context.Context, tx *types.ParsedTransaction, req *prototk.PrepareTransactionRequest) (*prototk.PrepareTransactionResponse, error) {
 	inParams := tx.Params.(*types.DelegateLockParams)
 
-	delegateID, err := h.noto.findEthAddressVerifier(ctx, "delegate", inParams.Delegate, req.ResolvedVerifiers)
+	delegateID, err := h.resolveDelegate(ctx, inParams.Delegate, req.ResolvedVerifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -341,8 +376,15 @@ func (h *delegateLockHandler) stellarBaseLedgerInvokeDelegateLock(ctx context.Co
 		return nil, err
 	}
 
+	// The updated lockInfoV1 state's own ID - see encodeSNotoLockArgs's own doc comment. Mirrors
+	// the EVM path's own validateV1LockTransition call (baseLedgerInvoke, above).
+	lt, err := h.noto.validateV1LockTransition(ctx, LOCK_UPDATE, nil, &inParams.LockID, req.InputStates, req.OutputStates)
+	if err != nil {
+		return nil, err
+	}
+
 	realContractID := tx.Transaction.ContractInfo.ContractAddress
-	argsXDR, argsJSON, err := encodeSNotoDelegateLockArgs(txID, inParams.LockID, delegateID.chainAddress.String(), data)
+	argsXDR, argsJSON, err := encodeSNotoDelegateLockArgs(txID, inParams.LockID, delegateID.chainAddress.String(), data, lt.newLockStateID)
 	if err != nil {
 		return nil, err
 	}

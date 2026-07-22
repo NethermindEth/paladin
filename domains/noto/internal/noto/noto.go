@@ -1086,6 +1086,11 @@ func validateTransactionCommon[T comparable](
 		// we'll fail the lower check and return MsgUnexpectedFunctionSignature.
 		// But this lets us only give MsgUnknownFunction if the name of the function is completely wrong.
 		abiFn = types.NotoABI.Functions()[functionABI.Name]
+		if abiFn == nil {
+			// deposit/withdraw - Stellar-only, no EVM/Solidity interface entry (see
+			// NotoStellarOnlyABI's own doc comment).
+			abiFn = types.NotoStellarOnlyABI.Functions()[functionABI.Name]
+		}
 	}
 
 	var unsetT T

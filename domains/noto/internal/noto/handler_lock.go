@@ -455,11 +455,20 @@ func (h *lockHandler) stellarBaseLedgerInvokeLock(ctx context.Context, tx *types
 		return nil, err
 	}
 
+	// The lockInfoV1 state's own ID, so the contract can echo it in the Lock event and store it
+	// against lock_id for prepare_unlock/delegate_lock/unlock/cancel_unlock to read back later -
+	// see encodeSNotoLockArgs's own doc comment. Mirrors the EVM path's own
+	// validateV1LockTransition call in Prepare() below.
+	lt, err := h.noto.validateV1LockTransition(ctx, LOCK_CREATE, nil, nil, req.InputStates, req.OutputStates)
+	if err != nil {
+		return nil, err
+	}
+
 	// See handler_transfer_common.go's stellarBaseLedgerInvokeTransfer's own comment: the genuine
 	// deployed instance's Soroban address is required here, not placeholderContractID's
 	// off-chain-only stand-in.
 	contractID := tx.Transaction.ContractInfo.ContractAddress
-	argsXDR, argsJSON, err := encodeSNotoLockArgs(txID, inputs, lockedOutputs, outputs, sender.Payload, data)
+	argsXDR, argsJSON, err := encodeSNotoLockArgs(txID, inputs, lockedOutputs, outputs, sender.Payload, data, lt.newLockStateID)
 	if err != nil {
 		return nil, err
 	}

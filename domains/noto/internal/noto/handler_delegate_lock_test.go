@@ -17,6 +17,8 @@ package noto
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,6 +32,7 @@ import (
 	"github.com/hyperledger/firefly-signer/pkg/abi"
 	"github.com/hyperledger/firefly-signer/pkg/ethtypes"
 	"github.com/hyperledger/firefly-signer/pkg/secp256k1"
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -583,4 +586,142 @@ func TestDelegateLock_V0(t *testing.T) {
 			"encodedCall": "%s"
 		}
 	}`, senderKey.Address, lockInfo.LockID, delegateAddress, contractAddress, pldtypes.HexBytes(encodedCall)), prepareRes.Transaction.ParamsJson)
+}
+
+// TestDelegateLock_Stellar_RawContractDelegate proves ch. 18's atomic repo-settlement pattern is
+// actually reachable through Paladin's own delegateLock RPC, not just at the raw-contract-test
+// level (soroban/contracts/sente/src/test.rs's
+// transition_unlocks_delegated_snoto_lock_via_invoker_auth_only): delegating a lock to a raw
+// Stellar contract address (e.g. a Sente group's own contract, invoker-authorized when it later
+// calls `unlock` itself) needs no verifier resolution at all - unlike an ordinary
+// identity-locator delegate, a smart contract has no private key for Paladin's key manager to
+// resolve against.
+func TestDelegateLock_Stellar_RawContractDelegate(t *testing.T) {
+	mockCallbacks := newMockCallbacks()
+	n := &Noto{
+		Callbacks:        mockCallbacks,
+		coinSchema:       testSchema("coin"),
+		lockedCoinSchema: testSchema("lockedCoin"),
+		lockInfoSchemaV1: testSchema("lockInfo_v1"),
+		dataSchemaV1:     testSchema("data"),
+		dataSchemaV2:     testSchema("data_v2"),
+		manifestSchema:   testSchema("manifest"),
+		chainIO:          newStellarChainIO("Test Stellar Network ; 2026"),
+	}
+	ctx := t.Context()
+	fn := types.NotoABI.Functions()["delegateLock"]
+
+	notaryPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	notaryAddress, err := strkey.Encode(strkey.VersionByteAccountID, notaryPub)
+	require.NoError(t, err)
+
+	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	senderAddress, err := strkey.Encode(strkey.VersionByteAccountID, senderPub)
+	require.NoError(t, err)
+
+	// A raw Soroban contract address, standing in for a Sente group's own deployed contract -
+	// not an identity locator, and never resolvable to one.
+	contractDelegateRaw := make([]byte, 32)
+	_, err = rand.Read(contractDelegateRaw)
+	require.NoError(t, err)
+	contractDelegate, err := strkey.Encode(strkey.VersionByteContract, contractDelegateRaw)
+	require.NoError(t, err)
+
+	lockID := pldtypes.RandBytes32()
+	inputLockInfoSalt := pldtypes.RandBytes32()
+	inputLockInfo := &prototk.StoredState{
+		Id:       "0xa7c7fa6677f6938bb90f9f0ccb3487707fe6a93c527d899f09af497ece2e603b",
+		SchemaId: hashName("lockInfo_v1"),
+		DataJson: fmt.Sprintf(`{
+			"lockId": "%s",
+			"salt": "%s",
+			"owner": "%s",
+			"spender": "%s"
+		}`, lockID, inputLockInfoSalt, senderAddress, senderAddress),
+	}
+	mockCallbacks.MockFindAvailableStates = func(ctx context.Context, req *prototk.FindAvailableStatesRequest) (*prototk.FindAvailableStatesResponse, error) {
+		return &prototk.FindAvailableStatesResponse{
+			States: []*prototk.StoredState{inputLockInfo},
+		}, nil
+	}
+
+	contractAddress := "0xf6a75f065db3cef95de7aa786eee1d0cb1aeafc3" // placeholder - see placeholderContractID
+	tx := &prototk.TransactionSpecification{
+		TransactionId: "0x015e1881f2ba769c22d05c841f06949ec6e1bd573f5e1e0328885494212f077d",
+		From:          "sender@node1",
+		ContractInfo: &prototk.ContractInfo{
+			ContractAddress: contractAddress,
+			ContractConfigJson: mustParseJSON(&types.NotoParsedConfig{
+				NotaryLookup: "notary@node1",
+				Variant:      types.NotoVariantV2,
+			}),
+		},
+		FunctionAbiJson:   mustParseJSON(fn),
+		FunctionSignature: fn.SolString(),
+		FunctionParamsJson: fmt.Sprintf(`{
+			"lockId": "%s",
+			"delegate": "%s",
+			"data": "0x1234"
+		}`, lockID, contractDelegate),
+	}
+
+	// The load-bearing assertion: only 2 verifiers are requested (notary, sender) - not 3. A raw
+	// contract-address delegate is never sent to core's own verifier resolution, because there is
+	// no key behind it to resolve.
+	initRes, err := n.InitTransaction(ctx, &prototk.InitTransactionRequest{
+		Transaction: tx,
+	})
+	require.NoError(t, err)
+	require.Len(t, initRes.RequiredVerifiers, 2)
+	assert.Equal(t, "notary@node1", initRes.RequiredVerifiers[0].Lookup)
+	assert.Equal(t, "sender@node1", initRes.RequiredVerifiers[1].Lookup)
+
+	// ResolvedVerifiers deliberately carries no entry at all for contractDelegate - proving
+	// Assemble doesn't need one.
+	resolvedVerifiers := []*prototk.ResolvedVerifier{
+		{Lookup: "notary@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: notaryAddress},
+		{Lookup: "sender@node1", Algorithm: algorithms.EDDSA_ED25519, VerifierType: verifiers.STELLAR_ADDRESS, Verifier: senderAddress},
+	}
+
+	assembleRes, err := n.AssembleTransaction(ctx, &prototk.AssembleTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, prototk.AssembleTransactionResponse_OK, assembleRes.AssemblyResult)
+	require.Len(t, assembleRes.AssembledTransaction.OutputStates, 1)
+	lockInfoState := assembleRes.AssembledTransaction.OutputStates[0]
+
+	inputStates := []*prototk.EndorsableState{
+		{SchemaId: inputLockInfo.SchemaId, Id: inputLockInfo.Id, StateDataJson: inputLockInfo.DataJson},
+	}
+	infoStates := []*prototk.EndorsableState{
+		{SchemaId: hashName("manifest"), Id: "0x4cc7840e186de23c4127b4853c878708d2642f1942959692885e098f1944547d", StateDataJson: assembleRes.AssembledTransaction.InfoStates[0].StateDataJson},
+		{SchemaId: hashName("data_v2"), Id: "0x4cc7840e186de23c4127b4853c878708d2642f1942959692885e098f1944547d", StateDataJson: assembleRes.AssembledTransaction.InfoStates[1].StateDataJson},
+	}
+	outputStates := []*prototk.EndorsableState{
+		{SchemaId: hashName("lockInfo_v1"), Id: *lockInfoState.Id, StateDataJson: lockInfoState.StateDataJson},
+	}
+
+	// Prepare the real on-chain call - confirms the delegate's raw contract address survives all
+	// the way to a genuine SorobanInvoke, encoded via the same address path an account delegate
+	// uses (scValAddress/scspec.AddressFromStrkey natively supports both Soroban address kinds).
+	prepareRes, err := n.PrepareTransaction(ctx, &prototk.PrepareTransactionRequest{
+		Transaction:       tx,
+		ResolvedVerifiers: resolvedVerifiers,
+		InputStates:       inputStates,
+		OutputStates:      outputStates,
+		InfoStates:        infoStates,
+		AttestationResult: []*prototk.AttestationResult{
+			{Name: "notary", Verifier: &prototk.ResolvedVerifier{Lookup: "notary@node1"}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, prepareRes.ChainTransaction)
+	soroban := prepareRes.ChainTransaction.GetSoroban()
+	require.NotNil(t, soroban)
+	assert.Equal(t, "delegate_lock", soroban.FunctionName)
+	assert.Contains(t, soroban.ArgsJson, contractDelegate)
 }

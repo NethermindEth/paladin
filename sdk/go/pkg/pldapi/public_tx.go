@@ -25,9 +25,10 @@ import (
 // If set these affect the submission of the public transaction.
 // All are optional
 type PublicTxOptions struct {
-	Gas                *pldtypes.HexUint64  `docstruct:"PublicTxOptions" json:"gas,omitempty"`
-	Value              *pldtypes.HexUint256 `docstruct:"PublicTxOptions" json:"value,omitempty"`
-	PublicTxGasPricing                      // fixed when any of these are supplied - disabling the gas pricing engine for this TX
+	Gas                *pldtypes.HexUint64                `docstruct:"PublicTxOptions" json:"gas,omitempty"`
+	Value              *pldtypes.HexUint256               `docstruct:"PublicTxOptions" json:"value,omitempty"`
+	PayloadKind        pldtypes.Enum[PublicTxPayloadKind] `docstruct:"PublicTxOptions" json:"payloadKind,omitempty"` // see PublicTxPayloadKind's own doc comment - lets a caller submitting via TransactionInput select a non-default kind (e.g. XDR_CLASSIC_OPS for Stellar classic operations), the same field PublicTxInput carries at the lower level
+	PublicTxGasPricing                                    // fixed when any of these are supplied - disabling the gas pricing engine for this TX
 }
 
 type PublicCallOptions struct {

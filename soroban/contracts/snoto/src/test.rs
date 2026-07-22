@@ -6,7 +6,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{storage::Persistent as _, Address as _, Ledger as _};
-use soroban_sdk::{xdr, Env, TryIntoVal};
+use soroban_sdk::{xdr, Env, IntoVal, TryIntoVal};
 use std::rc::Rc;
 
 const NETWORK_PASSPHRASE: &[u8] = b"Test SDF Network ; September 2015";
@@ -182,6 +182,7 @@ fn lock_lifecycle_spend() {
         &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
+        &state_id(&s.env, 110),
     );
 
     let spend_output = state_id(&s.env, 3);
@@ -202,10 +203,18 @@ fn lock_lifecycle_spend() {
         &spend_commitment,
         &cancel_commitment,
         &Bytes::new(&s.env),
+        &state_id(&s.env, 111),
+        &Vec::from_array(&s.env, [locked_output.clone()]),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
+    client.delegate_lock(
+        &state_id(&s.env, 106),
+        &lock_id,
+        &delegate,
+        &Bytes::new(&s.env),
+        &state_id(&s.env, 112),
+    );
 
     client.unlock(
         &state_id(&s.env, 107),
@@ -214,6 +223,83 @@ fn lock_lifecycle_spend() {
         &Vec::from_array(&s.env, [spend_output]),
         &Bytes::new(&s.env),
     );
+}
+
+/// Regression test for a real bug found live in the chapter 18 institutional-repo demo:
+/// lock()/prepare_unlock()/delegate_lock() assemble a Paladin-side lockInfoV1 private state off-
+/// chain, but (before this fix) the contract never tracked or echoed its ID anywhere on-chain -
+/// so the Go event indexer (applyLockCreatedEvent et al.) could never confirm it, and
+/// prepareUnlock's own later lookup permanently failed with "PD200028: Lock ID not found". Each
+/// call now takes a `new_lock_state` id, stores it in the lock's own LockInfo.state_id (mirroring
+/// Noto.sol's on-chain `_lockStates[lockId]`), and echoes old/new in its event - this proves the
+/// storage-level propagation the fix depends on, independent of the Go-side event decoding this
+/// test can't reach.
+#[test]
+fn lock_state_id_propagates_through_prepare_and_delegate() {
+    let s = setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+
+    let input = state_id(&s.env, 1);
+    client.transfer(
+        &state_id(&s.env, 100),
+        &Vec::new(&s.env),
+        &Vec::from_array(&s.env, [input.clone()]),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+    );
+
+    let lock_id = state_id(&s.env, 101);
+    let locked_output = state_id(&s.env, 2);
+    let lock_state = state_id(&s.env, 110);
+    client.lock(
+        &lock_id,
+        &Vec::from_array(&s.env, [input]),
+        &Vec::from_array(&s.env, [locked_output.clone()]),
+        &Vec::new(&s.env),
+        &Bytes::new(&s.env),
+        &Bytes::new(&s.env),
+        &lock_state,
+    );
+    s.env.as_contract(&s.contract_id, || {
+        assert_eq!(storage::get_lock(&s.env, &lock_id).unwrap().state_id, lock_state);
+    });
+
+    let spend_output = state_id(&s.env, 3);
+    let spend_commitment = commitment_for(
+        &s.env,
+        &s.contract_id,
+        "snoto.Unlock",
+        &lock_id,
+        &locked_output,
+        &spend_output,
+    );
+    let cancel_commitment = state_id(&s.env, 254);
+    let prepared_state = state_id(&s.env, 111);
+    client.prepare_unlock(
+        &state_id(&s.env, 105),
+        &lock_id,
+        &spend_commitment,
+        &cancel_commitment,
+        &Bytes::new(&s.env),
+        &prepared_state,
+        &Vec::from_array(&s.env, [locked_output.clone()]),
+    );
+    s.env.as_contract(&s.contract_id, || {
+        assert_eq!(storage::get_lock(&s.env, &lock_id).unwrap().state_id, prepared_state);
+    });
+
+    let delegate = Address::generate(&s.env);
+    let delegated_state = state_id(&s.env, 112);
+    client.delegate_lock(
+        &state_id(&s.env, 106),
+        &lock_id,
+        &delegate,
+        &Bytes::new(&s.env),
+        &delegated_state,
+    );
+    s.env.as_contract(&s.contract_id, || {
+        assert_eq!(storage::get_lock(&s.env, &lock_id).unwrap().state_id, delegated_state);
+    });
 }
 
 /// Chapter 14's Go domain builds a lock's unlocked "remainder" (change) output in the same call
@@ -243,6 +329,7 @@ fn lock_with_remainder_produces_spendable_output() {
         &Vec::from_array(&s.env, [remainder_output.clone()]),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
+        &state_id(&s.env, 110),
     );
 
     // The remainder is an ordinary unspent state - spendable via a normal transfer, exactly like
@@ -279,6 +366,7 @@ fn lock_lifecycle_cancel() {
         &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
+        &state_id(&s.env, 110),
     );
 
     let cancel_output = state_id(&s.env, 4);
@@ -299,10 +387,18 @@ fn lock_lifecycle_cancel() {
         &spend_commitment,
         &cancel_commitment,
         &Bytes::new(&s.env),
+        &state_id(&s.env, 111),
+        &Vec::from_array(&s.env, [locked_output.clone()]),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
+    client.delegate_lock(
+        &state_id(&s.env, 106),
+        &lock_id,
+        &delegate,
+        &Bytes::new(&s.env),
+        &state_id(&s.env, 112),
+    );
 
     client.cancel_unlock(
         &state_id(&s.env, 108),
@@ -337,6 +433,7 @@ fn unlock_rejects_wrong_preimage() {
         &Vec::new(&s.env),
         &Bytes::new(&s.env),
         &Bytes::new(&s.env),
+        &state_id(&s.env, 110),
     );
 
     let spend_output = state_id(&s.env, 3);
@@ -355,10 +452,18 @@ fn unlock_rejects_wrong_preimage() {
         &spend_commitment,
         &cancel_commitment,
         &Bytes::new(&s.env),
+        &state_id(&s.env, 111),
+        &Vec::from_array(&s.env, [locked_output.clone()]),
     );
 
     let delegate = Address::generate(&s.env);
-    client.delegate_lock(&state_id(&s.env, 106), &lock_id, &delegate, &Bytes::new(&s.env));
+    client.delegate_lock(
+        &state_id(&s.env, 106),
+        &lock_id,
+        &delegate,
+        &Bytes::new(&s.env),
+        &state_id(&s.env, 112),
+    );
 
     // Wrong output (doesn't match the committed spend_output) must be rejected.
     client.unlock(
@@ -394,6 +499,7 @@ fn keepalive_skips_nonexistent_ids_silently() {
 struct ShieldSetup {
     env: Env,
     contract_id: Address,
+    notary: Address,
     sac: Address,
     asset: xdr::Asset,
 }
@@ -422,9 +528,25 @@ fn shield_setup_with_issuer_flags(flags: &[soroban_sdk::testutils::IssuerFlags])
     ShieldSetup {
         env,
         contract_id,
+        notary,
         sac,
         asset,
     }
+}
+
+/// Approves `s.contract_id` (the pool, and `deposit`'s `transfer_from` spender - see `deposit`'s
+/// own doc comment) to pull `amount` from `depositor`'s SAC balance - the standalone, depositor-
+/// authorized call every deposit test now needs before `deposit` itself, mirroring EVM Zeto's own
+/// `approve`-before-`deposit` two-step (`domains/integration-test/helpers/zeto_helper.go`'s
+/// `ApproveERC20`).
+fn approve_pool(s: &ShieldSetup, depositor: &Address, amount: i128) {
+    let expiration_ledger = s.env.ledger().sequence() + 1000;
+    soroban_sdk::token::TokenClient::new(&s.env, &s.sac).approve(
+        depositor,
+        &s.contract_id,
+        &amount,
+        &expiration_ledger,
+    );
 }
 
 /// Builds a classic (`G…`) account ledger entry directly via the same low-level `xdr`/
@@ -506,6 +628,7 @@ fn deposit_shields_amount_and_admits_output() {
 
     let depositor = Address::generate(&s.env);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
 
     let output = state_id(&s.env, 1);
     client.deposit(
@@ -530,14 +653,34 @@ fn deposit_shields_amount_and_admits_output() {
     );
 }
 
+/// `approve` is the depositor's own standalone authorization step (mirrors EVM Zeto's
+/// `approve`-before-`deposit`) - it genuinely needs the depositor's real signature, unlike
+/// `deposit` itself (see the two tests below).
 #[test]
 #[should_panic]
-fn deposit_rejects_unauthorized_depositor() {
+fn approve_rejects_unauthorized_depositor() {
+    let s = shield_setup();
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+
+    s.env.set_auths(&[]); // clear the mocked auths from shield_setup()/mint() above
+    approve_pool(&s, &depositor, 500);
+}
+
+/// Deposit fails with a genuine SAC allowance error if the depositor never called `approve` (or
+/// approved too little) - `deposit` no longer bundles the depositor's own authorization, so the
+/// only thing standing between "unauthorized" and "authorized" now is a real prior allowance.
+#[test]
+#[should_panic]
+fn deposit_rejects_without_prior_approval() {
     let s = shield_setup();
     let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
     let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
 
-    s.env.set_auths(&[]); // clear the mocked auths from shield_setup() for the call under test
+    // No approve_pool call - the pool has no allowance to pull from.
     client.deposit(
         &state_id(&s.env, 100),
         &depositor,
@@ -545,6 +688,52 @@ fn deposit_rejects_unauthorized_depositor() {
         &Vec::from_array(&s.env, [state_id(&s.env, 1)]),
         &Bytes::new(&s.env),
     );
+}
+
+/// The load-bearing proof for this fix: `deposit` itself needs no bundled authorization from
+/// `from` at all - the SAC pull is authorized entirely by the depositor's own earlier `approve`
+/// call, and `transfer_from`'s `spender.require_auth()` (spender = this contract) passes via
+/// genuine Soroban invoker authorization (this contract calling into the token contract as
+/// itself), the identical zero-signature mechanism already proven for SAtom/Sente
+/// (`satom/src/test.rs`'s `snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only`). Proven
+/// here the same way: an explicit auth list containing *only* the notary's own entry for this
+/// exact `deposit` call - nothing for `from`, nothing for the token contract's `transfer_from` -
+/// still succeeds.
+#[test]
+fn deposit_succeeds_with_invoker_auth_alone_for_spender() {
+    let s = shield_setup();
+    let client = ContractClient::new(&s.env, &s.contract_id);
+    let token = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.sac);
+    let token_balance = soroban_sdk::token::TokenClient::new(&s.env, &s.sac);
+    let depositor = Address::generate(&s.env);
+    token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
+
+    let tx_id = state_id(&s.env, 100);
+    let outputs = Vec::from_array(&s.env, [state_id(&s.env, 1)]);
+    let data = Bytes::new(&s.env);
+
+    let deposit_args = soroban_sdk::vec![
+        &s.env,
+        tx_id.clone().into_val(&s.env),
+        depositor.clone().into_val(&s.env),
+        500i128.into_val(&s.env),
+        outputs.clone().into_val(&s.env),
+        data.clone().into_val(&s.env),
+    ];
+    client
+        .mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &s.notary,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "deposit",
+                args: deposit_args,
+                sub_invokes: &[],
+            },
+        }])
+        .deposit(&tx_id, &depositor, &500, &outputs, &data);
+
+    assert_eq!(token_balance.balance(&s.contract_id), 500);
 }
 
 #[test]
@@ -571,6 +760,7 @@ fn withdraw_unshields_amount_to_recipient() {
 
     let depositor = Address::generate(&s.env);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
     let input = state_id(&s.env, 1);
     client.deposit(
         &state_id(&s.env, 100),
@@ -648,6 +838,7 @@ fn deposit_rejects_unauthorized_pool_under_auth_required() {
     let depositor = Address::generate(&s.env);
     token.set_authorized(&depositor, &true);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
 
     // The pool itself is never authorized here - deposit must fail.
     client.deposit(
@@ -672,6 +863,7 @@ fn deposit_succeeds_once_pool_authorized_under_auth_required() {
     token.set_authorized(&depositor, &true);
     token.set_authorized(&s.contract_id, &true);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
 
     client.deposit(
         &state_id(&s.env, 100),
@@ -699,6 +891,7 @@ fn issuer_can_clawback_pool_balance_after_shield() {
 
     let depositor = Address::generate(&s.env);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
     client.deposit(
         &state_id(&s.env, 100),
         &depositor,
@@ -725,6 +918,7 @@ fn native_asset_e2e_shield_transfer_unshield() {
 
     let depositor = Address::generate(&s.env);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
     let input = state_id(&s.env, 1);
     client.deposit(
         &state_id(&s.env, 100),
@@ -771,6 +965,7 @@ fn withdraw_rejects_recipient_without_trustline() {
 
     let depositor = Address::generate(&s.env);
     token.mint(&depositor, &1_000);
+    approve_pool(&s, &depositor, 500);
     let input = state_id(&s.env, 1);
     client.deposit(
         &state_id(&s.env, 100),

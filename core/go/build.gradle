@@ -181,6 +181,27 @@ task goGet(type:Exec, dependsOn:[protoc, copyContracts, makeMocks, ":toolkit:go:
     args 'get'
 }
 
+// buildSharedLibrary's own compiled sources (goFilesBuildOnly - core.go/internal/pkg only) never
+// include mocks/**.go, generated purely for core/go's own *_test.go suite (unit/component tests,
+// lint) and explicitly excluded from goFilesBuildOnly above - so the real node engine binary this
+// produces never contains mock code. `goGet` bundles makeMocks in anyway, since its own broader
+// `go get` invocation scans goFiles (which DOES include mocks/**.go and noderuntests/**.go) and
+// needs a structurally-complete module tree to resolve. That coupling is real for `goGet`'s own
+// test-oriented callers (unitTest*/componentTest*/lint below), but pointless overhead for a task
+// that only ever wants a real, running engine binary (chapter 18's institutional repo demo, or
+// anyone else consuming :core:go's `libcore` configuration) - skips straight to `go get` without
+// waiting on mockery to parse and regenerate every configured interface in the module first.
+task goGetForSharedLibrary(type:Exec, dependsOn:[protoc, copyContracts, ":toolkit:go:goGet"]) {
+    workingDir '.'
+
+    inputs.files('go.mod')
+    inputs.files(goFilesBuildOnly)
+    outputs.files('go.sum')
+
+    executable 'go'
+    args 'get'
+}
+
 task clean(type: Delete, dependsOn: ':testinfra:stopTestInfra') {
     delete "${buildDir}"
     delete fileTree("bin") {
@@ -215,7 +236,7 @@ task lint(type: Exec, dependsOn:[
     args '--tests=false'
 }
 
-task buildSharedLibrary(type:GoLib, dependsOn:[goGet]) {
+task buildSharedLibrary(type:GoLib, dependsOn:[goGetForSharedLibrary]) {
     baseName "core"
     sources goFilesBuildOnly
     mainFile 'core.go'
