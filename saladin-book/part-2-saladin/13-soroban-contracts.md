@@ -20,6 +20,43 @@ soroban/
    └─ m0-smt-parity/      # Go/Rust SMT root-parity check (risk R3)
 ```
 
+## How it works today
+
+`SALADIN_TYPED_DATA_V0` (§13.1) is implemented byte-identically in Rust, Go, and the domain-plugin
+proto layer, with a 21-vector shared cross-language test file. **SNoto** (§13.2) is real and
+unit-tested end to end: transfer, lock (with a remainder), prepare-unlock, delegate-lock, unlock,
+cancel-unlock, keepalive, and the shield/unshield deposit/withdraw pair against a real SAC, all
+with TTL/archival handling and passing acceptance criteria 1, 7, 8, and 9 (§13.7). **SZeto** (§13.3)
+has a real, benchmarked Groth16 verifier and on-chain SMT (root-history-free, roots valid forever),
+with a measured, contract-enforced safe batch cap (`MAX_SAFE_BATCH_OUTPUTS = 5`, below the
+EVM-parity `BATCH_SLOTS = 10`) — it verifies real proofs from the unchanged Zeto Go prover, but has
+no mint entrypoint and no Go-side domain consumer yet. **SAtom** (§13.4) settles atomically via
+direct cross-contract calls, with invoker-authorization eliminating the signature dance Pente-style
+delegation needs. The **factory/registry contracts** (§13.5) — `SaladinFactory`,
+`SAtomFactory` — are real, and a **`registries/stellar` Go plugin** (reading identity-registry
+events) exists alongside the chain-agnostic static registry. The **SAC shield/unshield pattern**
+(§13.6) for native/classic Stellar assets is implemented and tested for SNoto, including the
+regulated-asset cases (`AUTH_REQUIRED`, clawback).
+
+## What's left for production use / full EVM parity
+
+- **SZeto has no mint entrypoint** — genesis UTXOs are seeded via direct test-only tree-insertion
+  calls; a real minting path (`deposit` could serve this role for shielded funds) doesn't exist.
+- **No Go-side `DomainConfig`/`AssembleTransaction` consumer for SZeto's batch cap** — the contract
+  enforces `MAX_SAFE_BATCH_OUTPUTS = 5` on-chain, but nothing at the transaction-assembly layer
+  independently enforces it, so a client could still assemble an over-cap batch and only fail
+  on-chain rather than fail fast.
+- **SZeto's own native-asset (SAC) tests are deferred** — its deposit/withdraw don't yet reach a
+  real SAC transfer in tests, since that needs real Groth16 proof fixtures for those circuits (none
+  generated yet); SNoto's equivalent tests are done (criteria 7/8/9, §13.7).
+- **Reproducible Wasm builds are unverified** — no pinned rustc toolchain file or recorded
+  code-hash artifact exists yet (criterion 6, §13.7).
+- **SAtom's own testnet demo is unverified** — the cross-contract settlement is proven at the
+  unit-test level (including invoker-auth alone sufficing), but there's no evidence yet of an
+  actual multi-domain DvP running on a live network (criterion 4, §13.7).
+- **`registries/stellar`'s `$specName` property is populated for exactly one contract** (the
+  identity registry) — extending it to future domain-instance contracts remains open.
+
 ## 13.1 `SALADIN_TYPED_DATA_V0` — the EIP-712 replacement
 
 EIP-712 serves Paladin as (a) domain-separated, replay-proof structured hashing of off-chain
@@ -44,7 +81,7 @@ encoding of `ScVal` is already deterministic.
 Implemented **byte-identically three times**: Rust (`soroban/crates/saladin-typed-data`,
 verified on-chain via `env.crypto().ed25519_verify`), Go (`sdk/go/pkg/saladintypes`), and
 exposed to domain plugins as `EncodingType.SALADIN_TYPED_DATA_V0`. ✅ The mandatory shared
-cross-language **test-vector file** (risk R17) is delivered: 21 vectors at
+cross-language **test-vector file** (risk R16, ch. 16) is delivered: 21 vectors at
 `testdata/saladin/saladin_typed_data_v0_vectors.json`, checked by the Rust crate's
 `digest_matches_shared_vectors` test.
 
@@ -372,7 +409,7 @@ one fewer trust boundary, and the pool's footprint stays inside the domain's own
   approve transfers is the party who could claw back anyway); (b) the node should record issuer
   flags at shield time and surface them in receipts; (c) the legal/disclosure documentation
   must state this plainly. For trust-minimized deployments, restrict shielding to
-  clawback-free assets (risk R21, ch. 17).
+  clawback-free assets (risk R19, ch. 16).
 - **Privacy boundary:** trustlines are public (holder ↔ asset linkage), and shield/unshield
   endpoints and amounts are public. What is private is everything *between* — holdings and
   transfers inside the pool. The pool's total (= total shielded supply) is public.

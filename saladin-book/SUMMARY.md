@@ -24,3 +24,4 @@
 - [Delivery Plan](part-2-saladin/15-delivery-plan.md)
 - [Risk Map](part-2-saladin/16-risk-map.md)
 - [Glossary](part-2-saladin/17-glossary.md)
+- [Institutional Demo: Interbank Repo](part-2-saladin/18-institutional-demo-repo.md)

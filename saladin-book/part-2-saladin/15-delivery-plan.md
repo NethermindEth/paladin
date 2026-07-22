@@ -3,26 +3,50 @@
 ## 15.1 Team assumptions
 
 3–4 senior engineers: 2 Go (one with deep Paladin familiarity), 1–2 Rust/Soroban (at least one
-experienced Stellar engineer as anchor — see risk R14), part-time Solidity for interop
-contracts, QA/infra support. "em" = engineer-month.
+experienced Stellar engineer as anchor — see risk R13, ch. 16), QA/infra support.
+"em" = engineer-month.
 
-## 15.2 Milestones (port)
+## 15.2 Milestones (port) — remaining work and effort to deliver it
 
-| # | Milestone | Contents | Effort | Demo | Exit criteria |
+Every milestone below already works on the `saladin` branch — M0–M6 are demonstrated live, most
+against real public Stellar Testnet (chapters 11–14 have the full technical detail behind each
+gap). This table covers what's left: **Demo scope delivered?** is whether the milestone's own
+original exit criteria were met (most were). **Gaps for production / EVM parity** is a separate,
+larger bar — hardening and edge cases the milestone never promised — so "✅ delivered" and a
+non-zero effort figure aren't a contradiction.
+
+**Delivery track** answers a third question per gap, tagged inline (**[Agent]** / **[Human]**):
+does closing it need a human to *originate* the design, or is it pattern-following work an agent
+can execute against a real correctness oracle (a compiler, golden-payload tests, an already-proven
+sibling port, an existing CR/dialog to mirror)? **[Human]** doesn't mean no AI assistance — it
+means the design and sign-off must be a person's, because the gap is a novel security/consensus
+mechanism, not a known pattern on new surface. **[Agent]** work still gets ordinary code review.
+Effort figures are scope estimates, not agent-calendar predictions — **[Agent]** figures sit below
+a pure-human estimate of the same gap because a strong oracle (e.g. the compiler enumerating every
+`ChainAddress` call site) does the discovery/verification work for free; **[Human]** figures are
+unchanged, since nothing can tell you a novel mechanism is *correct*, only that it compiles.
+
+| # | Milestone | Demo scope delivered? | Gaps for production / EVM parity | Effort to close gaps | Delivery track |
 |---|---|---|---|---|---|
-| **M0** | Spikes & upstream RFC | Groth16-on-Soroban benchmark matrix (ch. 13 §13.3); circomlib-vs-host Poseidon vectors; soroban-env-host embed spike; Rust-cdylib-plugin loader spike; **BLI RFC posted to Paladin maintainers** | 1.5 em | Groth16 verify tx on testnet with measured costs | benchmark report committed; go/no-go on SZeto batch shape; upstream feedback collected |
-| **M1** | `ChainAddress` + type widening | ch. 11 §11.4; DB migrations; **zero behavior change** | 2.5 em | existing full EVM test suite green on refactor | byte-identical EVM RPC payloads (golden tests) |
-| **M2** | BLI + proto v2 + EVM behind BLI | ch. 11 §§11.2–11.3, 11.6; ethclient/blockindexer/publictxmgr refactored | 4 em | Paladin-on-Besu with **unmodified domain binaries** on the new core | upstream Gradle CI green; domain-binary compat test |
-| **M3** | Stellar backend | ch. 12 complete: stellarclient, ed25519 signing, ingestor, submitter (channel accounts, fee-bump, restore), SaladinFactory, quickstart docker in testinfra | 4 em | raw Soroban invoke submitted & indexed via `ptx_` APIs on local quickstart | ch. 12 acceptance criteria 1–6 |
-| **M4** | SNoto end-to-end | SNoto contract, Noto chain-kind switch, typed-data libs (3 impls + vectors), ttlJanitor | 3 em | private notarized transfer across 3 Saladin nodes on Stellar testnet | 3-node testnet CI job; state-resync drill; ch. 13/14 SNoto criteria — ⚠️ **local quickstart path proven, public-Testnet demo still manual/incomplete.** deploy/mint/transfer/lock/prepareUnlock/delegateLock + the state-resync drill are proven live against local quickstart (ch. 14 §14.1). Testnet config/friendbot/fixture-script overrides exist, and public Testnet was checked on 2026-07-21 (`getNetwork`: passphrase `Test SDF Network ; September 2015`, protocol `27`, friendbot `https://friendbot.stellar.org/`), and the fixture script/configs now cover `getNetwork` validation, persistent SQLite files, fixed ports, and reduced pools. A reset-aware `soroban/scripts/testnet-demo.sh` (reset detection, conditional redeploy, deployer funding, running both suites) and a consolidated resolve-and-fund identity helper now exist; both are unrun against real public Testnet from this environment, and no CI/nightly job exists yet. |
-| **M5** | SZeto + SAtom + native-asset gateway | SZeto verifier + nullifiers; SAtom + factory; DvP SNoto⇄SZeto; SAC shield/unshield in SNoto & SZeto, `XDR_CLASSIC_OPS` + trustline tooling (ch. 12 §12.3, ch. 13 §13.6) | 4.5 em | anonymous ZK transfer; atomic DvP; shield→private→unshield of a classic asset on testnet | batch caps enforced from M0 numbers; failing-leg revert test; AUTH_REQUIRED asset flow green |
-| **M6** | Sente | ch. 14 §14.3 phases S1–S4 | 6 em | private Soroban contract in a 3-member group + atomic external call to SNoto | ⚠️ S1/S2 and most S3 implementation are in place, including stateful UTXO lifecycle and restart-safe event confirmation. The external SNoto call now targets a real state ID (not `keepalive([])`), proven at the contract-test level and live via `Testbed` (with an open ~30s first-private-transaction dispatch-latency caveat, ch. 14 §14.3). Remaining demo work: run real Sente on three separate Paladin node processes, one member per node — `Testbed`'s own single-JVM harness cannot do this today (Go core has no non-Go plugin loader), so this needs new JVM-process-orchestration test infrastructure, not yet started. Sente `BuildReceipt` is wired; S4 hardening, determinism audit, protocol-upgrade drill, and chaos testing remain open. |
-| **M7** | Operator UI (`ui/client`) | §15.6 phases U1–U5: chain-neutral ledger-query RPC surface, mechanical address/domain-lookup fixes, new domain dialogs (SNoto/SZeto/Sente), Soroban call/event decoder, ledger-browsing rework | ~3.5 em | operator deploys and interacts with a Stellar-backed domain instance in the same UI used for EVM today, including browsing its ledger transactions | new-domain dialogs + Soroban decoder pass component review; Transactions/Events views work against a `type: stellar` node |
+| **M0** | Spikes & upstream RFC | ✅ Yes | None — benchmarks committed, upstream RFC posted, go/no-go decisions made. | 0 em | — |
+| **M1** | `ChainAddress` + type widening | ◐ Partial — type/proto layer yes, internal-manager migration no | **[Agent]** Complete the `EthAddress`→`ChainAddress` sweep (ch. 11): compiler-guided for most of the surface (change the type, let `go build` enumerate every call site, keep golden-payload tests byte-identical); the nonce-allocation/balance-check cluster needs real reasoning too, since Stellar's sequence number isn't semantically a nonce despite compiling fine either way. | ~1.5 em | **Agent** ~1.5 em |
+| **M2** | BLI + proto v2 + EVM behind BLI | ✅ Yes | **[Agent]** Finish the `ledgerindexer` split's consumer-facing side (event-stream/query/discovery, not just ingestion — ch. 12) by mirroring EVM's already-working implementation against the chain-neutral schema already in place. (The related `bidx_*` RPC gap is costed once, under M7/U1.) | ~1 em | **Agent** ~1 em |
+| **M3** | Stellar backend | ✅ Yes | **[Human]** Fee-bump/auth-entry-expiry re-endorsement and retention-gap fail-loud/backfill (§12.2/§12.4, ~1.5 em) — replay-safety and data-loss semantics, no oracle for "is this safe" beyond tests written after the fact. **[Agent]** `SnapshotContractState` escape hatch, operator CR additions mirroring the EVM node CR, CI/nightly wiring of `testnet-demo.sh`, and throughput/chaos drill harnesses for scenarios ch. 12/16 already describe (~1.5 em). | ~3 em | **Mixed** — Agent ~1.5 em / Human ~1.5 em |
+| **M4** | SNoto end-to-end | ✅ Yes — proven live on quickstart *and* real public Testnet (`TestStellarComponentTest`, 174s, 2026-07-22) | **[Human]** Real non-invoker Soroban authorization (`lock.delegate.require_auth()`, ~2 em) — a new mechanism gating live money-movement paths (`cancelLock`/`unlock`/`deposit`/`withdraw`); no compiler or sibling to check it against, so this doesn't compress like M1. **[Agent]**, once it lands: the lock-family variants that depend on it, `buildEndorsePlan`'s Stellar-aware signer branch, and a CI job (~1 em). | ~3 em | **Mixed** — Agent ~1 em / Human ~2 em |
+| **M5** | SZeto + SAtom + native-asset gateway | ◐ Partial — SAtom and the native-asset (SAC) gateway yes, SZeto's own chain-kind port no | **[Agent]** The full SZeto port (~1.25 em) — SNoto's completed port is a line-by-line template, and the proving stack is untouched, so this is translation, not new design; SAtom's testnet demo (~0.25 em, have a human present for the real-Testnet-funds run as an operational safeguard); reproducible-Wasm tooling and `$specName` generalization (~0.5 em). | ~2 em | **Agent** ~2 em |
+| **M6** | Sente | ✅ Yes — proven live via a real 3-node harness on quickstart *and* real public Testnet (`TestSenteThreeNodeHarness`, on-chain receipt confirmed, 2026-07-22) | **[Human]** S4 hardening (determinism audit, protocol-upgrade drill, chaos suite — designing adversarial scenarios needs a person, ~1 em) and the code-distribution mechanism for target-contract code not yet a trackable `SenteEntry` (unscoped, ~0.5 em). **[Agent]** wiring the already-proven external-SNoto-call code into the 3-node harness, plus a CI job (~1 em). Fix C (avoiding self-delegation rather than recovering from it) is deliberately deferred and not counted. | ~2.5 em | **Mixed** — Agent ~1 em / Human ~1.5 em |
+| **M7** | Operator UI (`ui/client`) | ❌ Not started | **[Agent]** §15.6 phases U0–U5 in full — see that section for the per-phase breakdown. A dev/operator tool, not a consensus path; every phase mirrors an already-working EVM equivalent once U0 establishes a real test oracle. | ~2.5 em | **Agent** ~2.5 em |
 
-**Port total ≈ 25.5 em** (M0–M6), ~9–12 months wall-clock (M0 ∥ M1; M3 overlaps M2 tail; M6 off
-the MVP path). **M7 (≈3.5 em) is additive, not included in the port total** — it was out of scope
-for every milestone above until this chapter, since none of M0–M6 touch `ui/client` at all (see
-§15.6).
+**Remaining effort across M1–M7 ≈ 15.5 em**: ~10.5 em agent-suitable (M1, M2, M5, M7 in full;
+mechanical slices of M3/M4/M6) and ~5 em needing human-originated design (M3's replay-safety
+semantics; M4's non-invoker-authorization mechanism, the single highest-stakes item here and the
+one figure that doesn't compress under agent execution; M6's S4 audit design and code-distribution
+architecture). The human-led ~5 em gates calendar time — design-and-review-bound, roughly 1.5–2
+months even fully parallelized across M3/M4/M6. The agent-suitable ~10.5 em is bottlenecked on
+compiler/test/CI cycle time and review bandwidth, not agent throughput — realistically weeks when
+run alongside the human-led work, not the months a purely human-calibrated total would suggest.
+M0–M6 are all already demonstrable end to end; this is hardening and porting work on top of a
+working system, not work required to reach a first working one.
 
 ## 15.3 Testing strategy
 
@@ -93,7 +117,8 @@ cleanly into two halves with very different readiness:
   already carry parallel `FromChain`/`ToChain`/`ContractAddressChain` fields alongside the
   deprecated EVM-only ones — this groundwork already landed), but nothing exposes an equivalent
   `bidx_*`-shaped RPC surface for it, so the UI's Transactions/Events pages and its global refresh
-  loop have nothing to call against a Stellar node. This is the same gap noted in §11's status box.
+  loop have nothing to call against a Stellar node. This is the same gap ch. 11's own "what's left"
+  section flags.
 
 **Concrete EVM-specific coupling found** (all in `ui/client/src`):
 
@@ -113,24 +138,30 @@ cleanly into two halves with very different readiness:
 - `EVMPrivateDetails.tsx` decodes private EVM calls/receipts via `ptx_decodeCall`/`ptx_decodeEvent`
   (EVM-ABI-only endpoints); there is no equivalent for Soroban invocations, so Sente receipts
   render as raw JSON until a decoder (backend RPC + component) exists.
-- No test or Storybook coverage exists anywhere in `ui/client` today — no regression safety net for
-  any of this, mechanical or not.
+- No test or Storybook coverage exists anywhere in `ui/client` today. That's the one caveat to
+  treating M7 as this plan's strongest agent-driven candidate (§15.2): "mistakes surface as
+  visibly broken UI" only substitutes for a real oracle if a human clicks through every changed
+  flow. U0, below, closes that gap first.
 
-**Internal phasing (~3.5 em total, U2/U3 can proceed in parallel with U1; U4/U5 depend on U1):**
+**Internal phasing (~2.5 em total).** U0 lands first so U2/U3/U5 have a regression oracle before
+touching broad mechanical surface area; U2/U3 can then run parallel to U1; U4/U5 depend on U1.
+Every phase past U0 mirrors an already-working EVM equivalent (an RPC module, a dialog, a decoder,
+fields the backend already emits) — strong oracles for agent-driven execution (§15.2):
 
 | Phase | Content | Depends on |
 |---|---|---|
-| U1 (~1 em) | Backend prerequisite: register a chain-neutral ledger-query RPC surface for `type: stellar` nodes (either extend `BlockIndexer().RPCModule()`'s registration to cover the Stellar ledger indexer, or give it an equivalent `RPCModule()` of its own) — this is `core/go`/M3 follow-up work, not `ui/client` work, but everything in U5 is blocked on it | — |
-| U2 (~0.5 em) | Mechanical frontend fixes: relax/generalize the address/hash/privacy-group-ID validators to accept Soroban/Stellar formats; stop hardcoding `'pente'` in `getPrivacyGroupById`; make the Keys address column detect the active chain's verifier type instead of `eth_address` | none |
-| U3 (~1 em) | Domain-aware UI: generalize the `noto`/`zeto`/`pente` string-switches in `DomainDeploy`/`DomainButtons`/`SmartContractsTable` to add `snoto`/`szeto`/`sente`; add parallel dialog folders under `dialogs/domains/` adapted from the existing Noto/Zeto ones (largely reuse — those dialogs are already identity-string-based, not address-based) | none |
-| U4 (~0.5 em) | Soroban call/event decoder: a chain-neutral decode RPC (mirroring `ptx_decodeCall`/`ptx_decodeEvent` for Soroban args) plus a `SorobanPrivateDetails`-style component alongside `EVMPrivateDetails` | new backend decode endpoint |
-| U5 (~0.5 em) | Ledger-browsing rework: once U1 lands, adapt `interfaces.ts`'s EVM-flavored `ITransaction`/`IEvent` types (`blockNumber`/`nonce`/`transactionIndex`) and the components that render them (`EnrichedTransaction.tsx`, `TransactionOverview.tsx`) to consume the already-existing chain-neutral fields and render chain-appropriate labels | U1 |
+| U0 (~0.25 em) | Baseline test/Storybook scaffolding for the components U2/U3/U5 touch — the regression oracle the rest of this milestone's agent-driven execution relies on, rather than a human eyeballing broken UI. | none |
+| U1 (~0.5 em) | Backend prerequisite: register a chain-neutral ledger-query RPC surface for `type: stellar` nodes (extend `BlockIndexer().RPCModule()`'s registration, or give it an equivalent of its own) — the indexer already writes these chain-neutral rows (ch. 11), so this is wiring, not new design. | — |
+| U2 (~0.25 em) | Mechanical frontend fixes: relax the address/hash/privacy-group-ID validators to accept Soroban/Stellar formats; stop hardcoding `'pente'` in `getPrivacyGroupById`; make the Keys address column detect the active chain's verifier type. | U0 (recommended) |
+| U3 (~0.75 em) | Domain-aware UI: generalize the `noto`/`zeto`/`pente` string-switches in `DomainDeploy`/`DomainButtons`/`SmartContractsTable`; add SNoto/SZeto/Sente dialogs copied and adapted from the existing Noto/Zeto ones (already identity-string-based, largely mechanical) — the largest phase simply because there are three domains to cover. | U0 (recommended) |
+| U4 (~0.5 em) | Soroban call/event decoder mirroring the existing `ptx_decodeCall`/`ptx_decodeEvent` EVM decoders, plus a `SorobanPrivateDetails` component alongside `EVMPrivateDetails` — the SCVal decode logic itself is the one genuinely new piece. | new backend decode endpoint |
+| U5 (~0.25 em) | Ledger-browsing rework: adapt `interfaces.ts`'s EVM-flavored types and the components rendering them to consume chain-neutral fields the backend already emits (ch. 11). | U1, U0 (recommended) |
 
 **Exit criteria:** an operator can deploy and interact with a Stellar-backed domain instance
 (SNoto/SZeto/Sente) through the same UI used for EVM domains today — including browsing that
-instance's transactions/events — without any `0x`-hex address assumption breaking a flow.
-Recommend adding baseline test/Storybook coverage as part of this milestone given none exists
-today, particularly for U3/U5's mechanical-but-broad changes.
+instance's transactions/events — without any `0x`-hex address assumption breaking a flow, with
+U0's test/Storybook coverage actually exercising U2/U3/U5's mechanical-but-broad changes rather
+than relying on manual click-through.
 
 ---
 

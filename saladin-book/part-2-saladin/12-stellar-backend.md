@@ -6,54 +6,55 @@ submitter. Everything here lives in `core/go/pkg/stellarclient`,
 on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the deprecated
 `github.com/stellar/go` — already migrated, no further tracking needed).
 
-> **Implementation status.** Chapter 12's backend is now largely complete on the `saladin` branch.
-> §12.1's `stellarclient` is in place as a thin constructor over the SDK's own `*rpcclient.Client`
-> with no Horizon dependency at all; `baseledger/stellar.Client` implements all six
-> `baseledger.Client` methods; the ed25519 signing extension
-> (`algorithms.EDDSA_ED25519`/`verifiers.STELLAR_ADDRESS`/`signpayloads.OPAQUE_TO_EDDSA`,
-> `toolkit/go/pkg/signer/signers/eddsa.go`) is wired with SLIP-10 HD derivation via the SDK's own
-> `tools/stellar-hd-wallet/crypto/derivation` and verified against the official test vectors.
-> §12.2's submitter covers sequence assignment, channel-account pooling and bootstrap, transaction
-> build/sign/submit, restore-preamble handling, classic-op submission, and
-> `xdr.TransactionResultCode`-based error classification. §12.3's narrow classic-operations codec
-> (`XDR_CLASSIC_OPS`) and trustline pre-flight helper (`CheckTrustline`) are also implemented.
-> §12.4's ingestion path is in place too: `baseledger/stellar.Ingestor` polls `getLedgers`, and
-> `core/go/internal/ledgerindexer/stellar` persists final ledgers into the same indexed tables used
-> by the EVM path. `componentmgr` now boots this Stellar-specific ledger indexer for
-> `baseLedger.type: stellar`, and `publictxmgr` switches submitter construction on
-> `ChainInfo().Kind`.
+> ## How it works today
 >
-> Two gaps flagged in an earlier draft of this status box are now closed. First, the
-> **consumer-facing event-stream side of §12.4** — previously the Stellar ledger indexer was a
-> narrow write/orchestration path with no way for `domainmgr`/`registrymgr`/`txmgr` to register
-> event-stream subscriptions against it (they all resolved a `BlockIndexer` handle that was `nil`
-> on a Stellar node). A new narrow `blockindexer.EventStreamManager` interface — just the
-> registration/management methods those three managers actually call, not the full EVM-shaped
-> `BlockIndexer` — is now embedded into `BlockIndexer` and separately implemented by the Stellar
-> ledger indexer, reusing the same `event_streams`/`event_stream_checkpoints` tables and adding a
-> Stellar-only companion table to preserve event `Emitter`/`Topics`/`Data` (previously discarded
-> after computing just the selector) for live dispatch and catchup. Second, **§12.6's `ttlJanitor`**
-> is implemented — a background task that watches a configurable set of ledger entries and submits
-> batched `extend_ttl` operations when they fall below a threshold. §12.6's local-dev quickstart
-> is also done: a `stellar/quickstart` service now sits in `testinfra/docker-compose-test.yml`
-> beside Besu, with a 3-node Stellar config (`core/go/noderuntests/componenttest/config/
-> stellar.node{1,2,3}.config.yaml`) and a matching Gradle task, giving a docker-compose 3-node
-> network to demo against (no domain contracts run on it yet — see below).
+> Chapter 12's backend is complete and carries real, confirmed on-chain traffic on public Stellar
+> Testnet (ch. 14). §12.1's `stellarclient` is a thin constructor over
+> the SDK's own `*rpcclient.Client`, no Horizon dependency anywhere; `baseledger/stellar.Client`
+> implements all six `baseledger.Client` methods; the ed25519 signing extension
+> (`algorithms.EDDSA_ED25519`/`verifiers.STELLAR_ADDRESS`/`signpayloads.OPAQUE_TO_EDDSA`) is wired
+> with SLIP-10 HD derivation, verified against the official test vectors. §12.2's submitter covers
+> sequence assignment, channel-account pooling and bootstrap, transaction build/sign/submit,
+> restore-preamble handling, classic-op submission, and `xdr.TransactionResultCode`-based error
+> classification. §12.3's classic-operations codec (`XDR_CLASSIC_OPS`) and trustline pre-flight
+> helper (`CheckTrustline`) are implemented. §12.4's ingestion path is in place:
+> `baseledger/stellar.Ingestor` polls `getLedgers`, and `core/go/internal/ledgerindexer/stellar`
+> persists final ledgers into the same indexed tables the EVM path uses; `componentmgr` boots this
+> indexer for `baseLedger.type: stellar`, and `publictxmgr` switches submitter construction on
+> `ChainInfo().Kind`. The consumer-facing event-stream side (§12.4) is also in place: a narrow
+> `blockindexer.EventStreamManager` interface lets `domainmgr`/`registrymgr`/`txmgr` register
+> subscriptions against Stellar-ingested events the same way they do for EVM, reusing the
+> `event_streams`/`event_stream_checkpoints` tables plus a Stellar-only companion table preserving
+> event `Emitter`/`Topics`/`Data` for live dispatch and catchup. §12.6's `ttlJanitor` (batched
+> `extend_ttl` on a configurable watch-list) and local-dev quickstart (`stellar/quickstart` in
+> `testinfra/docker-compose-test.yml`, a 3-node Stellar config, a matching Gradle task) are both
+> implemented and in daily use. §12.5's `registries/stellar` plugin (reading the identity-registry
+> contract's events, mirroring `registries/evm`) is built — see chapter 13.
 >
-> **Still remaining:** fee-bump transactions and the auth-entry-expiry re-endorsement path in
-> §12.2; retention-gap fail-loud behavior and real backfill handling; `SnapshotContractState`; the
-> operator CR additions in §12.6 (deliberately out of scope — the quickstart/3-node setup above is
-> docker-compose + config only, no Kubernetes operator involved); and all live-network acceptance
-> work in §12.7. **§12.5's earlier "decided against" call on `registries/stellar` has since been
-> reversed in chapter 13**: a `registries/stellar` plugin was built, scoped narrowly to reading the
-> identity-registry contract's events (not `SaladinFactory`/instance-discovery, which stays
-> `domainmgr`'s job, matching `registries/evm`'s own precedent) — see chapter 13's Phase 4 for the
-> plugin itself and the accompanying event-selector fix it required. Note that the backend being
-> ready is not the same as a demo: no SNoto/SZeto/Sente contract or domain plugin exists yet (ch.
-> 13/14), so the 3-node network above has nothing domain-specific to run until that separate body
-> of work lands. The verification bar for everything above is unit tests and targeted package
-> tests plus the docker-compose validation described in §12.6; true live-network / end-to-end
-> acceptance exercises (§12.7) have not been run.
+> The bar cleared so far is real: `TestStellarComponentTest`'s full
+> deploy/mint/transfer/lock/prepareUnlock/delegateLock sequence plus a state-resync drill, and
+> Sente's 3-node group genesis/transition, have both been run and confirmed against real public
+> Stellar Testnet (ch. 14).
+>
+> ## What's left for production use / full EVM parity
+>
+> - **Fee-bump transactions and the auth-entry-expiry re-endorsement path** (§12.2) are not yet
+>   implemented — a submission that goes stale past `resubmitLedgers` has no RBF-equivalent yet, and
+>   an auth entry that expires before use has no sequencer-side re-endorsement path.
+> - **Retention-gap fail-loud behavior and real backfill handling** are not built — a checkpoint
+>   that falls behind stellar-rpc's 24h-7d retention window has no defined recovery path yet
+>   (§12.4).
+> - **`SnapshotContractState`** (the `getLedgerEntries`-based state-resync escape hatch, §12.4) is
+>   not implemented.
+> - **The operator (`operator/`) CR additions** in §12.6 — a `Stellar`-flavored node CR or generic
+>   `baseLedger` CR section, and Stellar equivalents of `SmartContractDeployment` — don't exist. The
+>   quickstart/3-node setup runs through plain docker-compose + config YAML, not the Kubernetes
+>   operator; a production, operator-managed Stellar node deployment needs this.
+> - **No CI/nightly job** runs any of this against real public Testnet — every Testnet confirmation
+>   to date has been a manual, one-off run (ch. 14).
+> - **Throughput/chaos acceptance criteria are unverified**: parallel-submission throughput with a
+>   channel-account pool (§12.7 criterion 6), a forced-archival restore-preamble drill (criterion
+>   3), and a fee-bump-on-stale drill (criterion 4) have no automated test yet.
 
 ## 12.1 `stellarclient`
 
@@ -98,7 +99,7 @@ while an anonymous key submits" — the domain supplies **pre-signed auth entrie
 > `signature_expiration_ledger`. The sequencer must set it generously (e.g. now + 1000 ledgers ≈
 > 100 min), and the submitter must detect expiry and bounce the transaction back to the
 > sequencer for **re-endorsement** — a new sequencer error path that must be implemented and
-> tested (risk R16, ch. 17).
+> tested (risk R15, ch. 16).
 
 ## 12.2 The Stellar `ChainSubmitter`
 
@@ -146,7 +147,7 @@ operations).
   `PayloadEncoding.XDR_CLASSIC_OPS` — an XDR-encoded list of classic operations for
   `UnsignedChainTx`. It rides the same submitter path (sequence assignment, fees, fee-bump on
   stale) but **skips simulation/footprint entirely** (classic ops have neither). ⚠️
-  Scope-creep warning (risk R22): this is for account/trustline plumbing, not a gateway to
+  Scope-creep warning (risk R20, ch. 16): this is for account/trustline plumbing, not a gateway to
   classic-Stellar features — payments channels, offers/DEX, claimable balances stay out of the
   BLI.
 - **Account & trustline utilities** (node-level, exposed as admin RPC/ops tooling):
@@ -235,24 +236,41 @@ operations).
 
 ## 12.7 Acceptance criteria
 
-1. On a local quickstart network: `ptx_sendTransaction` (public, Soroban invoke) →
-   receipt with correct TxID; visible via `bidx_`-equivalent ledger queries.
-2. Third-party pre-signed auth entry flow: transaction sourced by channel account A executes an
-   op authorized by identity B's auth entry; on-chain source ≠ B anywhere.
-3. Forced-archival chaos test: expire a target entry (quickstart TTL manipulation), submit a
-   touching transaction → automatic restore preamble → success; `restore_tx_hash` populated.
-4. Fee-bump path: artificially underprice inclusion fee → stale detection → fee-bump →
-   inclusion.
-5. Retention-gap drill: stop the indexer > retention, restart → loud failure without backfill
-   config; successful catch-up once an RPC/indexer/archive-based backfill source is configured
-   (no Horizon involved - see §12.4).
-6. Throughput: ≥ N parallel in-flight submissions with a channel-account pool of N, no
-   `txBAD_SEQ` storms.
-7. Sequencer re-endorsement path on auth-entry expiry exercised by an integration test.
-8. Classic-op path: a `ChangeTrust` submitted via `XDR_CLASSIC_OPS` (no simulation) confirms
-   through the same submitter/indexer machinery; fee-bump on stale works for classic txs too.
-9. Trustline pre-flight: `CheckTrustline` correctly distinguishes missing / unauthorized /
-   limit-exhausted trustlines against a quickstart network with an `AUTH_REQUIRED` test asset.
+1. ◐ **Partial.** On a local quickstart network: `ptx_sendTransaction` (public, Soroban invoke) →
+   receipt with correct TxID — **met**, proven repeatedly by the live SNoto/Sente demos (ch. 14).
+   Visible via `bidx_`-equivalent ledger queries — **not met**: that RPC surface is registered for
+   `type: evm` nodes only (ch. 11's "what's left"), so no equivalent query path exists for Stellar
+   yet even though the indexer already writes chain-neutral rows.
+2. ✅ **Met.** Third-party pre-signed auth entry flow: transaction sourced by channel account A
+   executes an op authorized by identity B's auth entry; on-chain source ≠ B anywhere — this is
+   exactly SNoto's notary-authorized transfer/mint path, proven live on quickstart and real
+   Testnet (ch. 14 §14.1).
+3. ❌ **Not met.** Forced-archival chaos test: expire a target entry (quickstart TTL manipulation),
+   submit a touching transaction → automatic restore preamble → success; `restore_tx_hash`
+   populated. The restore-preamble mechanism itself is implemented (§12.2), but this specific
+   chaos drill has never been run.
+4. ❌ **Not met.** Fee-bump path: artificially underprice inclusion fee → stale detection →
+   fee-bump → inclusion. Fee-bump submission isn't implemented yet (§12.2's "what's left").
+5. ❌ **Not met.** Retention-gap drill: stop the indexer > retention, restart → loud failure
+   without backfill config; successful catch-up once an RPC/indexer/archive-based backfill source
+   is configured. Retention-gap fail-loud/backfill behavior isn't built yet (§12.4's "what's left").
+6. ❌ **Not met, mechanism partially there.** Throughput: ≥ N parallel in-flight submissions with a
+   channel-account pool of N, no `txBAD_SEQ` storms. The channel-account pool itself is real and in
+   daily use (real Testnet demos configure and exercise it), but no formal throughput measurement
+   against this criterion's exact bar has been run.
+7. ❌ **Not met.** Sequencer re-endorsement path on auth-entry expiry exercised by an integration
+   test. This path has no implementation yet (§12.1's own callout, corrected this pass — it is not
+   a "tested path" as risk R7 previously, incorrectly, implied).
+8. ◐ **Partial.** Classic-op path: a `ChangeTrust` submitted via `XDR_CLASSIC_OPS` (no simulation)
+   confirms through the same submitter/indexer machinery — the codec and submission path exist
+   (§12.3), but "fee-bump on stale works for classic txs too" can't be met until fee-bump itself
+   exists (criterion 4).
+9. ◐ **Partial.** Trustline pre-flight: `CheckTrustline` correctly distinguishes missing /
+   unauthorized / limit-exhausted trustlines against a quickstart network with an `AUTH_REQUIRED`
+   test asset. The Go-side `CheckTrustline` helper is implemented (§12.3), and the equivalent
+   rejection scenarios are unit-tested at the contract level (ch. 13 §13.7, criteria 7–9) — but
+   unlike mint/transfer/lock, shield/unshield wasn't part of the live 3-node Testnet demo, so this
+   exact integration path is unproven outside unit tests.
 
 ---
 

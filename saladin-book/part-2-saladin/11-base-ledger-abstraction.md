@@ -4,45 +4,55 @@ This chapter specifies the core refactor: making Paladin's engine chain-agnostic
 backend (ch. 12) can sit beside the EVM one. It is written to be executable by a coding agent:
 concrete packages, interfaces, proto messages, and migration steps.
 
-> **Implementation status.** The `baseledger` package, the EVM `Client` implementation, the
-> `ChainAddress` type, the proto v2 additions (§11.6), and the `ChainSubmitter` seam (§11.3) are
-> implemented on the `saladin` branch. Chapter 12's backend slice has also landed, which pulled
-> forward part of §11.4's manager migration: `DBPublicTxn.From`/`.To` (and the
-> `InMemoryTxStateReadOnly` interface) are now `pldtypes.ChainAddress`, discovered as a genuine
-> blocking requirement for a Stellar `ChainSubmitter` to resolve a real signing address from a
-> persisted transaction record, not merely a nice-to-have. The boundary conversions back to the
-> EVM-shaped `pldapi.PublicTx` API type (which remains `EthAddress`-typed, out of scope) are
-> fallible and documented at each call site (`mapPersistedTransaction`, the submission-writer
-> sequencer handoff, etc.). **Correction, superseding the paragraph as originally written**: the
-> migration went further than "deliberately left `EthAddress`-typed" — chapter 14's Sente work
-> needed a real, confirmed-on-chain submission path end to end, which required
-> `transaction_orchestrator.go`'s `signingAddress` field (and the nonce-allocation/ordering-key
-> lookups keyed off it) to become genuinely `pldtypes.ChainAddress`-typed too, plus a new
-> `filters.ChainAddressField` for `contractAddress`/`to` query filters and `groupmgr`'s own
-> `ContractAddress` fields. This is still **partial and opportunistic, not a completed top-down M1
-> sweep**: each of these was migrated because a concrete Stellar flow (M3/M4/M6) hit it as a real
-> blocker, not as part of a planned pass over the ~200 files this refactor eventually touches: the
-> nonce-allocation/balance-check cluster's numeric logic itself, most receipt/query-path structs,
-> and anything not yet exercised by a live Stellar flow remain `EthAddress`-typed or unaudited.
-> Three design details evolved from this chapter's original text during implementation — noted
-> inline where they occur (§11.3's `ChainSubmitter` signatures; §11.4's `ChainAddress` storage
-> format; the manager migration just described). The `ledgerindexer` split sketched in §11.3 is now
-> partially realized for Stellar as a narrow ingestor/writer path rather than a full chain-neutral
-> consumer interface; the remaining work is the event-stream/query/discovery side described in
-> Chapter 12, not basic `type: stellar` node boot. **Also still outstanding**: the query-facing
-> `bidx_*` RPC surface (`BlockIndexer().RPCModule()`) is only registered for `type: evm` nodes today
-> (`componentmgr/manager.go`) — a `type: stellar` node has no equivalent registered, so nothing
-> that talks to that RPC namespace (including the operator UI's Transactions/Events views, §15.6)
-> can query a Stellar node's ledger data yet, even though the underlying indexer writes chain-
-> neutral rows already.
+> ## How it works today
+>
+> The `baseledger` package, the EVM `Client` implementation, the `ChainAddress` type, the proto v2
+> additions (§11.6), and the `ChainSubmitter` seam (§11.3) are implemented on the `saladin` branch
+> and carry real Stellar traffic (ch. 12/13/14). `ChainAddress` is a string-tagged union (§11.4),
+> not the binary/discriminator-byte encoding originally sketched — existing EVM JSON-RPC payloads
+> stay byte-identical, and no address-column migration was needed.
+>
+> The internal-manager migration from `EthAddress` to `ChainAddress` is **opportunistic, not a
+> completed top-down sweep**: each field was migrated because a concrete Stellar flow (M3/M4/M6)
+> hit it as a real blocker, not as part of a planned pass over the ~200 files this refactor
+> eventually touches. Migrated so far: `DBPublicTxn.From`/`.To`, `InMemoryTxStateReadOnly`,
+> `transaction_orchestrator.go`'s `signingAddress` (and the nonce-allocation/ordering-key lookups
+> keyed off it), `filters.ChainAddressField` (`contractAddress`/`to` query filters), and
+> `groupmgr`'s `ContractAddress` fields. Boundary conversions back to the EVM-shaped
+> `pldapi.PublicTx` API type (which stays `EthAddress`-typed by design) are fallible and documented
+> at each call site.
+>
+> The `ledgerindexer` split (§11.3) is partially realized for Stellar: a narrow ingestor/writer
+> path exists and is in production use (ch. 12), but not yet the full chain-neutral consumer
+> interface envisioned here.
+>
+> ## What's left for production use / full EVM parity
+>
+> - **The M1 internal-manager migration itself** (~1.5 em, ch. 15's own estimate once the
+>   compiler-guided portion of the sweep is accounted for — see ch. 15 §15.2) has not started as a
+>   planned sweep — only the opportunistic subset above is done. The
+>   nonce-allocation/balance-check cluster's numeric logic, most receipt/query-path structs, and
+>   anything not yet exercised by a live Stellar flow remain `EthAddress`-typed or unaudited. Rule
+>   once it begins: **zero behavior change**, enforced by golden tests capturing EVM JSON-RPC
+>   payloads byte-for-byte before/after.
+> - **Golden-payload test coverage is a single instance today** (`golden_payload_test.go` fixes
+>   `mapPersistedTransaction`'s JSON shape) and needs extending to receipts, queries, and other
+>   managers' JSON payloads as the M1 migration proceeds.
+> - **The `bidx_*` query-facing RPC surface is EVM-only.** `BlockIndexer().RPCModule()` is
+>   registered only for `type: evm` nodes (`componentmgr/manager.go`); a `type: stellar` node has no
+>   equivalent registered, so nothing that talks to that RPC namespace — including the operator
+>   UI's Transactions/Events views (§15.6) — can query a Stellar node's ledger data yet, even
+>   though the underlying indexer already writes chain-neutral rows.
+> - **The full consumer-facing side of the `ledgerindexer` split** (event-stream/query/discovery,
+>   not just ingestion) remains chapter 12's open item, not this chapter's.
 
 ## 11.1 Design principles
 
 1. **One node, one chain profile (initially).** A node is configured for `evm` *or* `stellar`.
-   This keeps the DB single-interpretation and the refactor bounded. The interop work (ch. 15)
-   later pluralizes the config to a `baseLedgers` map — the BLI interfaces defined here are
-   identical in both shapes, so nothing in this chapter is throwaway. (This is the deliberate
-   reconciliation between the port plan and the interop plan; both chapters flag it.)
+   This keeps the DB single-interpretation and the refactor bounded. A future cross-ledger
+   capability would pluralize the config to a `baseLedgers` map — the BLI interfaces defined here
+   are identical in both shapes, so nothing in this chapter forecloses it — but no such capability
+   is designed or scheduled in this plan (ch. 10 §10.5).
 2. **Additive, upstreamable changes.** Existing EVM behavior — including JSON-RPC payload bytes —
    must not change. Every proto change is additive. Existing compiled EVM domains must run
    unmodified. This is what keeps the fork rebase-able on upstream Paladin.
@@ -268,7 +278,8 @@ negligible cost). This book's plan and the shipped code diverged here; the plan 
 to match reality rather than the reverse.
 
 The internal-manager `EthAddress` → `ChainAddress` migration itself (the single largest mechanical
-refactor of the port, ~2.5 em) has **not** started — it remains milestone M1's scope (ch. 16), with
+refactor of the port, ~1.5 em per ch. 15 §15.2) has **not** started — it remains milestone M1's
+scope (ch. 15; the ~200+-file blast radius is also risk R8, ch. 16), with
 an iron rule once it begins: **zero behavior change**, enforced by golden tests capturing EVM
 JSON-RPC payloads byte-for-byte before/after (an initial golden-payload test already exists —
 `core/go/internal/publictxmgr/golden_payload_test.go` — fixing `mapPersistedTransaction`'s JSON

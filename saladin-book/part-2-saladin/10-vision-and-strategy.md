@@ -3,34 +3,88 @@
 ## 10.1 Goal
 
 **Saladin**: the Paladin engine, feature-complete per chapter 9, operating against the Stellar
-network with Soroban smart contracts as its base ledger — plus interoperability with EVM-based
-Paladin networks (chapter 15).
+network with Soroban smart contracts as its base ledger. Cross-ledger interoperability with
+EVM-based Paladin networks is a goal the BLI abstraction is deliberately designed not to foreclose
+(§10.2's "dual-ledger nodes"), but no specific interop mechanism is designed or scheduled in this
+plan — see §10.5's scope note.
 
-## 10.2 Strategy decision: abstraction layer first
+## 10.2 Strategy: abstraction layer first
 
-Two ways to get there:
+Saladin ports Paladin to Stellar by introducing a chain-agnostic **Base Ledger Interface (BLI)**
+into Paladin core, refactoring the EVM code behind it, and implementing Stellar as a second BLI
+backend — rather than forking the repo and replacing `ethclient`/`blockindexer`/`publictxmgr`/
+Solidity in place. This is what chapters 11–14 build, and have proven live against real public
+Stellar Testnet.
 
-| | **A. Abstraction-first (chosen)** | B. Pragmatic fork |
-|---|---|---|
-| Approach | Introduce a chain-agnostic **Base Ledger Interface (BLI)** into Paladin core; refactor the EVM code behind it; implement a Stellar backend as a second implementation | Fork the repo; replace ethclient/blockindexer/publictxmgr/Solidity in place with Stellar equivalents |
-| Time to first demo | Slower (refactor before features) | Faster |
-| Upstream tracking | Yes — refactor is upstreamable (benefits Paladin for any future chain); merges stay feasible | Diverges immediately and permanently |
-| EVM + Stellar coexistence | One codebase, both backends → dual-ledger nodes (ch. 15) become possible | Two diverging codebases; interop requires cross-codebase protocol freeze |
-| Long-term maintenance | One engine | Two engines |
+The abstraction buys two things a fork forecloses: the refactor is upstreamable (LF Decentralized
+Trust governance makes this a well-motivated contribution, not architectural debt Paladin has to
+carry alone), keeping merges feasible instead of diverging immediately and permanently; and it
+keeps EVM and Stellar in **one engine**, making dual-ledger nodes possible, instead of two
+codebases that would need a cross-codebase protocol freeze just to interoperate. Time-to-demo
+pressure is treated with milestone design (chapter 15), not by trading this away for a faster fork.
 
-The fork is faster to a demo and slower to everything else. Since interop with EVM Paladin is an
-explicit goal, and since LF Decentralized Trust governance makes upstreaming a well-motivated
-abstraction realistic, **we choose A** and treat time-to-demo pressure with milestone design
-(chapter 16) rather than architectural debt.
+## 10.3 POC and demo
 
-The load-bearing fact from Part 1: **the chain coupling is concentrated** in four places —
-`ethclient`, `blockindexer`, `publictxmgr`, and the shared types/protos. The distributed
-sequencer, state store, transport mesh, registries, key manager, and privacy groups are already
-chain-agnostic. We attack the four coupled areas in leverage order: **protos first** (every
-domain compiles against them), **types second** (pervasive but mechanical), then the three
-subsystems.
+SNoto and Sente have both been run end to end against real public Stellar Testnet, not just local
+quickstart — the commands below reproduce those runs. Everything lives under
+`soroban/scripts/testnet-demo.sh` and drives the same real Go/Java test harnesses chapters 12 and
+14 describe (`TestStellarComponentTest`, `TestSenteThreeNodeHarness`), not separate demo-only code.
 
-## 10.3 A Soroban primer for EVM engineers
+**Prerequisites:** the `stellar` CLI and `python3` on PATH, and this repo's Soroban contracts
+already built (`./gradlew :soroban:build`, producing `soroban/artifacts/*.wasm` — the script only
+deploys, it doesn't compile).
+
+**One command:**
+
+```bash
+cd soroban/scripts
+./testnet-demo.sh [snoto|sente|all]   # defaults to "all"
+```
+
+- `snoto` runs SNoto's real 3-node harness (ch. 12, ch. 14 §14.1): deploy → mint → transfer →
+  lock → prepareUnlock → delegateLock, plus a restart/resync drill, genuinely on-chain. ~174s on
+  real Testnet.
+- `sente` runs Sente's real 3-node harness (ch. 14 §14.3): three genuinely separate node
+  processes, one Sente group member per node, real cross-process gRPC transport, a confirmed
+  on-chain group genesis and transition. ~73s on real Testnet.
+- `all` runs both, sequentially.
+
+**What the script handles automatically:**
+
+- **Reset detection.** Testnet wipes its state roughly quarterly (ch. 16, R17). The script probes
+  whether a previously-deployed fixture address still resolves and redeploys
+  `SaladinFactory`/`SNotoFactory`/`SenteFactory` only when it doesn't — an unreset run is a no-op
+  here, not a redeploy every time.
+- **Funding.** The fixtures deployer is funded via `friendbot`; each demo's own test harness
+  resolves and funds its own node-level identities (root/notary/party/member accounts) as they
+  come up, since those are only known once the harness itself starts.
+- **Live-state correctness.** The script forces genuine re-execution against live network state
+  (Go's `-count=1`, Gradle's `--rerun`) rather than returning a cached "nothing changed" result —
+  both harnesses exercise a real blockchain, not a fixture the test runner can treat as immutable.
+
+**Running against local quickstart instead:** for repeated iteration without touching public
+Testnet resources, the same test targets run against the local `stellar/quickstart`
+docker-compose network (ch. 12 §12.6) directly, without `testnet-demo.sh`'s environment overrides
+— e.g. for SNoto:
+
+```bash
+cd core/go
+go test -tags stellar_quickstart ./noderuntests/componenttest/... -run TestStellarComponentTest -count=1 -timeout 20m -v
+```
+
+Sente's harness runs the same way via its own Gradle test task (`core/java/build.gradle`, ch. 14
+§14.3), letting `:testinfra:startTestInfra`/`:soroban:deployStellarFixtures` bring up and seed
+local quickstart automatically instead of the script's reset-aware Testnet deploy path.
+
+**One thing to know about repeat runs:** Sente's on-chain group address is deterministic
+(`salt = sha256(members)`, ch. 13 §13.5) so that independently-assembling members agree on an
+address with no prior coordination. Re-running the Sente demo against the *same* (unreset)
+fixtures with the same member keys therefore fails on the second and later attempts with
+`Storage::ExistingValue` — the address-collision-avoidance scheme working as intended, not
+flakiness (ch. 14 §14.3). A genuinely fresh Sente run needs either fresh fixtures or a Testnet
+reset.
+
+## 10.4 A Soroban primer for EVM engineers
 
 Everything below was verified against Stellar documentation as of **July 2026** (Protocol 26
 "Yardstick", mainnet since May 2026). Terms defined here are used throughout Part 2.
@@ -137,20 +191,21 @@ The circuits and Go proving stack port unchanged; only the verifier contract is 
 | Re-orgs, confirmations | None (SCP finality) | ✅ simpler |
 | Unlimited-ish state, no rent | Rent, TTL, archival | ❌ ch. 13 |
 
-## 10.4 Scope
+## 10.5 Scope
 
 In scope for the Part 2 plan: the BLI refactor; the Stellar backend; Soroban contracts (SNoto,
-SZeto, SAtom, factory/registry); domain ports; Sente design; EVM⇄Stellar interop; delivery plan
-and risks. Out of scope: Stellar "classic" (non-contract) assets as Paladin domains (a plausible
-follow-on — a Noto-style domain over Stellar trustlines — noted as future work), and mainnet
+SZeto, SAtom, factory/registry); domain ports; Sente; delivery plan and risks. Out of scope:
+any specific cross-ledger settlement mechanism between an EVM Paladin network and a Stellar one
+(the BLI keeps this possible in principle — §10.2 — but no design here commits to a mechanism,
+HTLC-based or otherwise); Stellar "classic" (non-contract) assets as Paladin domains (a plausible
+follow-on — a Noto-style domain over Stellar trustlines — noted as future work); and mainnet
 production hardening beyond the testing strategy of ch. 16.
 
-## 10.5 A note on naming
+## 10.6 A note on naming
 
 "Saladin" is this book's working name for the ported system, chosen for memorability. Component
 names: **SNoto**, **SZeto**, **SAtom**, **Sente** (Pente-analogue), **BLI** (Base Ledger
-Interface), **interopmgr** (cross-ledger coordinator, ch. 15). Rename freely at productization;
-the architecture doesn't care.
+Interface). Rename freely at productization; the architecture doesn't care.
 
 ---
 

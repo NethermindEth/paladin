@@ -51,13 +51,14 @@ settlement), and **Sente** (private Soroban execution, the analogue of Pente's p
 | 15 | [Delivery plan](part-2-saladin/15-delivery-plan.md) | Milestones, effort, testing strategy, CI, team shape, decision log |
 | 16 | [Risk map](part-2-saladin/16-risk-map.md) | 21 development risks with likelihood, impact, mitigation, early-warning indicators |
 | 17 | [Glossary](part-2-saladin/17-glossary.md) | Every term defined in one place (covers the whole book) |
+| 18 | [Institutional demo: interbank repo](part-2-saladin/18-institutional-demo-repo.md) | A business case for institutions: an atomic interbank repo settling a digital bond (SNoto), a private bilateral agreement (Sente), and real USDC (a classic Stellar asset) in one transaction |
 
 ## Conventions
 
 - **"Paladin"** means the engine as it exists in this repository (EVM base ledger).
 - **"Saladin"** means the same engine operating against Stellar/Soroban after the port.
 - **"BLI"** — the Base Ledger Interface, the chain-agnostic abstraction introduced in chapter 11.
-- Risk-register entries use the **R1…** ID prefix (ch. 17).
+- Risk-register entries use the **R1…** ID prefix (ch. 16).
 - Effort estimates use **"em"** = engineer-month.
 - Stellar facts in this book were verified against the live network documentation as of
   **July 2026** (Protocol 26 "Yardstick", mainnet since May 2026). Anything that may drift is
@@ -65,7 +66,9 @@ settlement), and **Sente** (private Soroban execution, the analogue of Pente's p
 
 ## Status
 
-This book is a plan, not a report: Part 1 documents code that exists; Part 2 describes code
-that does not exist yet. Where it shows Go, Rust, protobuf, or YAML, treat it as a
-design-level specification — final signatures will be settled in code review against the tree at
-implementation time.
+Part 1 documents code that exists. Part 2 started as a plan for code that didn't — most of it now
+does: SNoto and Sente both run live end to end, proven against real public Stellar Testnet, not
+just local quickstart (chapters 12/14 have the details; chapter 15 tracks what's left for
+production readiness and full EVM parity). Where a chapter still shows Go, Rust, protobuf, or YAML
+for something not yet built, treat it as a design-level specification — final signatures will be
+settled in code review against the tree at implementation time.

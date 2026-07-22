@@ -102,10 +102,6 @@ Consolidated definitions for the whole book. Terms are also defined at first use
   (P-256)** — WebAuthn's (RIP-7212, Soroban host fn).
 - **HD derivation (BIP-32/SLIP-0010)** — deriving key trees from one seed;
   **BIP-39** — mnemonic seeds.
-- **HTLC (hashed timelock contract)** — lock claimable with a hash preimage before a deadline,
-  refundable after; two HTLCs sharing a hash compose into an atomic swap. **Preimage / hashlock
-  / timelock** — its components. **Griefing** — costlessly forcing a counterparty's capital to
-  idle. **Free option** — the claim-or-abandon optionality the secret-holder enjoys.
 - **mTLS** — mutual TLS: both connection ends present certificates.
 
 ## Paladin terms
@@ -149,13 +145,8 @@ Consolidated definitions for the whole book. Terms are also defined at first use
   analogue) over canonical XDR.
 - **SaladinFactory** — the on-chain contract-discovery registry (emits registration events).
 - **ttlJanitor** — the node task keeping domain ledger entries' TTLs extended.
-- **interopmgr** — the cross-ledger settlement coordinator module (ch. 15).
-- **SettlementPayload** — the canonical dual-leg hash endorsers sign in cross-ledger settlement.
-- **HTLCDelegate / htlc-delegate** — the EVM/Soroban lock-delegate contracts for cross-ledger
-  swaps.
-- **Δ (delta)** — the mandatory gap between the two HTLC deadlines (`T_A − T_B ≥ Δ`).
 - **em** — engineer-month.
 
 ---
 
-*Back to the [Table of contents](../README.md).*
+*Next: [Chapter 18 — Institutional demo: interbank repo](18-institutional-demo-repo.md)*
