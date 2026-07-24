@@ -11,6 +11,10 @@
 # Usage: ./repo-demo.sh [options]
 #   --bond-amount N       Bond notional Bank A holds and repos to Bank B (default: 1000000)
 #   --cash-amount N       Shielded cash notional Bank B pays Bank A for it (default: 500000)
+#   --rate N              Repo rate in basis points, agreed privately (default: 500, i.e. 5.00%)
+#   --maturity-days N     Days from now the repo matures, converted to a real future ledger
+#                         sequence number (default: 7)
+#   --haircut N           Repo haircut in basis points, agreed privately (default: 200, i.e. 2.00%)
 #   --interactive         Pause with a prompt between the near leg and the far leg, so a live
 #                         audience can inspect state before the repo matures (default: on)
 #   --no-interactive      Run straight through with no pauses (e.g. for automated verification)
@@ -27,6 +31,9 @@ cd "$(dirname "$0")/.."
 
 bond_amount="1000000"
 cash_amount="500000"
+rate_bps="500"
+maturity_days="7"
+haircut_bps="200"
 interactive="true"
 log_level="info"
 
@@ -38,6 +45,18 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--cash-amount)
 		cash_amount="$2"
+		shift 2
+		;;
+	--rate)
+		rate_bps="$2"
+		shift 2
+		;;
+	--maturity-days)
+		maturity_days="$2"
+		shift 2
+		;;
+	--haircut)
+		haircut_bps="$2"
 		shift 2
 		;;
 	--interactive)
@@ -53,7 +72,7 @@ while [[ $# -gt 0 ]]; do
 		shift 2
 		;;
 	*)
-		echo "usage: $0 [--bond-amount N] [--cash-amount N] [--interactive|--no-interactive] [--log-level LEVEL]" >&2
+		echo "usage: $0 [--bond-amount N] [--cash-amount N] [--rate N] [--maturity-days N] [--haircut N] [--interactive|--no-interactive] [--log-level LEVEL]" >&2
 		exit 1
 		;;
 	esac
@@ -110,9 +129,9 @@ else
 	python3 -c "
 import json, sys
 f = json.load(open(sys.argv[1]))
-for k in ('saladinFactoryAddress', 'notoSaladinFactoryAddress', 'cashNotoSaladinFactoryAddress', 'snotoFactoryAddress', 'senteFactoryAddress', 'testUsdcSacAddress'):
+for k in ('saladinFactoryAddress', 'notoSaladinFactoryAddress', 'cashNotoSaladinFactoryAddress', 'snotoFactoryAddress', 'senteFactoryAddress', 'repoTermsSaladinFactoryAddress', 'repoTermsFactoryAddress', 'testUsdcSacAddress'):
     print('id', f[k])
-for k in ('snotoWasmHash', 'senteWasmHash'):
+for k in ('snotoWasmHash', 'senteWasmHash', 'repoTermsWasmHash'):
     print('wasm-hash', f[k])
 " "$fixtures_file" | while read -r flag value; do
 		stellar contract extend --"$flag" "$value" --ledgers-to-extend 2500000 --source "$deployer" --network testnet >/dev/null 2>&1 || true
@@ -128,7 +147,7 @@ stellar keys fund "$deployer" --network testnet
 
 echo "Fixtures ready at $fixtures_file. Node-level identity funding happens inside the Java test"
 echo "harness (NodeProcessHarness.resolveAndFundVerifier) as each identity resolves."
-echo "Repo terms: bond=$bond_amount, cash=$cash_amount, interactive=$interactive"
+echo "Repo terms: bond=$bond_amount, cash=$cash_amount, rate=${rate_bps}bps, maturity=${maturity_days}d, haircut=${haircut_bps}bps, interactive=$interactive"
 
 # --interactive's pause (between the near leg and the far leg) can't be a plain stdin readLine() in
 # the test itself: Gradle's `Test` task (unlike `Exec`/`JavaExec`) has no standardInput property, so
@@ -183,6 +202,9 @@ trap cleanup_pause EXIT
 	-Dpaladin.test.stellar.pollIterations=360 \
 	-Dpaladin.demo.bondAmount="$bond_amount" \
 	-Dpaladin.demo.cashAmount="$cash_amount" \
+	-Dpaladin.demo.rateBps="$rate_bps" \
+	-Dpaladin.demo.maturityDays="$maturity_days" \
+	-Dpaladin.demo.haircutBps="$haircut_bps" \
 	-Dpaladin.demo.interactive="$interactive" \
 	-Dpaladin.demo.pauseDir="$pause_dir" \
 	-Dpaladin.demo.logLevel="$log_level")

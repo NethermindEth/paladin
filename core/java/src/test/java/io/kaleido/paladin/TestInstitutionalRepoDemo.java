@@ -68,6 +68,9 @@ public class TestInstitutionalRepoDemo {
             @JsonProperty String snotoWasmHash,
             @JsonProperty String senteFactoryAddress,
             @JsonProperty String senteWasmHash,
+            @JsonProperty String repoTermsSaladinFactoryAddress,
+            @JsonProperty String repoTermsFactoryAddress,
+            @JsonProperty String repoTermsWasmHash,
             @JsonProperty String testUsdcSacAddress,
             @JsonProperty String testUsdcIssuerAddress
     ) {
@@ -84,6 +87,9 @@ public class TestInstitutionalRepoDemo {
         assertNotNull(fixtures.cashNotoSaladinFactoryAddress());
         assertNotNull(fixtures.snotoFactoryAddress());
         assertNotNull(fixtures.senteFactoryAddress());
+        assertNotNull(fixtures.repoTermsSaladinFactoryAddress());
+        assertNotNull(fixtures.repoTermsFactoryAddress());
+        assertNotNull(fixtures.repoTermsWasmHash());
         assertNotNull(fixtures.testUsdcSacAddress());
         assertNotNull(fixtures.testUsdcIssuerAddress());
         return fixtures;
@@ -92,6 +98,7 @@ public class TestInstitutionalRepoDemo {
     private static final String JNA_LIBRARY_PATH = NodeProcessHarness.jnaLibraryPath(
             new File("../.."), "core/go/build/libs", "toolkit/go/build/libs",
             "domains/sente/target/release", "domains/noto/build/libs",
+            "domains/repo-terms/build/libs",
             "transports/grpc/build/libs", "registries/static/build/libs");
 
     private static String networkPassphrase() {
@@ -273,7 +280,22 @@ public class TestInstitutionalRepoDemo {
             put("plugin", sentePlugin);
             put("config", senteConfig);
         }};
-        configMap.put("domains", Map.of("noto-bond", notoBondDomain, "noto-cash", notoCashDomain, "sente", senteDomain));
+        Map<String, Object> repoTermsPlugin = new HashMap<>() {{
+            put("type", "c-shared");
+            put("library", "repo-terms");
+        }};
+        Map<String, Object> repoTermsConfig = new HashMap<>() {{
+            put("stellarRepoTermsFactoryAddress", fixtures.repoTermsFactoryAddress());
+            put("stellarRepoTermsWasmHash", fixtures.repoTermsWasmHash());
+        }};
+        Map<String, Object> repoTermsDomain = new HashMap<>() {{
+            put("registryAddress", fixtures.repoTermsSaladinFactoryAddress());
+            put("plugin", repoTermsPlugin);
+            put("config", repoTermsConfig);
+        }};
+        configMap.put("domains", Map.of(
+                "noto-bond", notoBondDomain, "noto-cash", notoCashDomain, "sente", senteDomain,
+                "repo-terms", repoTermsDomain));
 
         Map<String, Object> transportPlugin = new HashMap<>() {{
             put("type", "c-shared");
@@ -398,6 +420,26 @@ public class TestInstitutionalRepoDemo {
                         Map.of("name", "recipient", "type", "string"),
                         Map.of("name", "amount", "type", "uint256"),
                         Map.of("name", "data", "type", "bytes")),
+                "outputs", List.of()
+        ));
+    }
+
+    private static List<Map<String, Object>> repoTermsConstructorABI() {
+        return List.of(Map.of(
+                "type", "constructor",
+                "inputs", List.of(
+                        Map.of("name", "bankA", "type", "string"),
+                        Map.of("name", "bankB", "type", "string"))
+        ));
+    }
+
+    private static List<Map<String, Object>> setTermsABI() {
+        return List.of(Map.of(
+                "type", "function", "name", "setTerms",
+                "inputs", List.of(
+                        Map.of("name", "rateBps", "type", "uint256"),
+                        Map.of("name", "maturityLedger", "type", "uint256"),
+                        Map.of("name", "haircutBps", "type", "uint256")),
                 "outputs", List.of()
         ));
     }
@@ -717,6 +759,34 @@ public class TestInstitutionalRepoDemo {
         return txID;
     }
 
+    // Ch.18 §18.3/§18.7: deploys a fresh repo-terms instance (chapter 18's own private state-ID-
+    // echo domain, mirroring SNoto's lockInfoV1 pattern) for Bank A/Bank B, then agrees the real
+    // rate/maturity/haircut - a bilateral transaction requiring BOTH banks' independent endorsement
+    // (domains/repo-terms's own ENDORSE/threshold=2 attestation plan, core sequencer machinery
+    // handles this transparently, no pgroup/Sente involvement needed - unlike the near/far leg
+    // transitions below, this is a plain ptx_sendTransaction, the same shape as noto-bond/noto-cash).
+    // Deliberately NOT require_auth-gated on-chain (see soroban/contracts/repo-terms/src/lib.rs's
+    // own set_terms doc comment) - the trust boundary is this bilateral endorsement plan itself.
+    private String agreeRepoTerms(JsonRpcClient client, int rpcPort, String from, String bankALookup, String bankBLookup,
+                                   String rateBps, int maturityDays, String haircutBps) throws Exception {
+        Map<String, Object> constructorParams = Map.of("bankA", bankALookup, "bankB", bankBLookup);
+        String deployTx = submitAndWait(client, rpcPort, "repo-terms", null, from, repoTermsConstructorABI(), null, constructorParams);
+        Map<?, ?> deployReceipt = client.request("ptx_getTransactionReceipt", deployTx);
+        String repoTermsAddress = (String) deployReceipt.get("contractAddress");
+        assertNotNull(repoTermsAddress, "no contractAddress on repo-terms deploy receipt");
+        narrate(client, "Repo-terms instance deployed for " + bankALookup + "/" + bankBLookup, deployTx);
+
+        // "N days from now" -> a real future ledger sequence number, same conversion this demo
+        // already does for the SAC approve's own expiration_ledger (getLatestLedger() + offset).
+        int maturityLedger = getLatestLedger() + (maturityDays * 24 * 3600 / 5);
+        Map<String, Object> setTermsParams = Map.of(
+                "rateBps", rateBps, "maturityLedger", String.valueOf(maturityLedger), "haircutBps", haircutBps);
+        String setTermsTx = submitAndWait(client, rpcPort, null, repoTermsAddress, from, setTermsABI(), "setTerms", setTermsParams);
+        narrate(client, "Repo terms agreed (rate=" + rateBps + "bps, haircut=" + haircutBps + "bps, maturityLedger="
+                + maturityLedger + ") - only an opaque state ID reaches the chain", setTermsTx);
+        return repoTermsAddress;
+    }
+
     @Test
     void interbankRepoSettlesAtomically() throws Exception {
         PaladinLogging.setLevel(Level.valueOf(logLevel().toUpperCase()));
@@ -763,6 +833,9 @@ public class TestInstitutionalRepoDemo {
 
             String bondAmount = System.getProperty("paladin.demo.bondAmount", "1000000");
             String cashAmount = System.getProperty("paladin.demo.cashAmount", "500000");
+            String rateBps = System.getProperty("paladin.demo.rateBps", "500");
+            String haircutBps = System.getProperty("paladin.demo.haircutBps", "200");
+            int maturityDays = Integer.parseInt(System.getProperty("paladin.demo.maturityDays", "7"));
 
             String mintTx = submitAndWait(clients[REGISTRAR_NODE], rpcPorts[REGISTRAR_NODE], "noto-bond", bondAddress, "registrar",
                     mintABI(), "mint", Map.of("to", "bankA@node2", "amount", bondAmount, "data", "0x"));
@@ -886,6 +959,10 @@ public class TestInstitutionalRepoDemo {
                         "--ledgers-to-extend", "2500000", "--source", "stellar-fixtures-deployer",
                         "--network", stellarCliNetwork());
             }
+
+            // --- Repo terms (ch.18 §18.3/§18.7): agreed bilaterally, before any value moves ---
+            agreeRepoTerms(clients[BANK_A_NODE], rpcPorts[BANK_A_NODE], "bankA", "bankA@node2", "bankB@node3",
+                    rateBps, maturityDays, haircutBps);
 
             // --- Near leg (ch.18 §18.5): bond A->B, cash B->A, atomically in one transition ---
             List<Object> bondUnlockArgs = lockPrepareAndDelegate(clients, rpcPorts, "noto-bond", bondAddress,

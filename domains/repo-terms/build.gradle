@@ -1,0 +1,109 @@
+/*
+ * Copyright © 2026 Kaleido, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+// Stellar-only domain (chapter 18) - unlike domains/noto's own build.gradle, there is no Solidity
+// ABI to copy at all (no EVM variant), so this is drastically simpler: no contractCompile
+// configuration, no copySolidity task family.
+ext {
+    goFiles = fileTree('.') {
+        include 'internal/**/*.go'
+    }
+    targetCoverage = 60
+    maxCoverageBarGap = 1
+}
+
+configurations {
+    // Resolvable configurations
+    toolkitGo {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+    coreGo {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+
+    // Consumable configurations
+    goSource {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+    librepoterms {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+
+dependencies {
+    toolkitGo project(path: ':toolkit:go', configuration: 'goSource')
+    coreGo project(path: ':core:go', configuration: 'goSource')
+}
+
+task test(type: Exec, dependsOn: [':core:go:makeMocks']) {
+    inputs.files(configurations.toolkitGo)
+    inputs.files(configurations.coreGo)
+    inputs.files(goFiles)
+    outputs.dir('coverage')
+    outputs.file('coverage.txt')
+
+    workingDir '.'
+    executable 'go'
+    args 'test'
+    args './internal/...'
+    args '-cover'
+    args '-covermode=atomic'
+    args '-timeout=90s'
+    if (project.findProperty('verboseTests') == 'true') {
+        args '-v'
+    }
+    args "-test.gocoverdir=${projectDir}/coverage"
+    args '-coverprofile=coverage.txt'
+
+    dependsOn ':testinfra:startTestInfra'
+    helpers.dumpLogsOnFailure(it, ':testinfra:startTestInfra')
+}
+
+task buildGo(type: GoLib, dependsOn: [':toolkit:go:protoc']) {
+    inputs.files(configurations.coreGo)
+    inputs.files(configurations.toolkitGo)
+    baseName 'repo-terms'
+    sources goFiles
+    mainFile 'repo-terms.go'
+}
+
+task checkCoverage(type: GoCheckCoverage, dependsOn: test) {
+    coverageFile('coverage.txt')
+    target = targetCoverage
+    maxGap = maxCoverageBarGap
+}
+
+task build {
+    dependsOn test, checkCoverage
+}
+
+task clean(type: Delete) {
+    delete "${buildDir}"
+    delete 'coverage'
+    delete 'coverage.txt'
+}
+
+task assemble {
+    dependsOn buildGo
+}
+
+dependencies {
+    librepoterms files(buildGo)
+    goSource files(goFiles)
+}

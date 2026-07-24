@@ -27,6 +27,7 @@
 # Writes artifacts/stellar-fixtures.json:
 # {"saladinFactoryAddress", "notoSaladinFactoryAddress", "cashNotoSaladinFactoryAddress",
 #  "snotoFactoryAddress", "snotoWasmHash", "senteFactoryAddress", "senteWasmHash",
+#  "repoTermsSaladinFactoryAddress", "repoTermsFactoryAddress", "repoTermsWasmHash",
 #  "testUsdcSacAddress", "testUsdcIssuerAddress"}
 #
 # Two separate SaladinFactory instances are deployed (saladinFactoryAddress, notoSaladinFactoryAddress)
@@ -123,10 +124,17 @@ noto_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/fa
 # stellarPrepareDeploy reads it once from n.config) - and the one-dedicated-registry-per-domain
 # constraint above means those two noto configs can't share a registry with each other either.
 cash_noto_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+# A FOURTH dedicated SaladinFactory, for the same one-dedicated-registry-per-domain reason as the
+# three above - repo-terms (chapter 18) is its own independent domain, sharing a registry with any
+# of noto/cash-noto/sente would misroute its own "reg" events the same way those three would
+# misroute each other's.
+repo_terms_saladin_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/snoto_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 snoto_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/snoto.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 sente_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/sente_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 sente_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/sente.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+repo_terms_factory_address=$(stellar contract deploy --wasm "$artifacts_dir/repo_terms_factory.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
+repo_terms_wasm_hash=$(stellar contract upload --wasm "$artifacts_dir/repo_terms.wasm" --source "$deployer" --network "$network" 2>/dev/null | tail -1)
 
 # Testnet has a real, shared "Test USDC" contract already live and in ongoing use -
 # CAUGJT4GREIY3WHOUUU5RIUDGSPVREF5CDCYJOWMHOVT2GWQT5JEETGJ, confirmed for real (name()="Test
@@ -172,6 +180,9 @@ if [[ "$network" == "testnet" || "$network" == "futurenet" ]]; then
 	extend_ttl --wasm-hash "$snoto_wasm_hash"
 	extend_ttl --id "$sente_factory_address"
 	extend_ttl --wasm-hash "$sente_wasm_hash"
+	extend_ttl --id "$repo_terms_saladin_factory_address"
+	extend_ttl --id "$repo_terms_factory_address"
+	extend_ttl --wasm-hash "$repo_terms_wasm_hash"
 	# The real shared testnet Test USDC contract isn't ours to manage - its own TTL is whoever
 	# operates it own responsibility, not this fixture set's.
 	if [[ -n "$test_usdc_issuer_address" ]]; then
@@ -189,6 +200,9 @@ cat > "$fixtures_file" <<JSON
   "snotoWasmHash": "$snoto_wasm_hash",
   "senteFactoryAddress": "$sente_factory_address",
   "senteWasmHash": "$sente_wasm_hash",
+  "repoTermsSaladinFactoryAddress": "$repo_terms_saladin_factory_address",
+  "repoTermsFactoryAddress": "$repo_terms_factory_address",
+  "repoTermsWasmHash": "$repo_terms_wasm_hash",
   "testUsdcSacAddress": "$test_usdc_sac_address",
   "testUsdcIssuerAddress": "$test_usdc_issuer_address"
 }

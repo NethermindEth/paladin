@@ -8,6 +8,7 @@ use (
 	./core/go
 	./domains/integration-test
 	./domains/noto
+	./domains/repo-terms
 	./domains/zeto
 	./operator
 	./registries/evm

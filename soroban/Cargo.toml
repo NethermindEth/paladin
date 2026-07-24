@@ -13,6 +13,8 @@ members = [
     "contracts/sente-factory",
     "contracts/identity-registry",
     "contracts/test-counter",
+    "contracts/repo-terms",
+    "contracts/repo-terms-factory",
 ]
 
 [workspace.package]
