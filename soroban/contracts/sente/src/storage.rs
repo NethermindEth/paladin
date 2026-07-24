@@ -9,10 +9,38 @@ pub enum DataKey {
     Members,
     NetworkPassphrase,
     Root,
+    /// One persistent entry per currently-live business-state commitment hash (chapter 16 §16.1
+    /// R21's fix) - the direct Soroban translation of `PentePrivacyGroup.sol`'s own
+    /// `mapping(bytes32 => bool) _unspent`: each hash is its own storage key (a real, independent
+    /// ledger entry), not one big serialized set, so membership is a plain O(1) get/set with no
+    /// hashing of its own. Deliberately separate from `Root`: root-only transitions (no business
+    /// invocation) touch zero `Unspent` entries and cost exactly what they cost today.
+    Unspent(BytesN<32>),
 }
 
 pub fn is_initialized(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Root)
+}
+
+/// R21's content-addressed check: does the chain currently consider `id` a live, unspent
+/// commitment? Unlike `Root` (a single hash-chain head), this can independently catch a
+/// stale/wrong reference regardless of what any endorser believed - see
+/// `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 and `16-risk-map.md` R21.
+pub fn is_unspent(env: &Env, id: &BytesN<32>) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Unspent(id.clone()))
+        .unwrap_or(false)
+}
+
+pub fn mark_spent(env: &Env, id: &BytesN<32>) {
+    env.storage().persistent().remove(&DataKey::Unspent(id.clone()));
+}
+
+pub fn mark_unspent(env: &Env, id: &BytesN<32>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Unspent(id.clone()), &true);
 }
 
 /// Genesis root is all-zero, the same "no prior transition" convention a fresh hash-chain head

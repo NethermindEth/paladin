@@ -24,6 +24,20 @@
 //!     already exist as a tracked `SenteEntry` before its first transition can be assembled -
 //!     populating that from a real on-chain deploy is Go-side indexing work, out of scope here
 //!     (see `saladin-book/part-2-saladin/14-domain-ports.md` §14.3 S3 for the precise boundary).
+//!   - **R21 (ch. 16 §16.1)**: `root` alone gives total ordering (no replay, no two conflicting
+//!     transitions can both land) but has no way to independently verify that a transition's
+//!     claimed business-state effects are the *correct current version* of anything - that used to
+//!     be checked exactly once, at endorsement time, with no on-chain backstop. `entry_commitment`
+//!     below computes a self-contained, deterministic hash for each business `SenteEntry` a
+//!     transition touches; `assemble_transaction` carries these as `InfoState.input_commitments`/
+//!     `output_commitments`, `endorse_transaction` independently recomputes and cross-checks them,
+//!     and they ride in the signed on-chain payload as `inputs`/`outputs`, checked by
+//!     `SentePrivacyGroup::transition` against its own real `Unspent` set - the direct translation
+//!     of `PentePrivacyGroup.sol`'s own `_unspent` mapping. Deliberately *not* the same identifier
+//!     Paladin core assigns each state internally: the Rust plugin toolkit
+//!     (`saladin-plugin-rs::PaladinClient`) has no synchronous state-ID-allocation callback the way
+//!     Java/Go plugins do, so this commitment is minted and verified entirely within this crate,
+//!     orthogonal to core's own separate state-ID bookkeeping (unaffected, and not needed here).
 //!   - `external_calls` (the SNoto-atomicity half of S3's exit criterion) are now wired at the
 //!     plugin level too: a transition's `function_params_json` may declare
 //!     `{"externalCalls": [{"contract, function, args}, ...]}` (`ExternalCallJson`), encoded to the
@@ -439,16 +453,43 @@ fn tx_id_bytes(transaction_id: &str) -> Result<[u8; 32], String> {
         .map_err(|_| format!("transaction_id {transaction_id} does not decode to 32 bytes"))
 }
 
+/// Encodes a slice of raw 32-byte hashes as the `ScVal::Vec<BytesN<32>>` shape
+/// `TransitionPayload.inputs`/`.outputs` (and `transition()`'s own call args) need.
+fn encode_hash_vec(hashes: &[[u8; 32]]) -> Result<ScVal, String> {
+    let encoded = hashes
+        .iter()
+        .map(|h| ScVal::Bytes(ScBytes(h.to_vec().try_into().unwrap())))
+        .collect::<Vec<_>>();
+    Ok(ScVal::Vec(Some(ScVec(VecM::try_from(encoded).map_err(
+        |_| "failed to build hash vector ScVec".to_string(),
+    )?))))
+}
+
+/// R21's content-addressed commitment (ch. 16 §16.1, this module's own doc comment): a
+/// deterministic, self-contained hash over a `SenteEntry`'s own fields - every party (assembler,
+/// every endorser, and later the on-chain contract as an opaque value) computes exactly this from
+/// the entry's real content, so a stale or wrong reference can never coincidentally produce a hash
+/// that's still a live member of `SentePrivacyGroup`'s `Unspent` set. Not tied to Paladin core's own
+/// separate per-state ID scheme (see this module's own doc comment for why).
+fn entry_commitment(entry: &sente_host::SenteEntry) -> [u8; 32] {
+    let canonical = serde_json::to_vec(entry).expect("SenteEntry must serialize");
+    Sha256::digest(canonical).into()
+}
+
 /// XDR shape of `soroban/contracts/sente::TransitionPayload(BytesN<32>, BytesN<32>, BytesN<32>,
-/// Vec<AtomOperation>)` - a tuple struct, so its `#[contracttype]` derive encodes it as a plain
-/// positional `ScVal::Vec`, matching the contract's own doc comment for choosing a tuple struct
-/// here. `external_calls_scval` is the already-encoded `ScVal::Vec` of `AtomOperation`s (see
-/// `encode_external_calls`) - empty for a root-only transition, matching `ScVal::Vec(Some(ScVec([])))`
-/// regardless of `AtomOperation`'s own shape.
+/// Vec<BytesN<32>>, Vec<BytesN<32>>, Vec<AtomOperation>)` - a tuple struct, so its
+/// `#[contracttype]` derive encodes it as a plain positional `ScVal::Vec`, matching the contract's
+/// own doc comment for choosing a tuple struct here. `inputs`/`outputs` are R21's content-addressed
+/// commitment hashes (empty for a root-only transition). `external_calls_scval` is the
+/// already-encoded `ScVal::Vec` of `AtomOperation`s (see `encode_external_calls`) - empty for a
+/// root-only transition, matching `ScVal::Vec(Some(ScVec([])))` regardless of `AtomOperation`'s own
+/// shape.
 fn transition_payload_xdr(
     tx_id: [u8; 32],
     old_root: [u8; 32],
     new_root: [u8; 32],
+    inputs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
     external_calls_scval: ScVal,
 ) -> Result<Vec<u8>, String> {
     let payload = ScVal::Vec(Some(ScVec(
@@ -456,6 +497,8 @@ fn transition_payload_xdr(
             ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(old_root.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap())),
+            encode_hash_vec(inputs)?,
+            encode_hash_vec(outputs)?,
             external_calls_scval,
         ]
         .try_into()
@@ -717,7 +760,23 @@ fn run_invocation(
 #[derive(Debug, Clone, Default)]
 struct TransitionStateChanges {
     spent_state_ids: Vec<String>,
+    /// The actual prior `SenteEntry` values consumed, index-aligned with `spent_state_ids` -
+    /// needed to compute R21's `entry_commitment` for each (ch. 16 §16.1), which core's own
+    /// separate per-state ID string can't stand in for (see `entry_commitment`'s own doc comment).
+    spent_entries: Vec<sente_host::SenteEntry>,
     output_entries: Vec<sente_host::SenteEntry>,
+}
+
+impl TransitionStateChanges {
+    /// R21's input commitments (ch. 16 §16.1): one per `spent_entries`, in the same order.
+    fn input_commitments(&self) -> Vec<[u8; 32]> {
+        self.spent_entries.iter().map(entry_commitment).collect()
+    }
+
+    /// R21's output commitments: one per `output_entries`, in the same order.
+    fn output_commitments(&self) -> Vec<[u8; 32]> {
+        self.output_entries.iter().map(entry_commitment).collect()
+    }
 }
 
 fn entry_identity(entry: &sente_host::SenteEntry) -> String {
@@ -760,6 +819,7 @@ fn convert_modified_entries(
                 })?;
                 if spent.insert(prior.id.clone()) {
                     changes.spent_state_ids.push(prior.id.clone());
+                    changes.spent_entries.push(prior.entry.clone());
                 }
                 Some(prior)
             }
@@ -1401,7 +1461,19 @@ impl DomainHandler for SenteDomain {
             invoke_json = serde_json::to_string(invoke).map_err(|e| e.to_string())?;
         }
 
-        let payload_xdr = transition_payload_xdr(tx_id, old_root, new_root, external_calls_scval)?;
+        // R21 (ch. 16 §16.1): the real, content-addressed UTXO effects this transition claims -
+        // empty for a root-only transition, matching `state_changes`' own cardinality exactly.
+        let input_commitments = state_changes.input_commitments();
+        let output_commitments = state_changes.output_commitments();
+
+        let payload_xdr = transition_payload_xdr(
+            tx_id,
+            old_root,
+            new_root,
+            &input_commitments,
+            &output_commitments,
+            external_calls_scval,
+        )?;
         let config = self.config()?;
         let on_chain_digest = saladin_typed_data_digest(
             config.network_passphrase.as_bytes(),
@@ -1432,6 +1504,8 @@ impl DomainHandler for SenteDomain {
             contract_id_base64,
             old_root,
             new_root,
+            input_commitments,
+            output_commitments,
             on_chain_digest,
             external_calls_json,
             invoke_json,
@@ -1678,6 +1752,33 @@ impl DomainHandler for SenteDomain {
             });
         }
 
+        // R21 (ch. 16 §16.1): independently recompute the same content-addressed commitments
+        // `assemble_transaction` claims, from this endorser's *own* re-execution, and reject if
+        // they diverge - the same "trust nothing the assembler said, verify it yourself" property
+        // every other check in this function already has, now covering the values that actually
+        // get checked against `SentePrivacyGroup`'s on-chain `Unspent` set.
+        let expected_input_commitments = state_changes.input_commitments();
+        let expected_output_commitments = state_changes.output_commitments();
+        let claimed_input_commitments = info
+            .input_commitments_bytes()
+            .map_err(|e| format!("invalid InfoState.inputCommitments: {e}"))?;
+        let claimed_output_commitments = info
+            .output_commitments_bytes()
+            .map_err(|e| format!("invalid InfoState.outputCommitments: {e}"))?;
+        if expected_input_commitments != claimed_input_commitments
+            || expected_output_commitments != claimed_output_commitments
+        {
+            return Ok(pb::EndorseTransactionResponse {
+                endorsement_result: pb::endorse_transaction_response::Result::Revert as i32,
+                payload: None,
+                revert_reason: Some(
+                    "input/output commitment mismatch: assembler's claimed business-state \
+                     effects do not match this endorser's own independent re-execution"
+                        .to_string(),
+                ),
+            });
+        }
+
         let new_instance_val = with_updated_root(
             &prior_group_entry.val().map_err(|e| e.to_string())?,
             info.new_root,
@@ -1707,8 +1808,14 @@ impl DomainHandler for SenteDomain {
         let external_calls: Vec<ExternalCallJson> = serde_json::from_str(&info.external_calls_json)
             .map_err(|e| format!("invalid InfoState.externalCallsJson: {e}"))?;
         let external_calls_scval = encode_external_calls(&external_calls)?;
-        let payload_xdr =
-            transition_payload_xdr(tx_id, info.old_root, info.new_root, external_calls_scval)?;
+        let payload_xdr = transition_payload_xdr(
+            tx_id,
+            info.old_root,
+            info.new_root,
+            &claimed_input_commitments,
+            &claimed_output_commitments,
+            external_calls_scval,
+        )?;
         let config = self.config()?;
         let expected_digest = saladin_typed_data_digest(
             config.network_passphrase.as_bytes(),
@@ -1742,10 +1849,10 @@ impl DomainHandler for SenteDomain {
     }
 
     /// Bundles every collected member endorsement into the real, final on-chain
-    /// `transition(new_root, external_calls, signatures)` call - the collected
-    /// `AttestationResult`s already carry each member's resolved verifier (public key) and the raw
-    /// ed25519 signature it produced over `endorse_transaction`'s returned payload (the on-chain
-    /// digest itself), so no separate signature-collection mechanism is needed here.
+    /// `transition(tx_id, new_root, inputs, outputs, external_calls, signatures)` call - the
+    /// collected `AttestationResult`s already carry each member's resolved verifier (public key)
+    /// and the raw ed25519 signature it produced over `endorse_transaction`'s returned payload (the
+    /// on-chain digest itself), so no separate signature-collection mechanism is needed here.
     async fn prepare_transaction(
         &self,
         req: pb::PrepareTransactionRequest,
@@ -1810,11 +1917,21 @@ impl DomainHandler for SenteDomain {
         let external_calls: Vec<ExternalCallJson> = serde_json::from_str(&info.external_calls_json)
             .map_err(|e| format!("invalid InfoState.externalCallsJson: {e}"))?;
         let external_calls_scval = encode_external_calls(&external_calls)?;
+        let input_commitments = info
+            .input_commitments_bytes()
+            .map_err(|e| format!("invalid InfoState.inputCommitments: {e}"))?;
+        let output_commitments = info
+            .output_commitments_bytes()
+            .map_err(|e| format!("invalid InfoState.outputCommitments: {e}"))?;
         // Argument order must match `sente`'s real Rust signature exactly:
-        // `transition(tx_id, new_root, external_calls, signatures)`.
+        // `transition(tx_id, new_root, inputs, outputs, external_calls, signatures)` - `inputs`/
+        // `outputs` are R21's content-addressed commitments (ch. 16 §16.1), already independently
+        // verified by every endorser during `endorse_transaction` before signing.
         let args: VecM<ScVal> = vec![
             ScVal::Bytes(ScBytes(tx_id.to_vec().try_into().unwrap())),
             ScVal::Bytes(ScBytes(info.new_root.to_vec().try_into().unwrap())),
+            encode_hash_vec(&input_commitments)?,
+            encode_hash_vec(&output_commitments)?,
             external_calls_scval,
             signatures_val,
         ]
@@ -2324,6 +2441,8 @@ mod tests {
             contract_id_base64,
             [0u8; 32],
             new_root,
+            vec![],
+            vec![],
             [3u8; 32],
             "[]".to_string(),
             String::new(),
@@ -2362,7 +2481,7 @@ mod tests {
         assert_eq!(invoke.function_name, "transition");
 
         let args = VecM::<ScVal>::from_xdr(invoke.args_xdr, Limits::none()).unwrap();
-        assert_eq!(args.len(), 4);
+        assert_eq!(args.len(), 6);
         assert_eq!(
             args[0],
             ScVal::Bytes(ScBytes([0x01u8; 32].to_vec().try_into().unwrap()))
@@ -2371,8 +2490,10 @@ mod tests {
             args[1],
             ScVal::Bytes(ScBytes(new_root.to_vec().try_into().unwrap()))
         );
-        assert_eq!(args[2], ScVal::Vec(Some(ScVec(VecM::default()))));
-        let ScVal::Vec(Some(sigs)) = &args[3] else {
+        assert_eq!(args[2], ScVal::Vec(Some(ScVec(VecM::default()))), "inputs");
+        assert_eq!(args[3], ScVal::Vec(Some(ScVec(VecM::default()))), "outputs");
+        assert_eq!(args[4], ScVal::Vec(Some(ScVec(VecM::default()))), "external_calls");
+        let ScVal::Vec(Some(sigs)) = &args[5] else {
             panic!("expected a Vec of signature pairs");
         };
         assert_eq!(sigs.len(), 1);
@@ -2418,6 +2539,8 @@ mod tests {
             contract_id_base64,
             [0u8; 32],
             new_root,
+            vec![],
+            vec![],
             [3u8; 32],
             external_calls_json,
             String::new(),
@@ -2454,7 +2577,7 @@ mod tests {
             panic!("expected a Soroban invoke payload");
         };
         let args = VecM::<ScVal>::from_xdr(invoke.args_xdr, Limits::none()).unwrap();
-        let ScVal::Vec(Some(external_calls)) = &args[2] else {
+        let ScVal::Vec(Some(external_calls)) = &args[4] else {
             panic!("expected a Vec of AtomOperations");
         };
         assert_eq!(external_calls.len(), 1);

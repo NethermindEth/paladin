@@ -17,14 +17,27 @@
 //! SentePrivacyGroup (chapter 14 §14.3, phase S3) - the on-chain anchor for a Sente private
 //! Soroban group, the Stellar translation of `PentePrivacyGroup.sol`.
 //!
-//! **State model**: unlike Pente's per-account UTXO `_unspent` mapping, Sente's off-chain state is
-//! already the per-*ledger-entry* `SenteEntry` model built in S2 - so the on-chain contract only
-//! needs a single hash-chain head (`root`), not a UTXO set. `transition` swaps `old_root` for
-//! `new_root`; a caller can never present a stale `old_root`, because `old_root` is read from this
-//! contract's own storage, never taken as a parameter - replaying an already-applied transition
-//! recomputes a payload over the *current* (already-advanced) root, which no longer matches what
-//! members signed off-chain, so `saladin_typed_data::verify` fails on the stale signatures. No
-//! separate nonce/tx-id tracking is needed for replay protection.
+//! **State model**: the group's own liveness/genesis bookkeeping is still a single hash-chain head
+//! (`root`) - `transition` swaps `old_root` for `new_root`; a caller can never present a stale
+//! `old_root`, because `old_root` is read from this contract's own storage, never taken as a
+//! parameter - replaying an already-applied transition recomputes a payload over the *current*
+//! (already-advanced) root, which no longer matches what members signed off-chain, so
+//! `saladin_typed_data::verify` fails on the stale signatures.
+//!
+//! **`inputs`/`outputs` close R21 (ch. 16 §16.1): a real, content-addressed UTXO check, not just
+//! positional ordering.** A bare hash chain over `root` enforces total ordering (no replay, no two
+//! conflicting transitions can both land) but has no way to verify that a transition's claimed
+//! business-state entries are the *correct current version* of anything - that used to be checked
+//! exactly once, at endorsement time, with no independent backstop. `inputs`/`outputs` are opaque
+//! commitment hashes (`domains/sente/crates/sente::domain::entry_commitment`, computed off-chain
+//! over each touched `SenteEntry`'s own content - this contract never computes or interprets them)
+//! checked against a real, persistent `storage::Unspent` set, the direct translation of
+//! `PentePrivacyGroup.sol`'s own `_unspent` mapping: an input must currently be unspent (else
+//! `sente: input not available`) and gets deleted; an output must not already be unspent (else
+//! `sente: output already unspent`) and gets inserted. This independently catches a stale or wrong
+//! reference regardless of what any endorser believed, the same backstop Pente's chain already had.
+//! Empty for a root-only transition (no business invocation) - zero extra on-chain cost in that
+//! case, exactly today's behavior.
 //!
 //! **Signatures**: ed25519 (Stellar's native scheme) in place of Pente's ECDSA/secp256k1,
 //! `SALADIN_TYPED_DATA_V0("sente.Transition", ...)` in place of EIP-712 - otherwise the same
@@ -55,19 +68,24 @@ use soroban_sdk::{
 /// encoding of a tuple struct is a plain positional `ScVal::Vec`, trivial to reproduce from any
 /// off-chain language computing the same digest, unlike a named struct's by-field-name sort order.
 /// `tx_id` is folded into the signed payload (not just the event) so a signature can't be replayed
-/// against a transition claiming a different Paladin transaction id.
+/// against a transition claiming a different Paladin transaction id. `inputs`/`outputs` (R21, ch. 16
+/// §16.1) are folded in too, so a signature can't be replayed against a transition claiming
+/// different business-state effects than what members actually endorsed.
 #[contracttype]
 pub struct TransitionPayload(
-    pub BytesN<32>, /* tx_id */
-    pub BytesN<32>, /* old_root */
-    pub BytesN<32>, /* new_root */
+    pub BytesN<32>,        /* tx_id */
+    pub BytesN<32>,        /* old_root */
+    pub BytesN<32>,        /* new_root */
+    pub Vec<BytesN<32>>,   /* inputs */
+    pub Vec<BytesN<32>>,   /* outputs */
     pub Vec<AtomOperation>,
 );
 
 /// `tx_id` (also `Genesis::tx_id` below) is what lets the Go-side event indexer correlate this
 /// on-chain confirmation back to the private Paladin transaction that produced it (chapter 14
 /// §14.3's Go-integration work) - the same `#[topic] tx_id` convention `factory::Registration`
-/// already established.
+/// already established. `inputs`/`outputs` sit in `data`, not `#[topic]`, since Soroban topics must
+/// be simple scalar values, not vectors.
 #[contractevent(topics = ["transition"], data_format = "vec")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Transition {
@@ -76,6 +94,8 @@ pub struct Transition {
     #[topic]
     pub old_root: BytesN<32>,
     pub new_root: BytesN<32>,
+    pub inputs: Vec<BytesN<32>>,
+    pub outputs: Vec<BytesN<32>>,
     pub external_call_count: u32,
 }
 
@@ -154,14 +174,17 @@ impl Contract {
     }
 
     /// Verifies 100% of members' ed25519 signatures over
-    /// `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, external_calls})`, advances
-    /// the stored root, then invokes every `external_calls` leg directly - atomic for free via
-    /// Soroban's own cross-contract panic-unwind semantics, the same property `satom::execute`
-    /// already relies on.
+    /// `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, inputs, outputs,
+    /// external_calls})`, checks `inputs`/`outputs` against the real `Unspent` set (R21, ch. 16
+    /// §16.1), advances the stored root, then invokes every `external_calls` leg directly - atomic
+    /// for free via Soroban's own cross-contract panic-unwind semantics, the same property
+    /// `satom::execute` already relies on.
     pub fn transition(
         env: Env,
         tx_id: BytesN<32>,
         new_root: BytesN<32>,
+        inputs: Vec<BytesN<32>>,
+        outputs: Vec<BytesN<32>>,
         external_calls: Vec<AtomOperation>,
         signatures: Vec<(BytesN<32>, BytesN<64>)>,
     ) {
@@ -175,6 +198,8 @@ impl Contract {
             tx_id.clone(),
             old_root.clone(),
             new_root.clone(),
+            inputs.clone(),
+            outputs.clone(),
             external_calls.clone(),
         );
         let payload_xdr = payload.to_xdr(&env);
@@ -202,6 +227,22 @@ impl Contract {
             );
         }
 
+        // R21's content-addressed check: independent of what any endorser believed, the chain
+        // itself verifies every claimed input is currently live and every claimed output isn't
+        // already - exactly `PentePrivacyGroup.sol::_transition`'s own `_unspent` check, translated.
+        for id in inputs.iter() {
+            if !storage::is_unspent(&env, &id) {
+                panic!("sente: input not available");
+            }
+            storage::mark_spent(&env, &id);
+        }
+        for id in outputs.iter() {
+            if storage::is_unspent(&env, &id) {
+                panic!("sente: output already unspent");
+            }
+            storage::mark_unspent(&env, &id);
+        }
+
         storage::set_root(&env, &new_root);
 
         for op in external_calls.iter() {
@@ -212,6 +253,8 @@ impl Contract {
             tx_id,
             old_root,
             new_root,
+            inputs,
+            outputs,
             external_call_count: external_calls.len(),
         }
         .publish(&env);
@@ -220,3 +263,6 @@ impl Contract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod bench_test;

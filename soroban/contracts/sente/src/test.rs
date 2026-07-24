@@ -56,6 +56,8 @@ fn sign_transition(
     tx_id: &BytesN<32>,
     old_root: &BytesN<32>,
     new_root: &BytesN<32>,
+    inputs: &Vec<BytesN<32>>,
+    outputs: &Vec<BytesN<32>>,
     external_calls: &Vec<AtomOperation>,
     signer: &SigningKey,
 ) -> BytesN<64> {
@@ -63,6 +65,8 @@ fn sign_transition(
         tx_id.clone(),
         old_root.clone(),
         new_root.clone(),
+        inputs.clone(),
+        outputs.clone(),
         external_calls.clone(),
     );
     let payload_xdr = payload.to_xdr(env).to_alloc_vec();
@@ -87,6 +91,7 @@ fn transition_with_unanimous_signatures_advances_root() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let external_calls: Vec<AtomOperation> = Vec::new(&env);
     let signatures = soroban_sdk::vec![
         &env,
@@ -98,6 +103,8 @@ fn transition_with_unanimous_signatures_advances_root() {
                 &tx_id,
                 &old_root,
                 &new_root,
+                &no_ids,
+                &no_ids,
                 &external_calls,
                 &m1.signing_key
             )
@@ -110,13 +117,15 @@ fn transition_with_unanimous_signatures_advances_root() {
                 &tx_id,
                 &old_root,
                 &new_root,
+                &no_ids,
+                &no_ids,
                 &external_calls,
                 &m2.signing_key
             )
         ),
     ];
 
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 
     assert_eq!(client.root(), new_root);
 }
@@ -133,6 +142,7 @@ fn transition_rejects_below_threshold() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let external_calls: Vec<AtomOperation> = Vec::new(&env);
     // Only one of two members signs.
     let signatures = soroban_sdk::vec![
@@ -145,13 +155,15 @@ fn transition_rejects_below_threshold() {
                 &tx_id,
                 &old_root,
                 &new_root,
+                &no_ids,
+                &no_ids,
                 &external_calls,
                 &m1.signing_key
             )
         ),
     ];
 
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 }
 
 #[test]
@@ -166,6 +178,7 @@ fn transition_rejects_duplicate_signer() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let external_calls: Vec<AtomOperation> = Vec::new(&env);
     let sig1 = sign_transition(
         &env,
@@ -173,6 +186,8 @@ fn transition_rejects_duplicate_signer() {
         &tx_id,
         &old_root,
         &new_root,
+        &no_ids,
+        &no_ids,
         &external_calls,
         &m1.signing_key,
     );
@@ -184,7 +199,7 @@ fn transition_rejects_duplicate_signer() {
         (m1.public_key.clone(), sig1),
     ];
 
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 }
 
 #[test]
@@ -200,6 +215,7 @@ fn transition_rejects_non_member_signer() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let external_calls: Vec<AtomOperation> = Vec::new(&env);
     let signatures = soroban_sdk::vec![
         &env,
@@ -211,6 +227,8 @@ fn transition_rejects_non_member_signer() {
                 &tx_id,
                 &old_root,
                 &new_root,
+                &no_ids,
+                &no_ids,
                 &external_calls,
                 &m1.signing_key
             )
@@ -223,13 +241,15 @@ fn transition_rejects_non_member_signer() {
                 &tx_id,
                 &old_root,
                 &new_root,
+                &no_ids,
+                &no_ids,
                 &external_calls,
                 &outsider.signing_key
             )
         ),
     ];
 
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 }
 
 #[test]
@@ -243,6 +263,7 @@ fn transition_rejects_replay_after_root_advanced() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let external_calls: Vec<AtomOperation> = Vec::new(&env);
     let sig = sign_transition(
         &env,
@@ -250,17 +271,227 @@ fn transition_rejects_replay_after_root_advanced() {
         &tx_id,
         &old_root,
         &new_root,
+        &no_ids,
+        &no_ids,
         &external_calls,
         &m1.signing_key,
     );
     let signatures = soroban_sdk::vec![&env, (m1.public_key.clone(), sig.clone())];
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 
     // Replaying the exact same call: the contract now recomputes the payload against its
     // *current* root (`new_root`, not the original `old_root`), so the signature - computed
     // over the original `old_root` - no longer verifies.
     let signatures_again = soroban_sdk::vec![&env, (m1.public_key.clone(), sig)];
-    client.transition(&tx_id, &new_root, &external_calls, &signatures_again);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures_again);
+}
+
+/// R21 (ch. 16 §16.1): an input hash that was never created (and so is never in the `Unspent`
+/// set) must be rejected on-chain, independent of what any endorser believed - the exact
+/// content-addressed check `PentePrivacyGroup.sol`'s own `_unspent` mapping already gives Pente.
+#[test]
+#[should_panic(expected = "sente: input not available")]
+fn transition_rejects_input_never_created() {
+    let env = Env::default();
+    let m1 = member(&env, 1);
+    let contract_id = setup(&env, &[&m1]);
+    let client = ContractClient::new(&env, &contract_id);
+
+    let tx_id = BytesN::from_array(&env, &[1u8; 32]);
+    let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
+    let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let never_created = soroban_sdk::vec![&env, BytesN::from_array(&env, &[0xAAu8; 32])];
+    let no_outputs: Vec<BytesN<32>> = Vec::new(&env);
+    let external_calls: Vec<AtomOperation> = Vec::new(&env);
+    let sig = sign_transition(
+        &env,
+        &contract_id,
+        &tx_id,
+        &old_root,
+        &new_root,
+        &never_created,
+        &no_outputs,
+        &external_calls,
+        &m1.signing_key,
+    );
+    let signatures = soroban_sdk::vec![&env, (m1.public_key.clone(), sig)];
+
+    client.transition(
+        &tx_id,
+        &new_root,
+        &never_created,
+        &no_outputs,
+        &external_calls,
+        &signatures,
+    );
+}
+
+/// R21: the same input hash can never be spent twice, even across two otherwise-independently
+/// valid transitions - the on-chain check is content-addressed, not just positional.
+#[test]
+#[should_panic(expected = "sente: input not available")]
+fn transition_rejects_double_spend_of_same_input() {
+    let env = Env::default();
+    let m1 = member(&env, 1);
+    let contract_id = setup(&env, &[&m1]);
+    let client = ContractClient::new(&env, &contract_id);
+
+    let entry_id = BytesN::from_array(&env, &[0xBBu8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
+    let one_output = soroban_sdk::vec![&env, entry_id.clone()];
+    let external_calls: Vec<AtomOperation> = Vec::new(&env);
+
+    // Transition 1: create `entry_id` as an output.
+    let tx_id_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root_0 = BytesN::from_array(&env, &GENESIS_ROOT);
+    let root_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let sig_1 = sign_transition(
+        &env, &contract_id, &tx_id_1, &root_0, &root_1, &no_ids, &one_output, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_1,
+        &root_1,
+        &no_ids,
+        &one_output,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_1)],
+    );
+
+    // Transition 2: spend `entry_id` as an input - succeeds, marking it spent.
+    let tx_id_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let one_input = soroban_sdk::vec![&env, entry_id.clone()];
+    let sig_2 = sign_transition(
+        &env, &contract_id, &tx_id_2, &root_1, &root_2, &one_input, &no_ids, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_2,
+        &root_2,
+        &one_input,
+        &no_ids,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_2)],
+    );
+
+    // Transition 3: try to spend the *same* `entry_id` again - must be rejected, even though the
+    // root/signature/replay checks alone would otherwise let it through.
+    let tx_id_3 = BytesN::from_array(&env, &[3u8; 32]);
+    let root_3 = BytesN::from_array(&env, &[3u8; 32]);
+    let sig_3 = sign_transition(
+        &env, &contract_id, &tx_id_3, &root_2, &root_3, &one_input, &no_ids, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_3,
+        &root_3,
+        &one_input,
+        &no_ids,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_3)],
+    );
+}
+
+/// R21: an output hash that's already live can never be created a second time - the direct
+/// translation of `PentePrivacyGroup.sol`'s own `PenteOutputAlreadyUnspent` check.
+#[test]
+#[should_panic(expected = "sente: output already unspent")]
+fn transition_rejects_output_already_unspent() {
+    let env = Env::default();
+    let m1 = member(&env, 1);
+    let contract_id = setup(&env, &[&m1]);
+    let client = ContractClient::new(&env, &contract_id);
+
+    let entry_id = BytesN::from_array(&env, &[0xCCu8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
+    let one_output = soroban_sdk::vec![&env, entry_id.clone()];
+    let external_calls: Vec<AtomOperation> = Vec::new(&env);
+
+    let tx_id_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root_0 = BytesN::from_array(&env, &GENESIS_ROOT);
+    let root_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let sig_1 = sign_transition(
+        &env, &contract_id, &tx_id_1, &root_0, &root_1, &no_ids, &one_output, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_1,
+        &root_1,
+        &no_ids,
+        &one_output,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_1)],
+    );
+
+    // A second, otherwise-independent transition tries to create the exact same output hash
+    // again, without ever spending it as an input first.
+    let tx_id_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let sig_2 = sign_transition(
+        &env, &contract_id, &tx_id_2, &root_1, &root_2, &no_ids, &one_output, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_2,
+        &root_2,
+        &no_ids,
+        &one_output,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_2)],
+    );
+}
+
+/// The positive counterpart: creating an entry, spending it, and creating its successor all
+/// succeed when the claims are actually correct - the `Unspent` set updates exactly as expected,
+/// with no interference from the (unrelated) `root` hash-chain advancing alongside it.
+#[test]
+fn transition_with_inputs_and_outputs_updates_the_unspent_set() {
+    let env = Env::default();
+    let m1 = member(&env, 1);
+    let contract_id = setup(&env, &[&m1]);
+    let client = ContractClient::new(&env, &contract_id);
+
+    let entry_v1 = BytesN::from_array(&env, &[0xD1u8; 32]);
+    let entry_v2 = BytesN::from_array(&env, &[0xD2u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
+    let external_calls: Vec<AtomOperation> = Vec::new(&env);
+
+    let tx_id_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root_0 = BytesN::from_array(&env, &GENESIS_ROOT);
+    let root_1 = BytesN::from_array(&env, &[1u8; 32]);
+    let outputs_1 = soroban_sdk::vec![&env, entry_v1.clone()];
+    let sig_1 = sign_transition(
+        &env, &contract_id, &tx_id_1, &root_0, &root_1, &no_ids, &outputs_1, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_1,
+        &root_1,
+        &no_ids,
+        &outputs_1,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_1)],
+    );
+
+    let tx_id_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root_2 = BytesN::from_array(&env, &[2u8; 32]);
+    let inputs_2 = soroban_sdk::vec![&env, entry_v1.clone()];
+    let outputs_2 = soroban_sdk::vec![&env, entry_v2.clone()];
+    let sig_2 = sign_transition(
+        &env, &contract_id, &tx_id_2, &root_1, &root_2, &inputs_2, &outputs_2, &external_calls,
+        &m1.signing_key,
+    );
+    client.transition(
+        &tx_id_2,
+        &root_2,
+        &inputs_2,
+        &outputs_2,
+        &external_calls,
+        &soroban_sdk::vec![&env, (m1.public_key.clone(), sig_2)],
+    );
+
+    assert_eq!(client.root(), root_2);
 }
 
 /// The load-bearing test: a transition's `external_calls` really do execute, atomically alongside
@@ -306,6 +537,7 @@ fn transition_executes_external_call_atomically() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let real_ids = soroban_sdk::vec![&env, coin_id.clone()];
     let external_calls = soroban_sdk::vec![
         &env,
@@ -321,12 +553,14 @@ fn transition_executes_external_call_atomically() {
         &tx_id,
         &old_root,
         &new_root,
+        &no_ids,
+        &no_ids,
         &external_calls,
         &m1.signing_key,
     );
     let signatures = soroban_sdk::vec![&env, (m1.public_key.clone(), sig)];
 
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 
     assert_eq!(client.root(), new_root);
 }
@@ -443,12 +677,15 @@ fn transition_unlocks_delegated_snoto_lock_via_invoker_auth_only() {
     let tx_id = BytesN::from_array(&env, &[1u8; 32]);
     let old_root = BytesN::from_array(&env, &GENESIS_ROOT);
     let new_root = BytesN::from_array(&env, &[1u8; 32]);
+    let no_ids: Vec<BytesN<32>> = Vec::new(&env);
     let sig = sign_transition(
         &env,
         &contract_id,
         &tx_id,
         &old_root,
         &new_root,
+        &no_ids,
+        &no_ids,
         &external_calls,
         &m1.signing_key,
     );
@@ -461,7 +698,7 @@ fn transition_unlocks_delegated_snoto_lock_via_invoker_auth_only() {
     // delegate is Sente's own contract address - the same invoker-authorization property already
     // proven for SAtom, now proven for Sente too.
     env.set_auths(&[]);
-    client.transition(&tx_id, &new_root, &external_calls, &signatures);
+    client.transition(&tx_id, &new_root, &no_ids, &no_ids, &external_calls, &signatures);
 
     assert_eq!(client.root(), new_root);
 

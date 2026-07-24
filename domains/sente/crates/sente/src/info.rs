@@ -13,6 +13,13 @@
 //! deliberately different because only the latter is checked by `SentePrivacyGroup::transition`
 //! on-chain; `signing_payload()` still covers `on_chain_digest` so a tampered digest invalidates
 //! the sender's own signature too.
+//!
+//! `input_commitments`/`output_commitments` (chapter 16 §16.1 R21's fix): the content-addressed
+//! commitment hashes (`domain::entry_commitment`) of every business-level `SenteEntry` the
+//! transition consumes/creates, excluding the group's own root entry. These ride alongside
+//! `old_root`/`new_root` in the on-chain payload so `SentePrivacyGroup::transition` can check them
+//! against its own `Unspent` set independently of what any endorser believed - see
+//! `soroban/contracts/sente/src/lib.rs`'s own module doc comment.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -44,11 +51,13 @@ pub struct SenderSignature {
 
 /// Everything an endorser needs to independently re-derive and verify a proposed Sente group
 /// transition. `contract_id` is base64 XDR `ScAddress` (same convention `SenteEntry::contract_id`
-/// uses); `old_root`/`new_root` are the hash-chain head being advanced (chapter 14 §14.3's
-/// on-chain contract has no UTXO set to diff, just this one head); `on_chain_digest` is the
-/// `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, external_calls=[]})` digest -
-/// what the assembler claims, and what every endorser recomputes and compares (see
-/// `domain.rs::endorse_transaction`) before agreeing to sign it.
+/// uses); `old_root`/`new_root` are the hash-chain head being advanced (genesis/liveness
+/// bookkeeping only, since R21 - see this module's own doc comment); `input_commitments`/
+/// `output_commitments` are the real, content-addressed UTXO effects `SentePrivacyGroup`
+/// independently checks against its own `Unspent` set; `on_chain_digest` is the
+/// `SALADIN_TYPED_DATA_V0("sente.Transition", {old_root, new_root, inputs, outputs,
+/// external_calls=[]})` digest - what the assembler claims, and what every endorser recomputes and
+/// compares (see `domain.rs::endorse_transaction`) before agreeing to sign it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InfoState {
     pub transaction_id: String,
@@ -58,6 +67,16 @@ pub struct InfoState {
     pub old_root: [u8; 32],
     #[serde(rename = "newRoot", with = "hex::serde")]
     pub new_root: [u8; 32],
+    /// Hex-encoded content-addressed commitment hashes (R21, ch. 16 §16.1) of every business
+    /// `SenteEntry` this transition consumes - `[]` for a root-only transition, matching
+    /// `TransitionManifest.spent_state_ids`'s own cardinality exactly.
+    #[serde(rename = "inputCommitments", default)]
+    pub input_commitments: Vec<String>,
+    /// Hex-encoded content-addressed commitment hashes of every business `SenteEntry` this
+    /// transition creates - `[]` for a root-only transition, matching
+    /// `TransitionManifest.output_state_json`'s own cardinality exactly.
+    #[serde(rename = "outputCommitments", default)]
+    pub output_commitments: Vec<String>,
     #[serde(rename = "onChainDigest", with = "hex::serde")]
     pub on_chain_digest: [u8; 32],
     /// JSON array of `domain::ExternalCallJson` (`"[]"` for a root-only transition with none) -
@@ -100,6 +119,9 @@ fn empty_transition_manifest_json() -> String {
 /// always `None`/JSON `null` at the point `assemble_transaction` writes this state (see `new`'s own
 /// doc comment - nothing in this crate ever populates it), and extra JSON keys not declared in the
 /// schema are simply ignored by core's ABI-tuple parsing, so there's no need to model it.
+/// `inputCommitments`/`outputCommitments` are declared as plain JSON-encoded `string`s (like
+/// `transitionManifest`), not `string[]`, for the same ABI-round-trip reason every other JSON-array
+/// field in this schema already is.
 pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
   "name": "SenteInfo",
   "type": "tuple",
@@ -109,6 +131,8 @@ pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
     {"name": "contractId", "type": "string"},
     {"name": "oldRoot", "type": "string"},
     {"name": "newRoot", "type": "string"},
+    {"name": "inputCommitments", "type": "string"},
+    {"name": "outputCommitments", "type": "string"},
     {"name": "onChainDigest", "type": "string"},
     {"name": "externalCallsJson", "type": "string"},
     {"name": "invokeJson", "type": "string"},
@@ -117,11 +141,14 @@ pub const INFO_STATE_ABI_SCHEMA_JSON: &str = r#"{
 }"#;
 
 impl InfoState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         transaction_id: String,
         contract_id: String,
         old_root: [u8; 32],
         new_root: [u8; 32],
+        input_commitments: Vec<[u8; 32]>,
+        output_commitments: Vec<[u8; 32]>,
         on_chain_digest: [u8; 32],
         external_calls_json: String,
         invoke_json: String,
@@ -131,6 +158,8 @@ impl InfoState {
             contract_id,
             old_root,
             new_root,
+            input_commitments: input_commitments.iter().map(hex::encode).collect(),
+            output_commitments: output_commitments.iter().map(hex::encode).collect(),
             on_chain_digest,
             external_calls_json,
             invoke_json,
@@ -153,18 +182,30 @@ impl InfoState {
             .context("failed to parse transition manifest")
     }
 
+    /// Decodes `input_commitments`/`output_commitments` back into raw 32-byte arrays, in the same
+    /// order they were encoded - what `domain.rs` needs to rebuild the on-chain payload/call args.
+    pub fn input_commitments_bytes(&self) -> Result<Vec<[u8; 32]>> {
+        decode_commitments(&self.input_commitments)
+    }
+
+    pub fn output_commitments_bytes(&self) -> Result<Vec<[u8; 32]>> {
+        decode_commitments(&self.output_commitments)
+    }
+
     /// The digest the sender's own `AttestationType.SIGN` request asks it to sign - Sente's
     /// off-chain integrity commitment (distinct from `on_chain_digest`, which endorsers sign
-    /// instead - see the module doc comment for why they must differ). Covers `on_chain_digest`,
-    /// `external_calls_json`, and `invoke_json` too, so tampering with any of them after the
-    /// sender signs invalidates that signature, the same reasoning `sente_host::digest`-based
-    /// endorsement used in S2.
+    /// instead - see the module doc comment for why they must differ). Covers `input_commitments`/
+    /// `output_commitments`, `on_chain_digest`, `external_calls_json`, and `invoke_json` too, so
+    /// tampering with any of them after the sender signs invalidates that signature, the same
+    /// reasoning `sente_host::digest`-based endorsement used in S2.
     pub fn signing_payload(&self) -> Result<[u8; 32]> {
         let canonical = serde_json::to_vec(&(
             &self.transaction_id,
             &self.contract_id,
             hex::encode(self.old_root),
             hex::encode(self.new_root),
+            &self.input_commitments,
+            &self.output_commitments,
             hex::encode(self.on_chain_digest),
             &self.external_calls_json,
             &self.invoke_json,
@@ -173,6 +214,19 @@ impl InfoState {
         .context("failed to canonicalize info state for signing")?;
         Ok(Sha256::digest(canonical).into())
     }
+}
+
+fn decode_commitments(values: &[String]) -> Result<Vec<[u8; 32]>> {
+    values
+        .iter()
+        .map(|hex_str| {
+            let bytes = hex::decode(hex_str)
+                .with_context(|| format!("commitment {hex_str} is not valid hex"))?;
+            bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("commitment is not 32 bytes"))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -185,6 +239,8 @@ mod tests {
             "contract-1".to_string(),
             old_root,
             new_root,
+            vec![],
+            vec![],
             digest,
             "[]".to_string(),
             String::new(),
@@ -250,5 +306,48 @@ mod tests {
             tampered.signing_payload().unwrap(),
             "a tampered invoke_json must invalidate the signing payload"
         );
+    }
+
+    /// R21 (ch. 16 §16.1): tampering with the claimed business-state effects must invalidate the
+    /// sender's own signature too, the same protection every other field here already has.
+    #[test]
+    fn signing_payload_changes_if_input_commitments_change() {
+        let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
+        let mut tampered = base.clone();
+        tampered.input_commitments = vec![hex::encode([0xAAu8; 32])];
+        assert_ne!(
+            base.signing_payload().unwrap(),
+            tampered.signing_payload().unwrap(),
+            "a tampered input_commitments must invalidate the signing payload"
+        );
+    }
+
+    #[test]
+    fn signing_payload_changes_if_output_commitments_change() {
+        let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
+        let mut tampered = base.clone();
+        tampered.output_commitments = vec![hex::encode([0xBBu8; 32])];
+        assert_ne!(
+            base.signing_payload().unwrap(),
+            tampered.signing_payload().unwrap(),
+            "a tampered output_commitments must invalidate the signing payload"
+        );
+    }
+
+    #[test]
+    fn commitments_bytes_round_trip() {
+        let commitments = vec![[0x11u8; 32], [0x22u8; 32]];
+        let state = InfoState::new(
+            "tx-1".to_string(),
+            "contract-1".to_string(),
+            [0u8; 32],
+            [1u8; 32],
+            commitments.clone(),
+            vec![],
+            [2u8; 32],
+            "[]".to_string(),
+            String::new(),
+        );
+        assert_eq!(state.input_commitments_bytes().unwrap(), commitments);
     }
 }
