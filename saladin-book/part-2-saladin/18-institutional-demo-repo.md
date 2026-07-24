@@ -1,8 +1,14 @@
 # Chapter 18 — Institutional Demo: Interbank Repo
 
 A business case for Saladin, built on top of the port (chapters 10–15), aimed at a specific
-institutional audience rather than at Paladin engineers. This chapter is a design, not yet a
-build — §18.7 sizes what it would take.
+institutional audience rather than at Paladin engineers. §18.1–§18.6 are the design; §18.7 records
+what it took to actually build it — a real, three-process demo, verified end to end against real
+Stellar infrastructure, not a simulation — and §18.8 is how to run it yourself. **Testnet vs.
+quickstart, precisely** (§18.7 has the full account): the demo's original, pre-`repo-terms` version
+was confirmed against real public Stellar Testnet; the *current*, `repo-terms`-integrated version
+has been re-confirmed end to end against local quickstart, including fixing three real bugs a live
+run — not the unit tests — surfaced; it has not yet been re-run against real Testnet since that
+integration.
 
 ## 18.1 The business case
 
@@ -104,16 +110,49 @@ own state-distribution mechanism gives access to — never the wider network):
   registry's own visibility scope — a Paladin-level consideration, not a Sente-specific one.)
 
 **Private:**
-- The repo's own economic terms — **notional, rate, tenor, haircut**, and any bespoke covenant
-  (substitution rights, default terms) — none of this is represented on-chain at all today; Sente's
-  `transition` is a generic root advance plus external calls, with no notion of "this is a repo
-  maturing on date X at rate Y" (§18.6 flags this as not-yet-designed). Because the cash leg
-  settles as a shielded SNoto transfer rather than a raw SAC transfer (below), none of these terms
-  is derivable from the settlement transactions either — unlike a design where cash moves as a bare
-  classic-asset payment, where the notional and implied rate would be arithmetic from two public
-  numbers regardless of whether "rate" is ever an explicit field.
 - Which specific business logic a `transition` executed, beyond the bare fact that one happened and
   the root advanced.
+- The repo's own economic terms (notional, rate, tenor, haircut) — Sente's `transition` itself
+  carries none of this; see the dedicated **repo terms** subsection below for where and how it's
+  actually represented. Because the cash leg settles as a shielded SNoto transfer rather than a raw
+  SAC transfer (below), none of these terms is derivable from the settlement transactions either —
+  unlike a design where cash moves as a bare classic-asset payment, where the notional and implied
+  rate would be arithmetic from two public numbers regardless of whether "rate" is ever an explicit
+  field.
+
+### Repo terms (rate, maturity, haircut)
+
+The repo's own economic terms are represented by a **separate, minimal Paladin domain** —
+`repo-terms` (`domains/repo-terms`, `soroban/contracts/repo-terms{,-factory}`) — deployed once per
+trade, independent of both SNoto and Sente. This mirrors SNoto's own state-ID-echo pattern above,
+not Sente's `transition`: the real values are computed off-chain by Paladin's own domain plugin as
+a private state, and only that state's own opaque ID ever reaches the chain.
+
+**Public:**
+- The `repo-terms` contract instance's address, and that it exists.
+- That a `set_terms` call happened, at a given ledger and timestamp.
+- The opaque 32-byte state ID it echoes — the same disclosure profile as every other state ID in
+  this chapter: proof that something was agreed, never what.
+- Both banks' addresses, recorded at deploy time (`initialize(bank_a, bank_b)`) — a disclosed fact,
+  the same way a lock's delegate address is (above).
+
+**Private:**
+- **Rate, maturity, haircut** — the real values, held only in Bank A's and Bank B's own private
+  state stores, distributed there by Paladin's own state-distribution mechanism (never on-chain,
+  never visible to the wider network) — exactly the property the bond and cash legs already have.
+
+**A deliberate, disclosed limitation — no on-chain signature check on `set_terms`.** Unlike SNoto's
+notary-authorized calls, `repo-terms`'s `set_terms` does not `require_auth()` either bank on-chain
+at all (`soroban/contracts/repo-terms/src/lib.rs`). This isn't an oversight: Soroban's non-invoker
+`SorobanAuthorizationEntry` construction — a real signature from a party that is neither the
+transaction's submitter nor a calling contract — doesn't exist anywhere in this codebase yet (the
+same gap already tracked against SNoto's own `deposit`, one layer earlier here, since *neither* bank
+is necessarily the transaction's own submitter). The actual trust boundary is enforced entirely
+off-chain instead, by Paladin's own bilateral `ENDORSE`/`threshold=2` attestation plan: both banks'
+own nodes must independently endorse the real terms before the transaction is ever assembled,
+mirroring `test-counter::bump`'s identical, already-precedented shortcut (ch. 14 §14.3 S3).
+**TODO**: replace this with a real on-chain dual-signature check once non-invoker authorization
+entries are built for this codebase — tracked here explicitly, not treated as solved.
 
 ### The cash leg (USDC, shielded into a second SNoto instance)
 
@@ -247,6 +286,19 @@ group; Bank A `lock`s and `delegate_lock`s the repayment coin the same way. The 
 `transition`, signed by both members again, fires `snoto_bond.unlock()` (B→A) and
 `snoto_cash.unlock()` (A→B) atomically — the same mechanism as the near leg, in reverse.
 
+**A disclosed limitation, matching this chapter's own standard of naming what isn't solved
+(§18.3's `repo-terms` TODO is the same pattern): "maturity" is not actually enforced against real
+ledger time anywhere today — it's a privately-agreed number, not a programmatic condition.**
+`agreeRepoTerms`'s `maturityLedger` value is computed once at agreement time and never checked
+again by anything; the demo's own pause between legs is a human pressing Enter
+(`pauseForDemo`/`--interactive`), not a wait for the real chain to reach that ledger. This isn't
+just an unbuilt check — it's currently structurally blocked: Sente's private simulation runs every
+transition against a frozen, fixed `LedgerInfo` (`soroban_env_host::e2e_testutils::
+default_ledger_info()`, tracked as risk R22, ch. 16 §16.1), not the real chain's current
+ledger/timestamp, so no privately-hosted contract logic could enforce a real maturity condition
+even if one were written today. Closing R22 is a prerequisite for this specific claim ever becoming
+an enforced condition rather than a narrated one.
+
 ### Converting back to real USDC
 
 Either bank calls `snoto_cash.withdraw(tx_id, recipient, amount, inputs, data)` on its own
@@ -270,40 +322,134 @@ an adversary would otherwise rely on between one deposit/withdraw and one specif
 - The invoker-authorization pattern for a delegated SNoto lock — proven for SAtom
   (`satom/src/test.rs`, `snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only`).
 
-**Proven by an identical code path, but not tested for this exact combination:** Sente's
-`external_calls` execute via the same `env.invoke_contract` primitive SAtom's `execute()` uses, so
-a Sente-group-delegated SNoto unlock should satisfy invoker authorization exactly the way SAtom's
-does — for *either* SNoto instance, bond or cash, since it's the identical mechanism applied twice.
-This is a reasonable inference from identical code, not yet a verified fact — before this
-chapter's central claim is load-bearing for a real build, it needs the same kind of small,
-direct contract test that already exists for SAtom.
+**Proven directly, not just by identical-code inference — see §18.7.** Sente's `external_calls`
+execute via the same `env.invoke_contract` primitive SAtom's `execute()` uses, so a
+Sente-group-delegated SNoto unlock satisfies invoker authorization exactly the way SAtom's does —
+for *either* SNoto instance, bond or cash, since it's the identical mechanism applied twice. This
+used to be flagged here as "a reasonable inference from identical code, not yet a verified fact,"
+needing a dedicated small contract test before being load-bearing. It's since been verified more
+directly than that bar even asked for: a real, live, end-to-end demo run (§18.7) exercises exactly
+this claim — both SNoto instances, both legs — not just a targeted unit test of the mechanism in
+isolation.
 
-**Not yet designed at all:** how repo-specific terms (rate, maturity date, haircut, substitution
-rights) get represented on-chain. Today's Sente `transition` is a generic root advance plus
-external calls — it has no notion of "this transition is a repo maturing on date X at rate Y."
-Representing that needs either encoding repo terms into the transition's own off-chain-endorsed
-data (cheap, but not independently verifiable on-chain) or a small custom contract deployed *into*
-the Sente group tracking the repo's own terms as trackable `SenteEntry` state (mirroring the
-`test-counter` fixture ch. 14 §14.3 already proves this pattern works for, but with real business
-fields instead of a counter) — a genuine design decision, not a mechanical extension of what
-exists.
+**Now built, as its own minimal domain — deliberately not folded into Sente's `transition`:**
+repo-specific terms (rate, maturity, haircut) are represented by a new, independent Paladin domain
+(`domains/repo-terms`), not a custom contract deployed *into* the Sente group and tracked as a
+`SenteEntry` state — the option originally considered here. A `test-counter`-style contract's own
+plain storage fields are never protocol-private: Soroban contract storage is trivially readable by
+anyone with RPC access regardless of what off-chain mechanism references it (confirmed empirically,
+by reading a real testnet contract's own storage/balance fields with zero special access) — storing
+the real rate/maturity/haircut there directly would have contradicted this chapter's own §18.3
+disclosure standard. `repo-terms` instead mirrors SNoto's own state-ID-echo pattern exactly (§18.3's
+"Repo terms" subsection has the full disclosure profile): the real values live only in Paladin's own
+off-chain private-state distribution, and the on-chain contract only ever stores/echoes that state's
+opaque ID — genuinely private, at the cost of one disclosed limitation: no on-chain signature check
+yet on `set_terms` (see that subsection's own TODO).
 
-## 18.7 What building this would take
+## 18.7 What building this took
 
-Not part of the M0–M7 port scope (ch. 15) — an optional, additive demo built on top of it, sized
-here the same way for comparability. Tagged `[Agent]`/`[Human]` per ch. 15 §15.2's convention.
+Not part of the M0–M7 port scope (ch. 15) — an optional, additive demo built on top of it. The
+table below was originally a forward-looking estimate; it's now a record of what actually shipped,
+against real code, verified against a real chain. Tagged `[Agent]`/`[Human]` per ch. 15 §15.2's
+convention.
 
-| Item | Track | Effort |
+| Item | Track | Outcome |
 |---|---|---|
-| Contract-level proof: Sente-delegated SNoto unlock via invoker auth | **[Agent]** — mirrors the existing SAtom test almost line for line; one proof covers both instances, since it's the identical mechanism | ~0.25 em |
-| Bond and cash SNoto instances — notary/config + fixtures for both | **[Agent]** — mirrors existing fixture-deployment patterns, applied twice | ~0.5 em |
-| Repo-terms data model (rate/maturity/haircut representation) | **[Human]** — a genuine new design choice, no existing pattern to mirror | ~0.5 em |
-| 3-node demo harness combining two SNoto instances + Sente node configs | **[Agent]** — mirrors `TestSenteThreeNodeHarness`/`TestStellarComponentTest` closely; needs a `SaladinFactory`/registry-routing decision per node (ch. 14 §14.1's own dedicated-registry-per-domain constraint) | ~1 em |
-| End-to-end near-leg + far-leg orchestration script, including cash shield/unshield | **[Agent]** — mirrors `testnet-demo.sh`'s existing structure (ch. 10 §10.3) | ~0.5 em |
+| Contract-level proof: Sente-delegated SNoto unlock via invoker auth | **[Agent]** | ✅ **Done.** `satom/src/test.rs`'s `snoto_lock_unlocks_via_atom_execute_with_invoker_auth_only` proves the mechanism for both instances, since it's identical either way. |
+| Bond and cash SNoto instances — notary/config + fixtures for both | **[Agent]** | ✅ **Done.** Two separately-named `noto` domain instances (`noto-bond`, `noto-cash`) on one set of nodes; `deploy-stellar-fixtures.sh` extended with a real test-USDC classic asset + SAC (`testUsdcSacAddress`/`testUsdcIssuerAddress`). |
+| Repo-terms data model — a new, independent Paladin domain (`domains/repo-terms` + `soroban/contracts/repo-terms{,-factory}`) mirroring SNoto's state-ID-echo pattern, with its own bilateral `ENDORSE`/`threshold=2` attestation plan | **[Agent]**/**[Human]** | ✅ **Done**, with one disclosed limitation (§18.3, §18.6): `set_terms` has no on-chain dual-signature check yet — the trust boundary is Paladin's own bilateral endorsement plan, not the contract itself. |
+| 3-node demo harness combining two SNoto instances + Sente node configs + the repo-terms domain | **[Agent]** | ✅ **Done**, in `TestInstitutionalRepoDemo.java` — three genuinely separate OS processes (node1 = registrar + cash notary, node2 = Bank A, node3 = Bank B), not a single-JVM simulation. |
+| End-to-end orchestration script — repo terms agreed, then near-leg + far-leg settlement, including cash shield/unshield | **[Agent]** | ✅ **Done** — `soroban/scripts/repo-demo.sh` (§18.8), with `--rate`/`--maturity-days`/`--haircut` flags. **Re-confirmed on local quickstart** (re-verified directly in the same session `repo-terms` was integrated — see below); **real public Stellar Testnet confirmation predates the `repo-terms` integration** and hasn't been re-run against the current, repo-terms-integrated version — treat the Testnet claim as open until that re-run happens, not as still-current fact. |
 
-**Total ≈ 2.75 em** (~2.25 em agent-suitable, ~0.5 em needing human-originated design — the
-repo-terms data model is the one genuinely open question, everything else is pattern-following
-against already-proven code).
+**Three real bugs surfaced, and were fixed, getting the current (repo-terms-integrated) version to
+actually run — worth recording, since this table's own job is being an honest account of what
+shipped, not just what was designed.** (1) `TestInstitutionalRepoDemo.java`'s own `waitForReady`
+calls still expected 3 domains per node, not 4, after `repo-terms` became a 4th — a stale constant
+from before the integration, not something this integration's own commit updated. (2)
+`repoterms.SetTermsParams`/`RepoTermsV1`'s `rateBps`/`maturityLedger`/`haircutBps` fields were plain
+Go `uint32`s; core's real ABI-tuple JSON layer sends `uint*`-typed transaction parameters as JSON
+*strings*, not bare numbers (the domain's own unit tests used bare-number literals, which is exactly
+why this was never caught before a real end-to-end run) — fixed by switching to `pldtypes.HexUint64`,
+the same convention Noto's own `Amount` field already uses for this reason. (3) The `"bilateral"`
+`ENDORSE` attestation request built in `Assemble` was missing `PayloadType` entirely, unlike the
+`"sender"` `SIGN` request right next to it — core's signer rejected it with `Unsupported payload
+type ''`. None of these are Sente/R21-related; all three are `repo-terms`/harness-level bugs that
+simply hadn't been exercised by a real, live, cross-process run until now. A fourth, environmental
+factor also needed addressing: `NodeProcessHarness.waitForReady`'s hardcoded 30s timeout was too
+tight under real resource contention in a shared environment — bumped to a configurable default
+(`paladin.test.stellar.nodeReadyTimeoutMs`, default 60000) mirroring `POLL_ITERATIONS`'s own
+override convention.
+
+**What running it end to end actually demonstrates.** §18.6's Sente-delegated-unlock claim for
+either SNoto instance is no longer "a reasonable inference from identical code" — a live run now
+proves it directly: a deployed bond instance and a deployed cash instance under distinct notaries;
+the bond minted to Bank A; Bank B funded, approved, and shielded
+into its own SNoto-cash coin against a real test-USDC SAC; a 2-member Sente group formed between
+Bank A and Bank B; a `repo-terms` instance deployed and the real rate/maturity/haircut agreed
+bilaterally, with only an opaque state ID reaching the chain; the near leg settling the bond and the
+cash atomically in one `transition`; the far leg reversing both, atomically, in a second
+`transition`; and Bank B unshielding its cash back to real test-USDC — all reconfirmed against local
+quickstart. Every step above produces a genuine on-chain transaction (a real
+`stellar.expert/explorer/testnet/tx/<hash>` link when run against real Testnet, per §18.8)
+— the demo's evidence isn't "the test suite is green," it's a chain of real,
+independently-verifiable Testnet transactions a counterparty could audit directly.
+
+## 18.8 Running the demo
+
+The demo is `TestInstitutionalRepoDemo` (`core/java/src/test/java/io/kaleido/paladin/`), driven by
+`soroban/scripts/repo-demo.sh` — mirroring `testnet-demo.sh`'s own structure (ch. 10 §10.3):
+reset-aware fixture deployment (redeploys only if the previous run's fixtures no longer resolve),
+friendbot funding, and Gradle's own live-external-state cache-busting.
+
+**Prerequisites**: the `stellar` CLI and `python3` on `PATH`; the Soroban contracts already built
+(`./gradlew :soroban:build` or equivalent — the script only deploys, it doesn't compile).
+
+**Usage**, from `soroban/scripts/`:
+
+```bash
+STELLAR_FIXTURE_NETWORK=testnet ./deploy-stellar-fixtures.sh
+./repo-demo.sh                                     # defaults: bond=1000000, cash=500000, rate=500bps, maturity=7d, haircut=200bps, interactive
+./repo-demo.sh --bond-amount 2000000 --cash-amount 750000
+./repo-demo.sh --rate 425 --maturity-days 30 --haircut 150
+./repo-demo.sh --no-interactive                    # run straight through, no pauses (e.g. CI/verification)
+```
+
+| Flag | Meaning |
+|---|---|
+| `--bond-amount N` | Bond notional Bank A holds and repos to Bank B (default `1000000`) |
+| `--cash-amount N` | Shielded cash notional Bank B pays Bank A for it (default `500000`) |
+| `--rate N` | Repo rate in basis points, agreed privately via the `repo-terms` domain (default `500`, i.e. 5.00%) |
+| `--maturity-days N` | Days from now the repo matures, converted to a real future ledger sequence number (default `7`) |
+| `--haircut N` | Repo haircut in basis points, agreed privately via the `repo-terms` domain (default `200`, i.e. 2.00%) |
+| `--interactive` | Pause between the near leg and the far leg, so a live audience can inspect state before the repo matures (default: on) |
+| `--no-interactive` | Run straight through with no pauses |
+
+**What it does**: deploys (or reuses) the bond and cash SNoto instances plus a test-USDC classic
+asset/SAC against real Stellar Testnet; mints the bond to Bank A; funds, approves, and shields
+cash into Bank B's SNoto-cash coin; forms a 2-member Sente group between Bank A and Bank B; deploys
+a `repo-terms` instance and agrees the real rate/maturity/haircut bilaterally (§18.3's "Repo terms"
+subsection — only an opaque state ID reaches the chain); settles the near leg (bond A→B, cash B→A)
+and, after the interactive pause if enabled, the far leg (bond B→A, cash A→B) atomically; then
+withdraws Bank B's shielded cash back to real test-USDC. Every step is narrated with its
+transaction ID and a real `stellar.expert/explorer/testnet/tx/<hash>` link.
+
+**The interactive pause, mechanically**: Gradle's `Test` task has no stdin-forwarding support (`Exec`/
+`JavaExec` do; `Test` doesn't), so the pause between legs isn't a plain `readLine()` inside the test
+JVM. `repo-demo.sh` creates a temp directory and passes it as `paladin.demo.pauseDir`; the test
+drops a `waiting` marker file there and polls for a `continue` marker, while the script's own
+background watcher — reading from `/dev/tty` directly, since the foreground Gradle process owns
+the script's own stdin — prints the real prompt and creates the marker once you press Enter.
+
+**Against local quickstart instead of Testnet**: run the underlying Gradle command directly, from
+the repo root, rather than through the script (which is Testnet-only):
+
+```bash
+./gradlew :core:java:test --tests "io.kaleido.paladin.TestInstitutionalRepoDemo" --rerun \
+    -Dpaladin.demo.bondAmount=1000000 -Dpaladin.demo.cashAmount=500000 -Dpaladin.demo.interactive=false
+```
+
+quickstart's fixtures come from `:soroban:deployStellarFixtures`, one of `:core:java:test`'s own
+task dependencies — no `STELLAR_FIXTURE_NETWORK` override needed, since quickstart is its default.
 
 ---
 
