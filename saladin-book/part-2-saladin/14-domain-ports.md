@@ -37,17 +37,23 @@ otherwise the last outstanding EVM-parity gap in the lock family.
   on-chain args/digest shape) but their live end-to-end execution — and `deposit`/`withdraw`
   entirely — stay unexercised. `prepareUnlock`/`delegateLock` (which only ever *commit* a future
   spend/cancel path) are proven live.
-- **`delegate_lock`, `prepare_unlock`/`prepare_mint_unlock`/`prepare_burn_unlock`, and the three
-  create-lock variants** (`createTransferLock`/`createMintLock`/`createBurnLock`) are not
-  implemented for Stellar — they need real `UnlockHashFromIDsV0`/`V1`/`EncodeDelegateLock`
-  implementations on `stellarChainIO` (currently stubs), since these operations genuinely use the
-  commit-reveal `SALADIN_TYPED_DATA_V0` scheme on-chain, unlike the base lock/unlock handlers.
+- ✅ **CLOSED (was stale).** ~~`delegate_lock`, `prepare_unlock`... are not implemented for
+  Stellar~~ — both are fully implemented and proven live (see "how it works today" above:
+  the 3-node harness runs the full `deploy→mint→transfer→lock→prepareUnlock→delegateLock`
+  sequence against real public Testnet). `UnlockHashFromIDsV1`/`EncodeDelegateLock` on
+  `stellarChainIO` are real, not stubs; only `UnlockHashFromIDsV0` remains a stub, and
+  deliberately so — Stellar always uses the V1 variant, so V0 is dead code by design, not a gap.
+  **The narrower claim that's still accurate**: `prepare_mint_unlock`/`prepare_burn_unlock` and the
+  three create-lock variants (`createTransferLock`/`createMintLock`/`createBurnLock`) genuinely have
+  no Stellar branch yet (no `ChainKind()`/Stellar handling anywhere in their own `handler_create_*_
+  lock.go`/`handler_prepare_{mint,burn}_unlock.go` files) — that part of this gap remains open.
 - **No CI/nightly job** exercises any of this against real public Testnet — every Testnet
   confirmation to date (SNoto or Sente) has been a manual, one-off run.
-- **`buildEndorsePlan` hardcodes `ECDSA_SECP256K1`/`ETH_ADDRESS`** for both attestation requests it
-  builds, rather than asking `chainIO` for the right algorithm/verifier type — a latent
-  inconsistency that hasn't bitten a test yet but would need fixing whenever that function's
-  signature is next revisited.
+- ✅ **CLOSED (was stale).** ~~`buildEndorsePlan` hardcodes `ECDSA_SECP256K1`/`ETH_ADDRESS`~~ —
+  fixed; it now calls `chainIO.SigningAlgorithm()`/`.VerifierType()` for both attestation requests
+  it builds (`handlers.go`), matching this chapter's own later claim (below) that `buildEndorsePlan`
+  "needs no chain-kind branching at all." This bullet had drifted out of sync with that claim in the
+  same chapter — removed rather than left contradicting it.
 
 **Transfer** spends real input coins (querying `owner.chainAddress.String()`, the chain-neutral
 successor to the EVM-only `identityPair.address`). Not yet supported: nullifier-variant transfers
@@ -60,9 +66,12 @@ hooks paths stay EVM/Pente-only, gated behind `NotaryModeHooks`.
 `locked_outputs` *and* an ordinary remainder in one call, matching EVM Noto's own
 `lock`/`createLock` shape. `NotoLockedCoin.Owner` and `NotoLockInfo`'s `Owner`/`Spender`/`Delegate`
 are now `pldtypes.ChainAddress` (same pattern as `NotoCoin.Owner`), and `EncodeLock`/`EncodeUnlock`
-on `stellarChainIO` are real `SALADIN_TYPED_DATA_V0` digests. `UnlockHashFromIDsV0`/`V1`/
-`EncodeDelegateLock` stay stubs — base `unlock` never calls them, only `prepare_unlock`/the
-create-lock variants do (see "what's left," above). `unlock`'s own on-chain args are a genuinely
+on `stellarChainIO` are real `SALADIN_TYPED_DATA_V0` digests. `UnlockHashFromIDsV1`/
+`EncodeDelegateLock` are real, used by `prepare_unlock`/`delegate_lock` (proven live, see "how it
+works today" above) — only `UnlockHashFromIDsV0` stays a stub, and deliberately so: Stellar always
+uses the V1 variant, so V0 is dead code by design, not an open gap. The create-lock variants
+(`createTransferLock`/`createMintLock`/`createBurnLock`) genuinely have no Stellar implementation
+yet (see "what's left," above). `unlock`'s own on-chain args are a genuinely
 different shape from EVM's `spendLock` (no separate lock-info state ref, no signature/proof slot at
 all — the lock lives in native contract storage keyed by `lock_id`), handled by
 `stellarBaseLedgerInvokeUnlock` filtering `req.InputStates` down to just the locked-coin state
@@ -263,6 +272,92 @@ restart-safe output recovery via the domain's own `FindStates` callback).
   same (unreset) Testnet fixtures correctly fail with `Storage::ExistingValue` on the second and
   later attempts — this is the address-collision-avoidance scheme working as intended, not
   flakiness; a genuinely fresh run needs either fresh fixtures or a Testnet reset.
+- ✅ **CLOSED. `SentePrivacyGroup` now has a real, content-addressed structural check alongside
+  `root`, closing risk R21 (ch. 16 §16.1).** `root` still gives total ordering (a stale/replayed
+  `old_root` — read from the contract's own storage, never taken as a parameter — recomputes its
+  signed payload over the wrong root and fails signature verification), but it used to be the
+  *only* on-chain check: `new_root` was just `sha256(old_root, tx_id[, invocation_digest])`, a hash
+  chain with no way to independently verify a transition's claimed business-state effects were the
+  *correct current version* of anything. That's now closed the same way Pente's own `_unspent`
+  mapping works: `transition` takes two new parameters, `inputs`/`outputs: Vec<BytesN<32>>` —
+  content-addressed commitment hashes (`domain::entry_commitment`, a self-contained SHA-256 over
+  each touched `SenteEntry`'s own content — deliberately *not* the same identifier Paladin core
+  assigns internally, since the Rust plugin toolkit has no synchronous state-ID-allocation callback
+  the way Java/Go plugins do) — checked against a real, persistent `storage::Unspent` set: an input
+  must currently be unspent (else `sente: input not available`) and gets deleted; an output must
+  not already be unspent (else `sente: output already unspent`) and gets inserted. Empty for a
+  root-only transition, so that path costs exactly what it costs today — only transactions
+  carrying a real business invocation pay the new, `_unspent`-style cost. `assemble_transaction`
+  computes these commitments from `TransitionStateChanges`; `endorse_transaction` independently
+  recomputes and cross-checks them from its own re-execution before folding them into the signed
+  payload (`crates/sente/src/domain.rs`, `crates/sente/src/info.rs`); the contract-level fix and its
+  new tests (`transition_rejects_input_never_created`, `transition_rejects_double_spend_of_same_input`,
+  `transition_rejects_output_already_unspent`) live in `soroban/contracts/sente/src/{lib,storage,test}.rs`.
+  Full workspace test suites (Soroban contracts and the Rust plugin, including the cross-process
+  `two_node_invoke`/`divergence` tests) pass unmodified in behavior for every existing root-only
+  caller — this is a strictly additive on-chain check, not a breaking redesign of the happy path.
+- **R21's cost spike — run, not just proposed** (`soroban/contracts/sente/src/bench_test.rs`,
+  mirroring `szeto`'s own `batch_bench_test.rs`/R2's methodology: measure the real metered cost via
+  `env.cost_estimate()`, don't estimate it). A steady-state `transition()` — spending N previously-
+  created business entries and creating N new ones, 2-member group — measured via real Soroban
+  invocation-resource metering:
+
+  | N | CPU instructions | write_entries | headroom vs 600M instr | headroom vs 200 write_entries |
+  |---|---|---|---|---|
+  | 0 (root-only, today's existing behavior) | 938,079 | 1 | 99.8% | 99.5% |
+  | 5 | 1,184,291 | 11 | 99.8% | 94.5% |
+  | 10 | 1,572,460 | 21 | 99.7% | 89.5% |
+  | 20 | 2,656,076 | 41 | 99.6% | 79.5% |
+  | 50 | 8,209,452 | 101 | 98.6% | 49.5% |
+  | 75 | 15,420,793 | 151 | 97.4% | 24.5% |
+  | 99 | 24,394,013 | 199 | 95.9% | 0.5% |
+  | 100 | 24,794,568 | 201 | 95.9% | **−0.5% (exceeds the limit)** |
+  | 120 | 33,926,563 | 241 | 94.3% | −20.5% |
+
+  Confirms the predicted shape exactly: `write_entries = 2N + 1` (one shared instance-storage write
+  for the root advance, plus one persistent-entry delete per input and one insert per output — each
+  its own real Soroban ledger key, no batching). **CPU instructions are never the binding
+  constraint** (>94% headroom even at N=120) — matching R2's own finding for SZeto that
+  `write_entries`, not instructions, is what actually bites first.
+
+  **Correction (caught by a live mainnet check, not by this spike itself):** the 200-entry limit
+  above is Stellar mainnet's real, current `tx_max_write_ledger_entries` network setting — **not**
+  `soroban-sdk`'s own `testutils::cost_estimate::NetworkInvocationResourceLimits::mainnet()` helper,
+  which hardcodes `write_entries: 50` and explicitly warns in its own doc comment that "this is not
+  pulling the values dynamically." An earlier version of this spike (and R2's own write-up, ch. 16
+  §16.1, unrelated to R21) used that stale SDK constant and understated the real safe capacity by
+  roughly 4×. **N=99 touched business entries per transition is the measured-safe ceiling** against
+  the real mainnet limit; N=100 already exceeds it. This is a live, validator-voted network
+  parameter, not a fixed constant — re-check it against the real network before relying on these
+  numbers, the same caveat the SDK's own docs give. A future production
+  `MAX_SAFE_TOUCHED_ENTRIES`-style enforced cap (mirroring SZeto's own `MAX_SAFE_BATCH_OUTPUTS`,
+  ch. 13 §13.3) is worth adding once Sente's business-invocation path sees real use — not urgent
+  today, since every current caller (the repo
+  demo included) is root-only and touches zero business entries.
+- **Sente's private simulation runs against a frozen, fake `LedgerInfo`, not the real chain's
+  current one — a distinct gap from S4's protocol-version dispatch work, tracked as risk R22
+  (ch. 16 §16.1).** `assemble_transaction`/`endorse_transaction` (`domains/sente/crates/sente/src/
+  domain.rs:1434`/`:1691` — the real production path every business invocation goes through, not
+  test-only code) both call `soroban_env_host::e2e_testutils::default_ledger_info()`, a hardcoded
+  SDK test fixture (`sequence_number: DEFAULT_LEDGER_SEQ`, `timestamp: 12345678` — literally that
+  fixed number) returned identically on *every* invocation, regardless of when it's actually
+  assembled in real wall-clock time. A privately-hosted contract's own `env.ledger().sequence()`/
+  `.timestamp()` calls therefore never see real, live chain state — only the same frozen snapshot,
+  always. This is independent of S4's "pin the correct protocol version" work (ch. 16 §16.1) — even
+  with correct multi-version host dispatch, these specific fields would still be fake; the gap is
+  in the *source* of the pinned value, not which host version interprets it. Confirmed concretely
+  via the institutional repo demo (ch. 18): `agreeRepoTerms`'s own `maturityLedger` value
+  (`getLatestLedger() + maturityDays*24*3600/5`) is computed once, stored in the repo-terms private
+  state, and never referenced again anywhere — the "far leg matures the repo" narration is a
+  purely human-paced UI pause (`pauseForDemo`, gated on a presenter pressing Enter, or a no-op in
+  non-interactive mode), not an enforced condition. Even if repo-terms or a future Sente-hosted
+  contract wanted to enforce "only execute once the real ledger reaches maturity," it structurally
+  couldn't today — the ledger context any private Sente contract observes isn't real. Closing this
+  needs `assemble_transaction`/`endorse_transaction` to derive `LedgerInfo` from the real, live
+  chain at assembly time (the same live query Stellar's own `simulateTransaction` preflight already
+  performs for ordinary transactions, ch. 12 §12.1) instead of the hardcoded fixture — the pinning
+  mechanism itself (pin at assembly, verify identically at endorsement) is already correct; only the
+  *source* of the value needs to change.
 
 
 ### What Pente does, translated
@@ -313,6 +408,35 @@ signatures over transition hashes. The Soroban translation:
   mid-execution calls to public contracts (use the external-call pattern); host features that
   cannot be virtualized identically (TTL interactions, live `prng` beyond the seeded one) are
   disallowed. Pente carries the same philosophy.
+
+### Pente vs. Sente — common ground, key differences
+
+Both are the same architectural pattern — embed the base ledger's real execution engine, run
+privacy-group state as a UTXO chain of state snapshots, require unanimous member endorsement over
+a transition hash — realized against two different execution models (account-based EVM vs.
+ledger-entry-based Soroban):
+
+| Aspect | Pente (EVM) | Sente (Soroban) |
+|---|---|---|
+| Embedded engine | Besu's EVM library, in-JVM (`evmrunner/EVMRunner.java`) | `soroban-env-host` via the `soroban-simulation` crate, in-process (`crates/sente-host`) — the same engine `simulateTransaction` itself runs on |
+| Plugin language | Java | Rust — Paladin's first Rust plugin, via a thin reusable `saladin-plugin-rs` handshake crate reimplementing `plugintk`'s gRPC dial/register/dispatch loop |
+| Loader path | Standard JVM plugin loader | The *exact same* JNA/`c-shared` loader path Go plugins use — zero core loader changes |
+| State unit | One state per **account** (`PersistedAccount`: nonce, balance, code, full storage trie) | One state per **ledger entry** (`SenteEntry{contract_id, key_xdr, val_xdr, seq}`) — finer-grained than Pente's per-account snapshots |
+| Read/write-set discovery | Hand-built: `AccountLoader`/`DynamicLoadWorldState` track which addresses were queried vs. committed, then `PenteTransaction.buildAssembledTransaction` classifies each into input/read/output | Native: `soroban-simulation`'s recording-mode footprint (`modified_entries`) *is* the input/read state list directly — no separate bookkeeping layer needed |
+| Endorsement mechanism | Independent re-execution + **structural diff** of resulting account states (input/read/output hash equality) | Independent re-execution + **digest comparison** (`InfoState.result_digest`) — no diff needed since the per-entry state model already is the footprint a diff would reconstruct |
+| Endorsement threshold | 100% of group members (M-of-N on the roadmap) | 100% of group members (same v1 restriction) |
+| On-chain anchor | `PentePrivacyGroup.sol`: full per-account UTXO mapping — `transition` takes four hash arrays (inputs/reads/outputs/info) and an unspent-set check | `SentePrivacyGroup`: a single hash-chain `root` — `transition(new_root, external_calls, signatures)` reads `old_root` from its own storage (replay protection) rather than taking it as a parameter |
+| Signature scheme verified on-chain | EIP-712 `Transition` hash, ECDSA/secp256k1 | `SALADIN_TYPED_DATA_V0("sente.Transition", …)`, ed25519 (native Soroban host function) |
+| External calls | `PenteExternalCall(address, encodedCall)` **event**; the on-chain contract executes the event log's entries within the same base-ledger tx | `env.invoke_contract` called **directly** from within `transition` — no event-log indirection, since Soroban contracts can call each other natively |
+| Genesis/factory | `PenteFactory.sol`, deployed per group | `SenteFactory`, deployed per group, salted by `sha256(members)` so independently-assembling members converge on the same address with no prior coordination |
+| Delegated submission | `approveTransition`/`transitionWithApproval` | Same `InitDeploy`/`PrepareDeploy` genesis split as Pente; delegated transition submission not yet a separate proven path |
+| Determinism inputs pinned into the transition | EVM version, base block, base block timestamp | `LedgerInfo{sequence, timestamp}`, PRNG seed (from the private tx ID), `protocol_version` (metering cost model) |
+| On-chain structural verification | **Content-addressed**: `_unspent` mapping independently checks the *actual* referenced account-state hash is currently valid — catches a stale/wrong input regardless of endorser belief | **Content-addressed too, since R21's fix (ch. 16 §16.1)**: `root` still gives total ordering (replay/race rejected), and a real `Unspent` set now independently checks `inputs`/`outputs` commitment hashes the same way — empty (and free) for a root-only transition, populated only when a business invocation actually touches `SenteEntry` states |
+| Membership | Fixed at genesis | Fixed at genesis (same as Pente v1) |
+| Code distribution | Contract code is itself part of the account state (`PersistedAccount.code`), tracked as a Paladin state like any other field | **Not yet solved** — a Soroban invocation needs its target's `ContractCode` entry, but `SenteEntry` has no shape for one; `InvokeJson.code` carries the wasm bytes on every invocation today rather than as a tracked/distributed state |
+| Plugin-contract shape | `ConfigureDomain`/`InitDomain`/`InitContract`/`InitTransaction`/`AssembleTransaction`/`EndorseTransaction`/`PrepareTransaction` | Identical method chain — same language-neutral gRPC plugin contract, proven by a hello-world Rust domain passing the standard conformance test |
+| Chain-neutral group ops (`groupmgr`/`domainmgr`) | `pgroup_createGroup` + transitions | Same `pgroup_createGroup` + transitions — no domain-specific changes needed on the Go side |
+| Maturity | Production reference implementation | S1–S3 done and proven live (3-node harness, real Testnet receipt); S4 hardening (determinism audit, protocol-upgrade drill, endorsement-divergence chaos) not started |
 
 ### Design note: why not remote `simulateTransaction`?
 

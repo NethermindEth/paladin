@@ -108,6 +108,60 @@ must be endorsed (signed) by **100%** of them (M-of-N is on the roadmap upstream
   executes them within the same base-ledger transaction as the transition — the bridge from
   private logic to public effects (used by Noto hooks, and by the Atom pattern).
 
+### How EVM state becomes UTXO states
+
+Besu's EVM is **account-based**: a call reads and writes a set of `address → {nonce, balance,
+code, storage}` records in a global world state. Paladin's engine only understands UTXO-shaped
+input/read/output state lists. `DynamicLoadWorldState` (`evmstate/DynamicLoadWorldState.java`) is
+the adapter that sits between the two, and does so with no changes to Besu itself — it implements
+Besu's own `WorldState`/`WorldUpdater` interfaces, so every opcode (`SLOAD`, `SSTORE`, `CALL`, …)
+runs against ordinary Besu machinery that has no idea it's actually talking to Paladin states.
+
+- **Lazy load, on first touch.** Every account the EVM asks for is fetched through
+  `AccountLoader.load(address)` the first time that address is touched. During assembly
+  (`PenteDomain.AssemblyAccountLoader`) that means a real query against Paladin's state store for
+  the group's current state at that address (schema `AccountState_v24_10_0`, an indexed `address`
+  field making the lookup a single query); during endorsement (`EndorsementAccountLoader`) it's
+  stricter still — *only* the accounts already named in the transaction's own input/read lists can
+  be loaded at all, so a member can't accidentally (or maliciously) pull in extra state the
+  original assembler never declared.
+- **Track queries vs. commits.** `DynamicLoadWorldState` records two disjoint facts per
+  transaction: every address that was *queried* at all (`queriedAccounts`), and — once Besu's own
+  `Updater.commit()` fires at the `COMPLETED_SUCCESS` boundary of each call frame — whether each
+  touched account ended up `UPDATED` or `DELETED` (`committedAccountUpdates`). An address that was
+  read but never changed (e.g. a `view`-style cross-contract call) stays a query with no commit
+  entry against it.
+- **Turn that bookkeeping into UTXO lists.** After execution, `PenteTransaction.
+  buildAssembledTransaction` walks every address the loader touched and classifies it:
+  - queried *and* committed (updated or deleted), with a prior state on record → that prior state
+    becomes an **input state** (spent);
+  - committed as **updated** → `PersistedAccount.serialize(...)` — nonce, balance, code (plus its
+    hash), and the account's full storage trie (root hash plus every non-empty leaf, so the whole
+    account round-trips as one opaque JSON blob) — under a fresh random salt becomes a brand-new
+    **output state**;
+  - committed as **deleted** → no output is written for that account;
+  - queried but never committed (a pure read) → the account's current state becomes a **read
+    state** — referenced to prove freshness, but not spent, the same "read" concept Noto and Zeto
+    use.
+  Paladin hashes each serialized account via the same ABI-schema state-hashing every domain
+  shares, deriving its 32-byte state ID — the only thing that ever reaches the chain; balance,
+  storage, and code stay off-chain.
+- **The call itself becomes a state too.** Every transaction also mints one extra output that
+  isn't an account: a `TransactionInfoState_v24_10_0` capturing the raw encoded EVM call, EVM
+  version, and the base block/timestamp it executed against — a private, off-chain record of
+  *which call produced this state*, available to every group member for later audit or
+  re-execution.
+- **The chain sees only hashes.** `PentePrivacyGroup.sol`'s `transition(txId,
+  {inputs, reads, outputs, info}, externalCalls, signatures)` never sees any account structure at
+  all — four flat arrays of 32-byte hashes. It checks the input hashes against what it currently
+  holds unspent, checks the endorsement-signature threshold, and swaps inputs for outputs. From
+  the chain's point of view, an EVM contract call and a plain token transfer are indistinguishable
+  — both are just a spent hash set replaced by a created hash set.
+- **Endorsement closes the loop.** Every other group member reconstructs the same restricted
+  pre-state world via `EndorsementAccountLoader`, re-executes the identical EVM call locally, and
+  signs only if their own freshly recomputed output-state hashes match exactly — the account→UTXO
+  conversion above runs twice, independently, before anyone trusts the result.
+
 ## 6.4 Comparative summary
 
 | | Noto | Zeto | Pente |

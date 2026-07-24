@@ -41,6 +41,9 @@ on `github.com/stellar/go-stellar-sdk` v0.6.0 (the renamed successor to the depr
 > - **Fee-bump transactions and the auth-entry-expiry re-endorsement path** (§12.2) are not yet
 >   implemented — a submission that goes stale past `resubmitLedgers` has no RBF-equivalent yet, and
 >   an auth entry that expires before use has no sequencer-side re-endorsement path.
+> - **Fee-inclusion-percentile submission** (§12.2) is not built either — the submitter hardcodes
+>   `BaseFee: txnbuild.MinBaseFee` rather than reading `getFeeStats` at a configured percentile;
+>   fine for an uncongested quickstart/testnet chain, not a real inclusion-fee strategy yet.
 > - **Retention-gap fail-loud behavior and real backfill handling** are not built — a checkpoint
 >   that falls behind stellar-rpc's 24h-7d retention window has no defined recovery path yet
 >   (§12.4).
@@ -121,8 +124,14 @@ mechanism: channel accounts are funded operationally and reveal nothing about th
 parties. Pool size is config (`stellar.channelAccounts`, default 8); accounts are created/funded
 by an ops task at node bootstrap.
 
-**Fees.** No gas auction: resource fee comes from simulation; the inclusion fee from
-`getFeeStats` at a configured percentile (`stellar.feeInclusionPercentile`, default p70).
+**Fees.** No gas auction: the resource fee comes from simulation, real and shipped. **Correction**:
+the inclusion fee does *not* yet come from `getFeeStats` at a configured percentile as earlier
+drafts of this chapter described — `getFeeStats` is called nowhere in the codebase, no
+`stellar.feeInclusionPercentile` config field exists, and the submitter currently hardcodes
+`BaseFee: txnbuild.MinBaseFee` (`stellar_chain_submitter.go`). The config file's own comment
+confirms this is deliberate, not an oversight: fee-inclusion-percentile "belongs to a later
+milestone." Tracked below as its own "what's left" item, since minimum-fee submission is fine on an
+uncongested quickstart/testnet chain but not a real inclusion-fee strategy for a congested network.
 **Stale handling** (`ActionOnStale`): if not included within `resubmitLedgers` (default 5),
 wrap in a **fee-bump transaction** (the RBF equivalent); on `entryArchived` /
 footprint-invalidation errors, **re-simulate and rebuild** (bounded retries, then error to
