@@ -446,6 +446,14 @@ public class TestInstitutionalRepoDemo {
 
     private static final int POLL_ITERATIONS = Integer.parseInt(System.getProperty("paladin.test.stellar.pollIterations", "180"));
 
+    // How long to wait for each node's own RPC to report all its domains ready
+    // (NodeProcessHarness.waitForReady) before giving up - default bumped from an original
+    // hardcoded 30s: observed to be too tight under real resource contention (a shared sandbox
+    // also running unrelated Besu/EVM test infra), the same class of "first dispatch is slow under
+    // load" issue POLL_ITERATIONS's own 180->360 bump already addressed for a later step. Overridable
+    // the same way, for environments needing more headroom still.
+    private static final long NODE_READY_TIMEOUT_MS = Long.parseLong(System.getProperty("paladin.test.stellar.nodeReadyTimeoutMs", "60000"));
+
     // Submits a private ptx_sendTransaction and waits for a successful receipt - returns the
     // transaction ID. `to` is null for a constructor deploy (domain required in that case only -
     // TransactionBase's own doc comment: domain is "inferred from 'to' for invoke").
@@ -561,7 +569,7 @@ public class TestInstitutionalRepoDemo {
             if (perOperationEvents == null || perOperationEvents.isEmpty()) {
                 return;
             }
-            System.out.println("  Published on-chain (decoded by `stellar tx fetch events`, not by this demo):");
+            System.out.println("  Published on-chain (decoded by `stellar tx fetch events`):");
             for (Object operationEvents : perOperationEvents) {
                 for (Object eventObj : (List<?>) operationEvents) {
                     Map<?, ?> event = (Map<?, ?>) eventObj;
@@ -811,7 +819,9 @@ public class TestInstitutionalRepoDemo {
             }
 
             processes[REGISTRAR_NODE] = NodeProcessHarness.launchNode(new File(workDir, NODE_NAMES[REGISTRAR_NODE] + ".yaml"), new File(workDir, NODE_NAMES[REGISTRAR_NODE] + ".engine.log"), JNA_LIBRARY_PATH);
-            clients[REGISTRAR_NODE] = NodeProcessHarness.waitForReady(rpcPorts[REGISTRAR_NODE], processes[REGISTRAR_NODE], 30_000, 3);
+            // 4 domains per node (noto-bond, noto-cash, sente, repo-terms) - buildNodeConfig
+            // configures the same domain set on every node regardless of role.
+            clients[REGISTRAR_NODE] = NodeProcessHarness.waitForReady(rpcPorts[REGISTRAR_NODE], processes[REGISTRAR_NODE], NODE_READY_TIMEOUT_MS, 4);
             NodeProcessHarness.resolveAndFundVerifier(clients[REGISTRAR_NODE], "root");
             NodeProcessHarness.resolveAndFundVerifier(clients[REGISTRAR_NODE], "registrar");
             NodeProcessHarness.resolveAndFundVerifier(clients[REGISTRAR_NODE], "cashNotary");
@@ -819,11 +829,11 @@ public class TestInstitutionalRepoDemo {
             for (int i = 1; i < NODE_NAMES.length; i++) {
                 processes[i] = NodeProcessHarness.launchNode(new File(workDir, NODE_NAMES[i] + ".yaml"), new File(workDir, NODE_NAMES[i] + ".engine.log"), JNA_LIBRARY_PATH);
             }
-            clients[BANK_A_NODE] = NodeProcessHarness.waitForReady(rpcPorts[BANK_A_NODE], processes[BANK_A_NODE], 30_000, 3);
+            clients[BANK_A_NODE] = NodeProcessHarness.waitForReady(rpcPorts[BANK_A_NODE], processes[BANK_A_NODE], NODE_READY_TIMEOUT_MS, 4);
             NodeProcessHarness.resolveAndFundVerifier(clients[BANK_A_NODE], "root");
             String bankAAddress = NodeProcessHarness.resolveAndFundVerifier(clients[BANK_A_NODE], "bankA");
 
-            clients[BANK_B_NODE] = NodeProcessHarness.waitForReady(rpcPorts[BANK_B_NODE], processes[BANK_B_NODE], 30_000, 3);
+            clients[BANK_B_NODE] = NodeProcessHarness.waitForReady(rpcPorts[BANK_B_NODE], processes[BANK_B_NODE], NODE_READY_TIMEOUT_MS, 4);
             NodeProcessHarness.resolveAndFundVerifier(clients[BANK_B_NODE], "root");
             String bankBAddress = NodeProcessHarness.resolveAndFundVerifier(clients[BANK_B_NODE], "bankB");
 

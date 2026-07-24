@@ -51,12 +51,12 @@ var RepoTermsV1ABI = &abi.Parameter{
 // `set_terms` event echoes just that ID, mirroring SNoto's lock-info state-ID-echo pattern
 // (domains/noto/internal/noto/handler_lock.go).
 type RepoTermsV1 struct {
-	Salt           pldtypes.HexBytes `json:"salt"`
-	BankA          string            `json:"bankA"`
-	BankB          string            `json:"bankB"`
-	RateBps        uint32            `json:"rateBps"`
-	MaturityLedger uint32            `json:"maturityLedger"`
-	HaircutBps     uint32            `json:"haircutBps"`
+	Salt           pldtypes.HexBytes  `json:"salt"`
+	BankA          string             `json:"bankA"`
+	BankB          string             `json:"bankB"`
+	RateBps        pldtypes.HexUint64 `json:"rateBps"`
+	MaturityLedger pldtypes.HexUint64 `json:"maturityLedger"`
+	HaircutBps     pldtypes.HexUint64 `json:"haircutBps"`
 }
 
 // RepoTermsParsedConfig is this domain's one-and-only ContractConfigJson shape (InitContract) -
@@ -89,9 +89,15 @@ type ConstructorParams struct {
 
 // SetTermsParams is the one transaction type's own FunctionParamsJson shape - the banks are
 // already fixed at deploy time (ConstructorParams/RepoTermsParsedConfig), so only the trade
-// economics are specified per-call.
+// economics are specified per-call. Fields are pldtypes.HexUint64, not a plain Go uint32: core's
+// own ABI-tuple JSON serializer normalizes every uint*-typed transaction parameter to a JSON
+// string (e.g. "500", not 500) before this domain ever sees it - the same convention every other
+// uint*-typed ABI field in this codebase (e.g. domains/noto's own Amount *pldtypes.HexUint256)
+// already accounts for. A plain uint32 field fails to unmarshal that string with
+// "cannot unmarshal string into Go struct field" the first time this runs through the real engine,
+// not just a hand-built unit test JSON literal (see handler_test.go's own fix).
 type SetTermsParams struct {
-	RateBps        uint32 `json:"rateBps"`
-	MaturityLedger uint32 `json:"maturityLedger"`
-	HaircutBps     uint32 `json:"haircutBps"`
+	RateBps        pldtypes.HexUint64 `json:"rateBps"`
+	MaturityLedger pldtypes.HexUint64 `json:"maturityLedger"`
+	HaircutBps     pldtypes.HexUint64 `json:"haircutBps"`
 }

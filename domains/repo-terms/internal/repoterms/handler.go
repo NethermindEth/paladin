@@ -134,6 +134,7 @@ func (h *setTermsHandler) Assemble(ctx context.Context, tx *ParsedTransaction, r
 				AttestationType: prototk.AttestationType_ENDORSE,
 				Algorithm:       algorithms.EDDSA_ED25519,
 				VerifierType:    verifiers.STELLAR_ADDRESS,
+				PayloadType:     signpayloads.OPAQUE_TO_EDDSA,
 				Parties:         []string{tx.DomainConfig.BankALookup, tx.DomainConfig.BankBLookup},
 				// Threshold intentionally left nil/unset - defaults to len(Parties) == 2 (both
 				// banks must endorse), per toolkit/proto/protos/to_domain.proto's own

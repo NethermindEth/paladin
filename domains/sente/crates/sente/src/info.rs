@@ -67,16 +67,24 @@ pub struct InfoState {
     pub old_root: [u8; 32],
     #[serde(rename = "newRoot", with = "hex::serde")]
     pub new_root: [u8; 32],
-    /// Hex-encoded content-addressed commitment hashes (R21, ch. 16 §16.1) of every business
-    /// `SenteEntry` this transition consumes - `[]` for a root-only transition, matching
-    /// `TransitionManifest.spent_state_ids`'s own cardinality exactly.
-    #[serde(rename = "inputCommitments", default)]
-    pub input_commitments: Vec<String>,
-    /// Hex-encoded content-addressed commitment hashes of every business `SenteEntry` this
-    /// transition creates - `[]` for a root-only transition, matching
-    /// `TransitionManifest.output_state_json`'s own cardinality exactly.
-    #[serde(rename = "outputCommitments", default)]
-    pub output_commitments: Vec<String>,
+    /// JSON-encoded array of hex-encoded content-addressed commitment hashes (R21, ch. 16 §16.1)
+    /// of every business `SenteEntry` this transition consumes - `"[]"` for a root-only
+    /// transition, matching `TransitionManifest.spent_state_ids`'s own cardinality exactly. A
+    /// JSON-encoded *string*, not a plain array, for the same ABI-round-trip reason
+    /// `transition_manifest_json`/`external_calls_json`/`invoke_json` already are: core's own
+    /// ABI-tuple state persistence declares this component as `"type": "string"`
+    /// (`INFO_STATE_ABI_SCHEMA_JSON`), and fails with "Unable to parse '[]' of type
+    /// []interface {} as string" the first time this round-trips through a real engine (as
+    /// opposed to a hand-built unit test) if the Rust field is a plain `Vec<String>` instead -
+    /// confirmed the hard way against a real `TestInstitutionalRepoDemo` run.
+    #[serde(rename = "inputCommitments", default = "empty_commitments_json")]
+    pub input_commitments_json: String,
+    /// JSON-encoded array of hex-encoded content-addressed commitment hashes of every business
+    /// `SenteEntry` this transition creates - `"[]"` for a root-only transition, matching
+    /// `TransitionManifest.output_state_json`'s own cardinality exactly. See
+    /// `input_commitments_json`'s own doc comment for why this is a JSON-encoded string.
+    #[serde(rename = "outputCommitments", default = "empty_commitments_json")]
+    pub output_commitments_json: String,
     #[serde(rename = "onChainDigest", with = "hex::serde")]
     pub on_chain_digest: [u8; 32],
     /// JSON array of `domain::ExternalCallJson` (`"[]"` for a root-only transition with none) -
@@ -104,6 +112,10 @@ pub struct InfoState {
 }
 
 fn empty_external_calls_json() -> String {
+    "[]".to_string()
+}
+
+fn empty_commitments_json() -> String {
     "[]".to_string()
 }
 
@@ -158,8 +170,8 @@ impl InfoState {
             contract_id,
             old_root,
             new_root,
-            input_commitments: input_commitments.iter().map(hex::encode).collect(),
-            output_commitments: output_commitments.iter().map(hex::encode).collect(),
+            input_commitments_json: encode_commitments(&input_commitments),
+            output_commitments_json: encode_commitments(&output_commitments),
             on_chain_digest,
             external_calls_json,
             invoke_json,
@@ -182,30 +194,32 @@ impl InfoState {
             .context("failed to parse transition manifest")
     }
 
-    /// Decodes `input_commitments`/`output_commitments` back into raw 32-byte arrays, in the same
-    /// order they were encoded - what `domain.rs` needs to rebuild the on-chain payload/call args.
+    /// Decodes `input_commitments_json`/`output_commitments_json` back into raw 32-byte arrays,
+    /// in the same order they were encoded - what `domain.rs` needs to rebuild the on-chain
+    /// payload/call args.
     pub fn input_commitments_bytes(&self) -> Result<Vec<[u8; 32]>> {
-        decode_commitments(&self.input_commitments)
+        decode_commitments(&self.input_commitments_json)
     }
 
     pub fn output_commitments_bytes(&self) -> Result<Vec<[u8; 32]>> {
-        decode_commitments(&self.output_commitments)
+        decode_commitments(&self.output_commitments_json)
     }
 
     /// The digest the sender's own `AttestationType.SIGN` request asks it to sign - Sente's
     /// off-chain integrity commitment (distinct from `on_chain_digest`, which endorsers sign
-    /// instead - see the module doc comment for why they must differ). Covers `input_commitments`/
-    /// `output_commitments`, `on_chain_digest`, `external_calls_json`, and `invoke_json` too, so
-    /// tampering with any of them after the sender signs invalidates that signature, the same
-    /// reasoning `sente_host::digest`-based endorsement used in S2.
+    /// instead - see the module doc comment for why they must differ). Covers
+    /// `input_commitments_json`/`output_commitments_json`, `on_chain_digest`,
+    /// `external_calls_json`, and `invoke_json` too, so tampering with any of them after the
+    /// sender signs invalidates that signature, the same reasoning `sente_host::digest`-based
+    /// endorsement used in S2.
     pub fn signing_payload(&self) -> Result<[u8; 32]> {
         let canonical = serde_json::to_vec(&(
             &self.transaction_id,
             &self.contract_id,
             hex::encode(self.old_root),
             hex::encode(self.new_root),
-            &self.input_commitments,
-            &self.output_commitments,
+            &self.input_commitments_json,
+            &self.output_commitments_json,
             hex::encode(self.on_chain_digest),
             &self.external_calls_json,
             &self.invoke_json,
@@ -216,8 +230,15 @@ impl InfoState {
     }
 }
 
-fn decode_commitments(values: &[String]) -> Result<Vec<[u8; 32]>> {
-    values
+fn encode_commitments(values: &[[u8; 32]]) -> String {
+    let hex_values: Vec<String> = values.iter().map(hex::encode).collect();
+    serde_json::to_string(&hex_values).expect("Vec<String> always serializes")
+}
+
+fn decode_commitments(json: &str) -> Result<Vec<[u8; 32]>> {
+    let hex_values: Vec<String> =
+        serde_json::from_str(json).context("failed to parse commitments JSON array")?;
+    hex_values
         .iter()
         .map(|hex_str| {
             let bytes = hex::decode(hex_str)
@@ -314,7 +335,7 @@ mod tests {
     fn signing_payload_changes_if_input_commitments_change() {
         let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
         let mut tampered = base.clone();
-        tampered.input_commitments = vec![hex::encode([0xAAu8; 32])];
+        tampered.input_commitments_json = encode_commitments(&[[0xAAu8; 32]]);
         assert_ne!(
             base.signing_payload().unwrap(),
             tampered.signing_payload().unwrap(),
@@ -326,7 +347,7 @@ mod tests {
     fn signing_payload_changes_if_output_commitments_change() {
         let base = info([0u8; 32], [1u8; 32], [2u8; 32]);
         let mut tampered = base.clone();
-        tampered.output_commitments = vec![hex::encode([0xBBu8; 32])];
+        tampered.output_commitments_json = encode_commitments(&[[0xBBu8; 32]]);
         assert_ne!(
             base.signing_payload().unwrap(),
             tampered.signing_payload().unwrap(),

@@ -71,10 +71,14 @@ func newSetTermsTransaction(t *testing.T, contractAddress string) *prototk.Trans
 			ContractConfigJson: string(configJSON),
 		},
 		FunctionAbiJson: mustParseJSON(setTermsFunctionABI),
+		// String-encoded, not bare JSON numbers - matching core's own real ABI-tuple JSON
+		// serializer for uint*-typed transaction parameters (confirmed against a real
+		// TestInstitutionalRepoDemo run; a bare-number literal here would never have caught the
+		// original "cannot unmarshal string into Go struct field" bug SetTermsParams had).
 		FunctionParamsJson: `{
-			"rateBps": 425,
-			"maturityLedger": 123456,
-			"haircutBps": 200
+			"rateBps": "425",
+			"maturityLedger": "123456",
+			"haircutBps": "200"
 		}`,
 	}
 }
@@ -140,9 +144,9 @@ func TestAssembleTransaction(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(outputState.StateDataJson), &terms))
 	assert.Equal(t, "bankA@node2", terms.BankA)
 	assert.Equal(t, "bankB@node3", terms.BankB)
-	assert.Equal(t, uint32(425), terms.RateBps)
-	assert.Equal(t, uint32(123456), terms.MaturityLedger)
-	assert.Equal(t, uint32(200), terms.HaircutBps)
+	assert.Equal(t, pldtypes.HexUint64(425), terms.RateBps)
+	assert.Equal(t, pldtypes.HexUint64(123456), terms.MaturityLedger)
+	assert.Equal(t, pldtypes.HexUint64(200), terms.HaircutBps)
 	assert.NotEmpty(t, terms.Salt)
 
 	require.Len(t, res.AttestationPlan, 2)

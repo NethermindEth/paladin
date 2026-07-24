@@ -69,12 +69,21 @@ fn sign_transition(
     BytesN::from_array(env, &signer.sign(&digest).to_bytes())
 }
 
-/// Real, measured mainnet limits (`soroban_sdk::testutils::cost_estimate`'s own
-/// `NetworkInvocationResourceLimits::mainnet()` values, hardcoded the same way `szeto`'s own
-/// `batch_bench_test.rs` hardcodes `MAINNET_INSTRUCTION_LIMIT` - avoids an extra import for two
-/// constants that don't change).
+/// `MAINNET_INSTRUCTION_LIMIT` matches `soroban_sdk::testutils::cost_estimate`'s own
+/// `NetworkInvocationResourceLimits::mainnet()` (600M instructions), hardcoded the same way
+/// `szeto`'s own `batch_bench_test.rs` does - avoids an extra import for a constant that doesn't
+/// change often.
+///
+/// `MAINNET_WRITE_ENTRIES_LIMIT` deliberately does NOT match that same SDK helper - its own doc
+/// comment admits "this is not pulling the values dynamically, so updating the SDK is necessary
+/// to pick up the most recent values", and it reports `write_entries: 50`, which is stale: a live
+/// check of Stellar mainnet's own network config shows `tx_max_write_ledger_entries: 200`, not 50
+/// (confirmed independently - this is also what R2's ch. 16 §16.1 write-up was using before this
+/// correction). Since this is a live, validator-voted network parameter (not a compile-time
+/// constant), treat 200 as "the value observed at time of writing", not a permanent fact - re-check
+/// against the real network before relying on headroom numbers derived from it.
 const MAINNET_INSTRUCTION_LIMIT: u64 = 600_000_000;
-const MAINNET_WRITE_ENTRIES_LIMIT: u32 = 50;
+const MAINNET_WRITE_ENTRIES_LIMIT: u32 = 200;
 
 fn headroom_pct(used: u64, limit: u64) -> f64 {
     100.0 * (1.0 - (used as f64 / limit as f64))
@@ -95,11 +104,11 @@ fn r21_transition_input_output_cost() {
          (unmeasured) transition, create N new ones.\n"
     );
     std::println!(
-        "| N | CPU instructions | write_entries | write_bytes | headroom vs 600M instr | headroom vs 50 write_entries |"
+        "| N | CPU instructions | write_entries | write_bytes | headroom vs 600M instr | headroom vs 200 write_entries |"
     );
     std::println!("|---|---|---|---|---|---|");
 
-    for &n in &[0u32, 1, 2, 5, 10, 15, 20, 24, 25, 30] {
+    for &n in &[0u32, 1, 2, 5, 10, 20, 50, 75, 99, 100, 120] {
         let env = Env::default();
         env.cost_estimate().budget().reset_unlimited();
         env.cost_estimate().disable_resource_limits();
