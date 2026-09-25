@@ -1,0 +1,44 @@
+[package]
+name = "m0-groth16-bench"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.92.0"
+license = "Apache-2.0"
+publish = false
+
+# Empty [workspace] table detaches this crate from the parent soroban/ workspace - it is a
+# throwaway M0 feasibility-spike crate (chapter 13 Phase 5), not a workspace member, and must
+# never block soroban/'s own CI build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { version = "27.0.0", features = ["alloc"] }
+soroban-poseidon = "27.0.0"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[dev-dependencies]
+soroban-sdk = { version = "27.0.0", features = ["alloc", "testutils", "hazmat"] }
+soroban-env-host = "27.0.0"
+ark-bn254 = { version = "0.6.0", default-features = false, features = ["curve"] }
+ark-ff = { version = "0.6.0", default-features = false }
+ark-groth16 = { version = "0.6.0", default-features = false }
+ark-relations = { version = "0.6.0", default-features = false }
+ark-serialize = { version = "0.6.0", default-features = false }
+ark-std = { version = "0.6.0", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+num-bigint = "0.4"
