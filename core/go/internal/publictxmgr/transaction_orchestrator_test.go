@@ -245,15 +245,15 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	ctx, o, m, done := newTestOrchestrator(t)
 	defer done()
 
-	// Set nextNonce ahead of what the mempool reports
-	ahead := uint64(5)
-	o.nextNonce = &ahead
 	// lastNonceAlloc is zero time so cache is always expired and GetTransactionCount is called
 
-	// Mempool reports nonce 4 (lower than our cached 5) - so we keep our cached nonce
+	// Mempool reports nonce 4 (lower than the DB's recovered 5) - so we keep the DB's value
 	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(confutil.P(pldtypes.HexUint64(4)), nil).Once()
+
+	// DB reports a nonce (4) already allocated for this (EVM, single-slot, no channel account) signing address
+	m.db.ExpectQuery("SELECT.*public_txns").WillReturnRows(sqlmock.NewRows([]string{"channel_account", "max_nonce"}).AddRow("", 4))
 
 	// DB transaction to record the nonce assignment must succeed
 	m.db.ExpectBegin()
@@ -263,8 +263,8 @@ func TestAllocateNoncesNonceCacheAheadOfMempool(t *testing.T) {
 	txn := &DBPublicTxn{PublicTxnID: 1, From: o.signingAddress}
 	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
 	assert.NoError(t, err)
-	// nextNonce should have advanced by 1 (we allocated nonce 5)
-	assert.Equal(t, uint64(6), *o.nextNonce)
+	// nextNonces[0] should have advanced by 1 (we allocated nonce 5, recovered from the DB)
+	assert.Equal(t, uint64(6), o.nextNonces[0])
 }
 
 func TestAllocateNoncesDBTransactionError(t *testing.T) {
@@ -275,6 +275,9 @@ func TestAllocateNoncesDBTransactionError(t *testing.T) {
 	m.ethClient.On("GetBalance", mock.Anything, mustEthAddr(t, o.signingAddress), "latest").Return(pldtypes.Uint64ToUint256(0), nil).Once()
 	m.ethClient.On("GetTransactionCount", mock.Anything, mustEthAddr(t, o.signingAddress)).
 		Return(confutil.P(pldtypes.HexUint64(10)), nil).Once()
+
+	// No prior nonce recovered from the DB for this signing address
+	m.db.ExpectQuery("SELECT.*public_txns").WillReturnRows(sqlmock.NewRows([]string{"channel_account", "max_nonce"}))
 
 	// DB transaction fails
 	m.db.ExpectBegin()
@@ -315,6 +318,8 @@ func TestAllocateNoncesChannelAccountRoundRobin(t *testing.T) {
 	txn0 := &DBPublicTxn{PublicTxnID: 10, From: o.signingAddress}
 	txn1 := &DBPublicTxn{PublicTxnID: 11, From: o.signingAddress}
 
+	// No prior nonce recovered from the DB for either channel account
+	m.db.ExpectQuery("SELECT.*public_txns").WillReturnRows(sqlmock.NewRows([]string{"channel_account", "max_nonce"}))
 	m.db.ExpectBegin()
 	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 2))
 	m.db.ExpectCommit()
@@ -341,6 +346,51 @@ func TestAllocateNoncesChannelAccountRoundRobin(t *testing.T) {
 	require.NotNil(t, txn2.Nonce)
 	assert.Equal(t, uint64(101), *txn2.Nonce)
 	assert.Equal(t, *channel0, *txn2.ChannelAccount)
+}
+
+// TestAllocateNoncesDBRecoveryDoesNotCrossContaminateSlots is a regression test for a live failure:
+// after this orchestrator is recreated mid-run (idle timeout, restart) and loses its in-memory
+// channelOrderingKeys/nextNonces cache, the very next allocateNonces call re-queries fresh ordering
+// keys and must recover any not-yet-mined nonce per slot from the DB - but only from THAT slot's
+// own channel account. Recovering the highest nonce ever assigned to this signing address
+// regardless of which channel account it came from (the original bug) corrupts one channel
+// account's nonce space with a completely unrelated channel account's sequence number, since each
+// channel account has its own independent, unrelated Stellar sequence number.
+func TestAllocateNoncesDBRecoveryDoesNotCrossContaminateSlots(t *testing.T) {
+	ctx, o, m, done := newTestOrchestrator(t)
+	defer done()
+
+	channel0 := pldtypes.MustParseChainAddress("0x1111111111111111111111111111111111111111")
+	channel1 := pldtypes.MustParseChainAddress("0x2222222222222222222222222222222222222222")
+	o.chainSubmitter = &fakeMultiChannelSubmitter{keys: []ChannelOrderingKey{
+		{OrderingKey: 100, ChannelAccount: channel0},
+		{OrderingKey: 200, ChannelAccount: channel1},
+	}}
+
+	// Simulate this orchestrator being recreated after channel1 (slot 1) has already had a much
+	// higher nonce (200) persisted against it than channel0 (slot 0, 100) - e.g. channel1 has
+	// simply seen far more historical usage. The fresh base-ledger query below still reports 100
+	// and 200 for slots 0 and 1 respectively (nothing has changed on-chain since), but the DB
+	// recovery query returns both channel accounts' own persisted maxima.
+	o.channelOrderingKeys = nil
+	m.db.ExpectQuery("SELECT.*public_txns").WillReturnRows(
+		sqlmock.NewRows([]string{"channel_account", "max_nonce"}).
+			AddRow(channel0.String(), 100).
+			AddRow(channel1.String(), 200),
+	)
+
+	txn := &DBPublicTxn{PublicTxnID: 10, From: o.signingAddress} // 10 % 2 == 0 -> slot 0 (channel0)
+	m.db.ExpectBegin()
+	m.db.ExpectExec("WITH nonce_updates").WillReturnResult(sqlmock.NewResult(1, 1))
+	m.db.ExpectCommit()
+
+	err := o.allocateNonces(ctx, []*DBPublicTxn{txn})
+	require.NoError(t, err)
+
+	require.NotNil(t, txn.Nonce)
+	// Must be slot 0's own recovered nonce (100+1=101), never slot 1's (200+1=201).
+	assert.Equal(t, uint64(101), *txn.Nonce)
+	assert.Equal(t, *channel0, *txn.ChannelAccount)
 }
 
 func TestPollAndProcessHandleTransactionCollectedAndNonceAssignedErrors(t *testing.T) {

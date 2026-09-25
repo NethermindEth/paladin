@@ -155,6 +155,12 @@ func TestProduceLatestInFlightStageContextSubmitComplete(t *testing.T) {
 	_ = rsc.StageOutputsToBePersisted.StatusUpdates[0](mTS.statusUpdater)
 	assert.Equal(t, submissionTime, rsc.StageOutputsToBePersisted.TxUpdates.NewValues.LastSubmit)
 	assert.Equal(t, txHash, rsc.StageOutputsToBePersisted.TxUpdates.NewValues.TransactionHash)
+	// A synchronously-rejected stale-sequenced submission must reset the transaction hash, so the
+	// next orchestrator poll re-enters signing immediately instead of waiting out the full
+	// resubmitInterval for a hash that will never confirm.
+	assert.True(t, rsc.StageOutputsToBePersisted.TxUpdates.ResetValues.TransactionHash)
+	mTS.ApplyInMemoryUpdates(ctx, rsc.StageOutputsToBePersisted.TxUpdates)
+	assert.Nil(t, mTS.GetTransactionHash())
 }
 
 func TestProduceLatestInFlightStageContextCannotSubmit(t *testing.T) {

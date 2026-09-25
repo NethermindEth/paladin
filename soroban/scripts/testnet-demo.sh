@@ -136,7 +136,7 @@ run_sente() {
 		-Dpaladin.test.stellar.friendbotUrl="$friendbot_url" \
 		-Dpaladin.test.stellar.channelAccountPoolSize=2 \
 		-Dpaladin.test.stellar.channelAccountStartingBalance=3 \
-		-Dpaladin.test.stellar.pollIterations=360)
+		-Dpaladin.test.stellar.pollIterations=720)
 }
 
 case "$target" in

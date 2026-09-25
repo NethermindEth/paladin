@@ -69,7 +69,7 @@ futurenet)
 esac
 rpc_url="${STELLAR_FIXTURE_RPC_URL:-$default_rpc_url}"
 network_passphrase="${STELLAR_FIXTURE_PASSPHRASE:-$default_network_passphrase}"
-expected_protocol="${STELLAR_FIXTURE_PROTOCOL_VERSION:-27}"
+expected_protocol="${STELLAR_FIXTURE_PROTOCOL_VERSION:-28}"
 deployer="${STELLAR_FIXTURE_DEPLOYER:-stellar-fixtures-deployer}"
 validate_network="${STELLAR_FIXTURE_VALIDATE_NETWORK:-true}"
 

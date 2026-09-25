@@ -1695,6 +1695,8 @@ func TestUpdateTransactionCheckCompletedError(t *testing.T) {
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).
 		Return(confutil.P(pldtypes.HexUint64(0)), nil).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).
+		Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	// Mock ChainID which is needed for transaction building
 	chainID, _ := rand.Int(rand.Reader, big.NewInt(100000000000000))
 	m.ethClient.On("ChainID").Return(chainID.Int64()).Maybe()
@@ -1892,6 +1894,8 @@ func TestUpdateTransactionGasEstimateNonRejectedError(t *testing.T) {
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).
 		Return(confutil.P(pldtypes.HexUint64(0)), nil).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).
+		Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	// Mock EstimateGasNoResolve to return a non-rejected error (not MapSubmissionRejected)
 	m.ethClient.On("EstimateGasNoResolve", mock.Anything, mock.Anything, mock.Anything).
 		Return(ethclient.EstimateGasResult{}, fmt.Errorf("network error")).Once()
@@ -1937,6 +1941,8 @@ func TestUpdateTransactionGasEstimateRejectedNoRevertData(t *testing.T) {
 	// Orchestrator may poll and allocate a nonce for this transaction in parallel
 	m.ethClient.On("GetTransactionCount", mock.Anything, mock.Anything).
 		Return(confutil.P(pldtypes.HexUint64(0)), nil).Maybe()
+	m.ethClient.On("GetBalance", mock.Anything, mock.Anything, mock.Anything).
+		Return(pldtypes.Uint64ToUint256(0), nil).Maybe()
 	// Mock EstimateGasNoResolve to return a rejected error (execution reverted) but with empty RevertData
 	// MapSubmissionRejected returns true for "execution reverted" errors
 	m.ethClient.On("EstimateGasNoResolve", mock.Anything, mock.Anything, mock.Anything).

@@ -52,6 +52,12 @@ type PaladinTXReference struct {
 
 type PublicTxMatch struct {
 	PaladinTXReference
+	// PublicTxnID is the pub_txn_id primary key of the matched public transaction - used to route
+	// the completion notification to the in-flight transaction that owns it. It's the only
+	// reliable identity here: IndexedTransactionNotify.FromChain is the on-chain envelope's own
+	// source account, which for Stellar is the channel account (chapter 12 §12.2), not the
+	// business/signing address the in-flight orchestrator pool is keyed by.
+	PublicTxnID uint64
 	*blockindexer.IndexedTransactionNotify
 }
 

@@ -27,7 +27,6 @@ type AsyncRequestType int
 const (
 	ActionSuspend AsyncRequestType = iota
 	ActionResume
-	ActionCompleted
 )
 
 func (ptm *pubTxManager) persistSuspendedFlag(ctx context.Context, from pldtypes.ChainAddress, nonce uint64, suspended bool) error {
@@ -42,22 +41,53 @@ func (ptm *pubTxManager) persistSuspendedFlag(ctx context.Context, from pldtypes
 		Error
 }
 
+// dispatchCompletedAction notifies whichever in-flight orchestrator currently holds this
+// transaction that it has confirmed on-chain. A chain confirmation only tells us the on-chain
+// envelope's own source account - for Stellar that's the channel account (see
+// stellar_chain_submitter.go's ptx.ChannelAccount doc comment), which is a different address than
+// the business/signing address ptm.inFlightOrchestrators is keyed by, so we can't route this by
+// address the way ActionSuspend/ActionResume do below. We route by PublicTxnID (the pub_txn_id
+// primary key) instead, checking each in-flight orchestrator rather than keying off an address we
+// can't correctly resolve here.
+func (ptm *pubTxManager) dispatchCompletedAction(ctx context.Context, pubTxnID uint64) {
+	ptm.inFlightOrchestratorMux.Lock()
+	orchestrators := make([]*orchestrator, 0, len(ptm.inFlightOrchestrators))
+	for _, oc := range ptm.inFlightOrchestrators {
+		orchestrators = append(orchestrators, oc)
+	}
+	ptm.inFlightOrchestratorMux.Unlock()
+
+	for _, oc := range orchestrators {
+		if oc.dispatchCompletedAction(ctx, pubTxnID) {
+			return
+		}
+	}
+}
+
+func (oc *orchestrator) dispatchCompletedAction(ctx context.Context, pubTxnID uint64) bool {
+	oc.inFlightTxsMux.Lock()
+	defer oc.inFlightTxsMux.Unlock()
+	for _, inflight := range oc.inFlightTxs {
+		if inflight.stateManager.GetPubTxnID() == pubTxnID {
+			log.L(ctx).Infof("Dispatching 'completed' action to active orchestrator for %s (pubTxnID=%d)", oc.signingAddress, pubTxnID)
+			_, _ = inflight.NotifyStatusUpdate(ctx, InFlightStatusConfirmReceived)
+			oc.MarkInFlightTxStale()
+			return true
+		}
+	}
+	return false
+}
+
 // TODO: this code needs to stop using from and nonce as the way of identifying a transaction. It didn't get edited
 // with the move to delayed nonce assignment, where pubTXID became the primary key for a public transaction instead
-// of from and nonce as a composite primary key. This isn't a problem for dispatching a confirm action because a
-// confirmed transaction must have a nonce, but it isn't guaranteed to work for suspend and resume. Those actions
-// have been copied across but aren't wired up above this level so they aren't obviously broken yet.
+// of from and nonce as a composite primary key. This isn't a problem for suspend/resume since those are user-driven
+// requests that already know the correct signing/business address to target - see dispatchCompletedAction above
+// for why a chain-confirmation notification can't rely on the same from-address routing.
 func (ptm *pubTxManager) dispatchAction(ctx context.Context, from pldtypes.ChainAddress, nonce uint64, action AsyncRequestType) error {
 	ptm.inFlightOrchestratorMux.Lock()
 	defer ptm.inFlightOrchestratorMux.Unlock()
 	inFlightOrchestrator, orchestratorInFlight := ptm.inFlightOrchestrators[from]
 	switch action {
-	case ActionCompleted:
-		// Only need to pass this on if there's an orchestrator in flight for this signing address
-		if orchestratorInFlight {
-			log.L(ctx).Infof("Dispatching 'completed' action to active orchestrator for %s", from)
-			return inFlightOrchestrator.dispatchAction(ctx, nonce, action)
-		}
 	case ActionSuspend, ActionResume:
 		suspended := false
 		if action == ActionSuspend {
@@ -87,8 +117,6 @@ func (oc *orchestrator) dispatchAction(ctx context.Context, nonce uint64, action
 	}
 	if pending != nil {
 		switch action {
-		case ActionCompleted:
-			_, err = pending.NotifyStatusUpdate(ctx, InFlightStatusConfirmReceived)
 		case ActionResume, ActionSuspend:
 			// ActionResume...
 			suspendedFlag := false

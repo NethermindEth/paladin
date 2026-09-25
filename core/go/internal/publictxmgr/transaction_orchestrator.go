@@ -113,8 +113,8 @@ type orchestrator struct {
 	restoreConfirmationRetry *retry.Retry
 
 	// each transaction orchestrator has its own go routine
-	orchestratorBirthTime       time.Time           // when transaction orchestrator is created
-	orchestratorPollingInterval time.Duration          // between how long the transaction orchestrator will do a poll and trigger none-event driven transaction process actions
+	orchestratorBirthTime       time.Time             // when transaction orchestrator is created
+	orchestratorPollingInterval time.Duration         // between how long the transaction orchestrator will do a poll and trigger none-event driven transaction process actions
 	signingAddress              pldtypes.ChainAddress // the signing address of the transaction managed by the current transaction orchestrator
 
 	// balance check settings
@@ -142,13 +142,6 @@ type orchestrator struct {
 	lastQueueUpdate time.Time
 
 	lastNonceAlloc time.Time
-	// nextNonce is a legacy DB-recovered hint (see initNextNonceFromDB) - authoritative only for
-	// slot 0 of channelOrderingKeys/nextNonces below, guarding against reusing a nonce this node
-	// already assigned but whose effect the base ledger doesn't yet reflect. A deliberate,
-	// documented simplification for channel-account pooling (chapter 12 §12.2): with N>1 channel
-	// accounts, only the "primary" pool member (slot 0) benefits from this extra protection;
-	// robustness for the remaining slots relies on ActionOnStale's rebuild-on-txBadSeq handling.
-	nextNonce *uint64
 	// channelOrderingKeys/nextNonces are indexed together: channelOrderingKeys[i].ChannelAccount is
 	// the account nextNonces[i] is the next ordering key (nonce/sequence number) for. EVM always
 	// has exactly one slot (ChannelAccount nil); Stellar has one per channel-account pool member.
@@ -209,11 +202,6 @@ func (oc *orchestrator) orchestratorLoop() {
 
 	defer close(oc.orchestratorLoopDone)
 
-	if err := oc.initNextNonceFromDBRetry(ctx); err != nil {
-		log.L(ctx).Warnf("Context cancelled while obtaining highest nonce for %s: %s", oc.signingAddress, err)
-		return
-	}
-
 	ticker := time.NewTicker(oc.orchestratorPollingInterval)
 	defer ticker.Stop()
 	for {
@@ -270,30 +258,36 @@ func (oc *orchestrator) getFirstInFlight() (ift *inFlightTransactionStageControl
 	return
 }
 
-func (oc *orchestrator) initNextNonceFromDBRetry(ctx context.Context) error {
-	return oc.retry.Do(ctx, func(attempt int) (retryable bool, err error) {
-		return true, oc.initNextNonceFromDB(ctx)
-	})
-}
-
-func (oc *orchestrator) initNextNonceFromDB(ctx context.Context) error {
-	var txns []*DBPublicTxn
+// maxAllocatedNoncesByChannelAccount returns, for each channel account this signing address has
+// ever allocated a nonce against, the highest nonce assigned - keyed by the channel account's
+// string address, or "" for EVM's single slot (ChannelAccount always nil there). Used by
+// allocateNonces to recover a not-yet-mined nonce per slot after this orchestrator is recreated
+// (idle timeout, restart) and loses its in-memory tracking - must stay grouped by channel account,
+// since different slots' nonce spaces are different accounts' sequence numbers and are otherwise
+// meaningless to compare.
+func (oc *orchestrator) maxAllocatedNoncesByChannelAccount(ctx context.Context) (map[string]uint64, error) {
+	var rows []struct {
+		ChannelAccount string
+		MaxNonce       uint64
+	}
 	err := oc.p.DB().
 		WithContext(ctx).
+		Table("public_txns").
+		Select(`COALESCE("channel_account", '') AS channel_account`, "MAX(nonce) AS max_nonce").
 		Where(`"from" = ?`, oc.signingAddress).
 		Where("nonce IS NOT NULL").
 		Where("dispatcher = ? OR dispatcher = ''", oc.nodeName).
-		Order("nonce DESC").
-		Limit(1).
-		Find(&txns).
+		Group("channel_account").
+		Find(&rows).
 		Error
-	if err != nil || len(txns) == 0 {
-		return err
+	if err != nil {
+		return nil, err
 	}
-	nextNonce := *txns[0].Nonce + 1
-	oc.nextNonce = &nextNonce
-	log.L(ctx).Infof("Next nonce initialized from DB from %s: %d", oc.signingAddress, nextNonce)
-	return nil
+	maxNonces := make(map[string]uint64, len(rows))
+	for _, r := range rows {
+		maxNonces[r.ChannelAccount] = r.MaxNonce
+	}
+	return maxNonces, nil
 }
 
 // allocateNonces assigns each not-yet-allocated transaction an ordering key (nonce/sequence
@@ -332,13 +326,30 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 		for i, k := range keys {
 			nextNonces[i] = k.OrderingKey
 		}
-		// See if we have a nonce in our DB that's ahead of the mempool for slot 0 (see nextNonce's
-		// doc comment on the field for why this protection is slot-0-only).
-		if oc.nextNonce != nil && *oc.nextNonce >= nextNonces[0] {
-			log.L(ctx).Infof("Next nonce for %s slot 0 is %d (at or ahead of mempool %d)", oc.signingAddress, *oc.nextNonce, nextNonces[0])
-			nextNonces[0] = *oc.nextNonce
-		} else {
-			log.L(ctx).Infof("Next nonce for %s slot 0 set to %d (from base ledger account info)", oc.signingAddress, nextNonces[0])
+		// See if we have a nonce in our DB, for this exact slot's own channel account, that's
+		// ahead of the mempool - guards against reusing a nonce this node already assigned but
+		// whose effect the base ledger doesn't yet reflect (e.g. after this orchestrator was
+		// recreated mid-run - idle timeout, restart - and lost its in-memory tracking). Must be
+		// filtered per channel account: with N>1 channel-account pool members each slot's nonce
+		// space is that slot's own account's sequence number, completely unrelated to any other
+		// slot's - comparing across slots (e.g. taking the highest nonce ever assigned to this
+		// signing address regardless of which slot it came from) corrupts an unrelated slot with
+		// a value from a different account entirely.
+		maxNonces, err := oc.maxAllocatedNoncesByChannelAccount(ctx)
+		if err != nil {
+			return err
+		}
+		for i, k := range keys {
+			slotKey := ""
+			if k.ChannelAccount != nil {
+				slotKey = k.ChannelAccount.String()
+			}
+			if dbNonce, ok := maxNonces[slotKey]; ok && dbNonce+1 >= nextNonces[i] {
+				log.L(ctx).Infof("Next nonce for %s slot %d is %d (at or ahead of mempool %d)", oc.signingAddress, i, dbNonce+1, nextNonces[i])
+				nextNonces[i] = dbNonce + 1
+			} else {
+				log.L(ctx).Infof("Next nonce for %s slot %d set to %d (from base ledger account info)", oc.signingAddress, i, nextNonces[i])
+			}
 		}
 		oc.channelOrderingKeys = keys
 		oc.nextNonces = nextNonces
@@ -388,7 +399,6 @@ func (oc *orchestrator) allocateNonces(ctx context.Context, txns []*DBPublicTxn)
 		tx.ChannelAccount = newChannelAccounts[i]
 	}
 	oc.nextNonces = nextNonces
-	oc.nextNonce = &nextNonces[0]
 	oc.lastNonceAlloc = time.Now()
 
 	return nil

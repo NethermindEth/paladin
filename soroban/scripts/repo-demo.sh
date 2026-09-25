@@ -199,7 +199,7 @@ trap cleanup_pause EXIT
 	-Dpaladin.test.stellar.networkPassphrase="Test SDF Network ; September 2015" \
 	-Dpaladin.test.stellar.friendbotUrl="$friendbot_url" \
 	-Dpaladin.test.stellar.network=testnet \
-	-Dpaladin.test.stellar.pollIterations=360 \
+	-Dpaladin.test.stellar.pollIterations=720 \
 	-Dpaladin.demo.bondAmount="$bond_amount" \
 	-Dpaladin.demo.cashAmount="$cash_amount" \
 	-Dpaladin.demo.rateBps="$rate_bps" \

@@ -1029,6 +1029,7 @@ func (ptm *pubTxManager) MatchUpdateConfirmedTransactions(ctx context.Context, d
 						TransactionSender:          match.Sender,
 						TransactionContractAddress: match.ContractAddress,
 					},
+					PublicTxnID:              match.PublicTxnID,
 					IndexedTransactionNotify: txi,
 				})
 				// completions to insert, in the order of the inputs
@@ -1067,6 +1068,6 @@ func (ptm *pubTxManager) MatchUpdateConfirmedTransactions(ctx context.Context, d
 func (ptm *pubTxManager) NotifyConfirmPersisted(ctx context.Context, confirms []*components.PublicTxMatch) {
 	ctx = log.WithComponent(ctx, "publictxnmanager")
 	for _, conf := range confirms {
-		_ = ptm.dispatchAction(ctx, *conf.FromChain, conf.Nonce, ActionCompleted)
+		ptm.dispatchCompletedAction(ctx, conf.PublicTxnID)
 	}
 }

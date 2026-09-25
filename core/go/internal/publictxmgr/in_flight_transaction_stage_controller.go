@@ -499,8 +499,17 @@ func (it *inFlightTransactionStageController) processSubmittingStageOutput(ctx c
 			log.L(ctx).Debugf("Transaction submitted for tx %s (hash=%s)", rsc.InMemoryTx.GetSignerNonce(), rsc.InMemoryTx.GetTransactionHash())
 			rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionSubmitTransaction, pldtypes.RawJSON(fmt.Sprintf(`{"txHash":"%s"}`, stageOutput.SubmitOutput.TxHash)), nil)
 		case SubmissionOutcomeNonceTooLow:
-			log.L(ctx).Debugf("Nonce too low for tx %s (hash=%s)", rsc.InMemoryTx.GetSignerNonce(), rsc.InMemoryTx.GetTransactionHash())
+			// Stellar synchronously rejected this as stale-sequenced (txBAD_SEQ) - unlike a
+			// submission that's merely unconfirmed (where we genuinely don't know if it landed,
+			// see the resubmit-interval handling below), we already KNOW this exact hash will
+			// never confirm. Resetting the transaction hash now - rather than leaving it recorded
+			// and waiting out the full resubmitInterval - means the next orchestrator poll
+			// immediately re-enters signing (processCurrentGenerationStageOutputs' "no transaction
+			// hash recorded" branch), which re-simulates against the current chain state and picks
+			// up a fresh, correct sequence number.
+			log.L(ctx).Debugf("Nonce too low for tx %s (hash=%s) - resetting to resubmit immediately", rsc.InMemoryTx.GetSignerNonce(), rsc.InMemoryTx.GetTransactionHash())
 			rsc.StageOutputsToBePersisted.UpdateSubStatus(BaseTxActionSubmitTransaction, pldtypes.RawJSON(`{"txHash":"`+stageOutput.SubmitOutput.TxHash.String()+`"}`), nil)
+			rsc.StageOutputsToBePersisted.TxUpdates.ResetValues.TransactionHash = true
 		case SubmissionOutcomeAlreadyKnown:
 			// nothing to add for persistence, go to the tracking stage
 			log.L(ctx).Debugf("Transaction already known for tx %s (hash=%s)", rsc.InMemoryTx.GetSignerNonce(), rsc.InMemoryTx.GetTransactionHash())

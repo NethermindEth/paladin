@@ -34,6 +34,6 @@ func TestDispatchCompletedActionForNonInflightIgnored(t *testing.T) {
 	ctx, txm, _, done := newTestPublicTxManager(t, false)
 	defer done()
 
-	err := txm.dispatchAction(ctx, pldtypes.RandAddress().ChainAddress(), 12345, ActionCompleted)
-	require.NoError(t, err)
+	// No in-flight orchestrators at all - must not panic, just be a no-op
+	txm.dispatchCompletedAction(ctx, 12345)
 }
